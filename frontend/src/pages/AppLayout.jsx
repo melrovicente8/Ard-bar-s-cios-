@@ -12,6 +12,7 @@ import {
   DeviceMobile,
   ArrowLeft,
   House,
+  Truck,
 } from "@phosphor-icons/react";
 
 const ROLE_LABEL = {
@@ -24,6 +25,7 @@ const navItemsBase = [
   { to: "/", label: "Dashboard", icon: ChartLineUp, testid: "nav-dashboard", roles: ["admin", "tesoureiro", "funcionario"] },
   { to: "/vender", label: "Vender", icon: Storefront, testid: "nav-sell", roles: ["admin", "tesoureiro", "funcionario"] },
   { to: "/stock", label: "Stock", icon: Package, testid: "nav-stock", roles: ["admin", "tesoureiro", "funcionario"] },
+  { to: "/fornecedores", label: "Fornecedores", icon: Truck, testid: "nav-fornecedores", roles: ["admin", "tesoureiro"] },
   { to: "/clientes", label: "Clientes", icon: Users, testid: "nav-clients", roles: ["admin", "tesoureiro", "funcionario"] },
   { to: "/mbway", label: "MBWay", icon: DeviceMobile, testid: "nav-mbway", roles: ["admin", "tesoureiro", "funcionario"] },
   { to: "/socios", label: "Sócios", icon: IdentificationCard, testid: "nav-socios", roles: ["admin"] },

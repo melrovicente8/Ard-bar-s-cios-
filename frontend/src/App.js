@@ -14,6 +14,7 @@ import Clientes from "./pages/Clientes";
 import ClienteFicha from "./pages/ClienteFicha";
 import Socios from "./pages/Socios";
 import MBWay from "./pages/MBWay";
+import Fornecedores from "./pages/Fornecedores";
 import SocioLogin from "./pages/SocioLogin";
 import SocioPortal from "./pages/SocioPortal";
 
@@ -49,6 +50,13 @@ function AdminOnly({ children }) {
   return children;
 }
 
+function StaffOnly({ children }) {
+  // admin or tesoureiro
+  const { user } = useAuth();
+  if (!user || (user.role !== "admin" && user.role !== "tesoureiro")) return <Navigate to="/" replace />;
+  return children;
+}
+
 function App() {
   return (
     <div className="App">
@@ -80,6 +88,7 @@ function App() {
                 <Route path="clientes" element={<Clientes />} />
                 <Route path="clientes/:id" element={<ClienteFicha />} />
                 <Route path="mbway" element={<MBWay />} />
+                <Route path="fornecedores" element={<StaffOnly><Fornecedores /></StaffOnly>} />
                 <Route
                   path="socios"
                   element={<AdminOnly><Socios /></AdminOnly>}

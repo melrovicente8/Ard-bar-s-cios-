@@ -1,0 +1,45 @@
+{
+  "summary": "Iteration 4 PASSED end-to-end. Backend: 23/23 new pytest cases in test_iter4_perms_suppliers_points.py covering (a) funcionario POST /api/clients silently strips is_member/member_number/pin (admin POST keeps them); (b) funcionario PUT /api/clients/{id} → 200 for {contact,email,morada}, 403 for is_member, member_number or pin; (c) GET /api/admin/clients now returns ONLY is_member=true clients and 403 for funcionario; (d) Suppliers CRUD perms: POST/PUT admin+tesoureiro, funcionario 403; DELETE admin only (tesoureiro 403); list returns outstanding + orders_count; (e) Supplier orders: POST {paid:false} creates with balance_due=total and INCREMENTS product.quantity by item.quantity; POST {paid:true} → balance_due=0, paid=true, stock still increments; POST /{order_id}/pay decrements balance_due, marks paid=true when fully paid, exceeding 400, already-paid 400; (f) /api/socio/pay-with-points {points:5} → creates payment source='points', amount=1€, points_used=5, decrements both client.balance (−1€) and client.points (−5); validations: points=0/-5 → 400, points=7 (not múltiplo 5) → 400 with 'múltiplos', points=100000 → 400 'insuficientes', euros>debt → 400. Regression: 43/44 prior iter1-3 tests pass; 1 stale iter2 test fails (expects funcionario PUT with name+contact to be 200 with silent drop — code returns strict 403 since iter3, intentional). Frontend (UI verified via Playwright): funcionario → NO nav-fornecedores, NO Nº Sócio/is_member toggle/PIN inputs in Clientes form; admin → all visible, nav-fornecedores + nav-socios both visible; /socios shows Ana Ferreira but NOT João/Pedro; /fornecedores: create supplier OK, create order (2 items style with prod+qty+cost) → total 7,50 € displayed correctly, submitted order appears under Encomendas tab with 'Em dívida' state; Pagar modal opens, submitting 7,50 € marks as 'Pago'; Socio Portal (Ana 1982/1234): badge 'Sócio nº 1982 · Cotas pagas' rendered GREEN at top of hero; 'Pagar com pontos' button not visible because Ana currently has 3 pts + 0€ debt (gating points>=5 && debt>0 working as designed).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/clients PUT (funcionario)", "issue": "Stale iter2 test (test_iter2_roles_points_notify.py line 147) still expects funcionario PUT with {name, contact} to return 200 (silent drop of name). Current iter3+4 design returns 403. Recommend updating that legacy assertion to expect 403 to match the strict allow-list policy."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter4_perms_suppliers_points.py",
+    "/app/backend/tests/test_iter3_socio_mbway.py",
+    "/app/backend/tests/test_iter2_roles_points_notify.py",
+    "/app/backend/tests/test_bar_api.py",
+    "/app/test_reports/pytest/iter4_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL — Update legacy assertion in /app/backend/tests/test_iter2_roles_points_notify.py:147 from `assert upd2.status_code == 200` to `assert upd2.status_code == 403`. The iter4 strict allow-list (contact/email/morada) makes the old 'silent drop' behavior obsolete; assertion now reflects intentional design.",
+    "OPTIONAL — Ana Ferreira's debt is 0,00 € after multiple test cycles, so the 'Pagar com pontos' button is naturally hidden on the live demo account. To showcase the modal, run a quick sale on Ana (e.g., 1× Imperial 0.20 via /vender) so debt > 0 and 5+ points are available, then the button + modal show as intended."
+  ],
+  "critical_code_review_comments": [
+    "server.py update_client(): correctly enforces 403 for funcionario on ANY non-{contact,email,morada} key AND a second guard for {pin,is_member,member_number} regardless of allow-list. Two-stage check is defensive and clear.",
+    "server.py create_client(): role-gated silent strip (`is_member=False`, `member_number=None`, `pin_hash=None` for funcionario) avoids leaking which fields are sensitive — good UX.",
+    "server.py /api/admin/clients now filters by `{is_member: True}` — matches iter4 spec; /api/clients still returns everyone for staff lists (correct, distinct purposes).",
+    "server.py supplier_orders POST: stock is incremented BEFORE order doc insert; if insert_one fails the increment leaks. Acceptable for current scale but consider a try/except rollback or a transaction for production hardening.",
+    "server.py pay_supplier_order(): float comparison uses 1e-9 epsilon — safe; `balance_due = max(total - new_paid_total, 0)` prevents negatives. LGTM.",
+    "server.py socio_pay_with_points(): all validations in correct order (>0, multiple-of-5, points available, euros≤debt) and atomic-ish $inc on balance & points. POINTS_PER_EURO=5 constant clear.",
+    "Fornecedores.jsx is one file at 486 lines — borderline, still under 700 limit; if you add invoices/returns next iteration consider splitting into <SupplierTable/> + <OrderTable/> + modal components.",
+    "All key UI controls have data-testid attributes (supplier-name-input, order-item-product-{i}, points-input, etc.) — excellent testability."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter4_perms_suppliers_points.py (new, 23 tests)"
+  ],
+  "success_rate": {"backend": "100% (23/23 iter4 + 66/67 across all iterations, 1 stale legacy test)", "frontend": "100% on all 16 verified UI checks"},
+  "test_credentials": "admin@ard.pt/admin123, tesoureiro@ard.pt/tesoureiro123, func1@ard.pt/func123, sócio: 1982/1234 (Ana Ferreira, currently 3 pts and 0 € debt after iter4 testing).",
+  "seed_data_creation": "Tests created TEST_iter4_* suppliers, products, supplier orders, members and one TEST_iter4_socio_* client with 50€ debt that was paid down to 0 during pay-with-points testing. The UI flow created 1 supplier 'TEST_iter4_UI_Sup_*' with 1 fully-paid 7,50 € order in production data. Ana Ferreira's balance was reduced to 0 by an automated payment during euros-exceed-debt validation.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All iter4 features verified. /app/backend/tests/test_iter4_perms_suppliers_points.py is the regression suite. Suppliers + supplier_orders collections exist; supplier order POST AUTO-increments product.quantity (don't double-count if you also call /products/replenish). pay-with-points uses POINTS_PER_EURO=5. /api/admin/clients now filters is_member=true so testing 'directory of sócios' must use members only. Ana Ferreira (1982/1234) is currently at 0,00 € debt and 3 points — to showcase pay-points UI on Ana, create a small sale first.",
+  "rca_of_the_issue": "N/A — no functional bugs found in iter4 scope. The single failing iter2 regression is an outdated assertion, not a regression in iter4 code."
+}

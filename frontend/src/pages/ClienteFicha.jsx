@@ -178,7 +178,12 @@ export default function ClienteFicha() {
               {c.is_member ? (
                 <span className="px-3 py-1 rounded-full text-xs font-bold bg-green-500/15 text-green-300 border border-green-500/30 flex items-center gap-1.5">
                   <Medal size={14} weight="fill" />
-                  Sócio {c.member_number ? `nº ${c.member_number}` : ""}
+                  Sócio {c.member_number ? `nº ${c.member_number}` : ""} · Cotas pagas
+                </span>
+              ) : c.member_number ? (
+                <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
+                  <Medal size={14} />
+                  Sócio nº {c.member_number} · Por regularizar
                 </span>
               ) : (
                 <span className="px-3 py-1 rounded-full text-xs font-bold bg-slate-700/50 text-slate-300 border border-slate-600/30">

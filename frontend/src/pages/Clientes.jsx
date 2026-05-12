@@ -254,32 +254,34 @@ export default function Clientes() {
                   className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3 items-end">
-                <div>
-                  <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
-                    Nº de Sócio
+              {(user?.role === "admin" || user?.role === "tesoureiro") && (
+                <div className="grid grid-cols-2 gap-3 items-end">
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
+                      Nº de Sócio
+                    </label>
+                    <input
+                      data-testid="new-client-member-number-input"
+                      value={form.member_number}
+                      onChange={(e) => setForm({ ...form, member_number: e.target.value })}
+                      className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                      placeholder="Ex: 1234"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-green-600/40">
+                    <input
+                      data-testid="new-client-is-member-toggle"
+                      type="checkbox"
+                      checked={form.is_member}
+                      onChange={(e) => setForm({ ...form, is_member: e.target.checked })}
+                      className="w-4 h-4 accent-green-500"
+                    />
+                    <span className="text-xs font-medium text-slate-200">
+                      Sócio com cotas pagas
+                    </span>
                   </label>
-                  <input
-                    data-testid="new-client-member-number-input"
-                    value={form.member_number}
-                    onChange={(e) => setForm({ ...form, member_number: e.target.value })}
-                    className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                    placeholder="Ex: 1234"
-                  />
                 </div>
-                <label className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-green-600/40">
-                  <input
-                    data-testid="new-client-is-member-toggle"
-                    type="checkbox"
-                    checked={form.is_member}
-                    onChange={(e) => setForm({ ...form, is_member: e.target.checked })}
-                    className="w-4 h-4 accent-green-500"
-                  />
-                  <span className="text-xs font-medium text-slate-200">
-                    Sócio com cotas pagas
-                  </span>
-                </label>
-              </div>
+              )}
               <div className="text-[11px] text-slate-500 -mt-2">
                 Sócio com cotas pagas ganha 1 ponto por cada 5€. Caso contrário, 1 ponto por cada 10€.
               </div>

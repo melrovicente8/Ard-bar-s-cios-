@@ -14,6 +14,7 @@ import {
   X,
   DeviceMobile,
   Clock,
+  Coins,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -25,6 +26,8 @@ export default function SocioPortal() {
   const [club, setClub] = useState({});
   const [showMb, setShowMb] = useState(false);
   const [mbForm, setMbForm] = useState({ amount: "", mbway_phone: "", note: "" });
+  const [showPoints, setShowPoints] = useState(false);
+  const [pointsToUse, setPointsToUse] = useState(5);
 
   useEffect(() => {
     api.get("/club/info").then((r) => setClub(r.data)).catch(() => {});
@@ -96,6 +99,18 @@ export default function SocioPortal() {
     }
   };
 
+  const submitPoints = async (e) => {
+    e.preventDefault();
+    try {
+      const { data: pay } = await api.post("/socio/pay-with-points", { points: Number(pointsToUse) });
+      toast.success(`Pago ${euro(pay.amount)} com ${pay.points_used} pontos`);
+      setShowPoints(false);
+      await refresh();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
   const events = [
     ...sales.map((s) => ({ type: "sale", date: s.created_at, ...s })),
     ...payments.map((p) => ({ type: "payment", date: p.created_at, ...p })),
@@ -141,9 +156,15 @@ export default function SocioPortal() {
                 <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight" data-testid="socio-name">
                   Olá, {c.name.split(" ")[0]}!
                 </h1>
-                <span className="px-3 py-1 rounded-full text-xs font-bold bg-green-500/15 text-green-300 border border-green-500/30 flex items-center gap-1.5">
-                  <Medal size={14} weight="fill" /> Sócio nº {c.member_number}
-                </span>
+                {c.is_member ? (
+                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-green-500/15 text-green-300 border border-green-500/30 flex items-center gap-1.5">
+                    <Medal size={14} weight="fill" /> Sócio nº {c.member_number} · Cotas pagas
+                  </span>
+                ) : (
+                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
+                    <Medal size={14} /> Sócio nº {c.member_number} · Por regularizar
+                  </span>
+                )}
               </div>
               <p className="text-sm text-slate-400 mt-1">
                 Conta corrente do bar · {club.name || "ARD Nespereira"}
@@ -177,8 +198,17 @@ export default function SocioPortal() {
                 {c.points || 0}
               </div>
               <div className="text-[10px] text-slate-500 mt-2">
-                {c.is_member ? "Acumula 1 pt cada 5€" : "Acumula 1 pt cada 10€"}
+                {c.is_member ? "Acumula 1 pt cada 5€" : "Acumula 1 pt cada 10€"} · troca 5 pts = 1€
               </div>
+              {(c.points || 0) >= 5 && debt > 0 && (
+                <button
+                  data-testid="socio-pay-points-btn"
+                  onClick={() => { setPointsToUse(Math.min(Math.floor(c.points / 5) * 5, Math.floor(debt * 5))); setShowPoints(true); }}
+                  className="mt-4 w-full bg-green-500/20 hover:bg-green-500/30 border border-green-500/40 text-green-200 font-bold py-2 rounded-lg flex items-center justify-center gap-2 text-sm"
+                >
+                  <Coins size={16} weight="bold" /> Pagar com pontos
+                </button>
+              )}
             </div>
             <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-5">
               <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
@@ -349,6 +379,61 @@ export default function SocioPortal() {
           )}
         </div>
       </main>
+
+      {showPoints && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+          onClick={() => setShowPoints(false)}
+          data-testid="points-modal"
+        >
+          <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 mb-4">
+              <Coins size={22} weight="duotone" className="text-green-400" />
+              <h3 className="font-outfit text-xl font-semibold">Pagar com pontos</h3>
+            </div>
+            <p className="text-sm text-slate-400 mb-5">
+              Cada <strong className="text-green-300">5 pontos = 1 €</strong>. Desconta diretamente no saldo a pagar.
+            </p>
+            <form onSubmit={submitPoints} className="space-y-4">
+              <div className="bg-slate-950 border border-green-500/20 rounded-lg p-4">
+                <div className="flex items-center justify-between text-xs text-slate-500 mb-2">
+                  <span>Pontos disponíveis</span>
+                  <span className="text-green-300 font-bold">{c.points || 0}</span>
+                </div>
+                <div className="flex items-center justify-between text-xs text-slate-500">
+                  <span>Em dívida</span>
+                  <span className="text-amber-300 font-bold">{euro(debt)}</span>
+                </div>
+              </div>
+              <Field label="Pontos a usar (múltiplos de 5)">
+                <input
+                  data-testid="points-input"
+                  type="number"
+                  min="5"
+                  step="5"
+                  max={Math.min(c.points || 0, Math.floor(debt * 5))}
+                  required
+                  value={pointsToUse}
+                  onChange={(e) => setPointsToUse(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white text-lg font-bold focus:outline-none focus:ring-2 focus:ring-green-500/50"
+                />
+              </Field>
+              <div className="bg-slate-950 border border-amber-500/20 rounded-lg p-4 flex items-center justify-between">
+                <span className="text-xs font-bold uppercase tracking-[0.2em] text-amber-400/80">Vais pagar</span>
+                <span className="font-outfit text-3xl font-bold text-amber-300">
+                  {euro((Number(pointsToUse) || 0) / 5)}
+                </span>
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button type="button" onClick={() => setShowPoints(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Cancelar</button>
+                <button data-testid="points-submit-btn" type="submit" className="flex-1 px-4 py-2.5 rounded-lg bg-green-500 hover:bg-green-400 text-slate-950 font-bold">
+                  Confirmar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {showMb && (
         <div

@@ -131,6 +131,39 @@ class MBWayRequestIn(BaseModel):
     mbway_phone: str  # phone used to pay
     note: Optional[str] = None
 
+class SocioPayPointsIn(BaseModel):
+    points: int
+
+class SupplierIn(BaseModel):
+    name: str
+    contact: Optional[str] = None
+    email: Optional[str] = None
+    nif: Optional[str] = None
+    note: Optional[str] = None
+
+class SupplierUpdate(BaseModel):
+    name: Optional[str] = None
+    contact: Optional[str] = None
+    email: Optional[str] = None
+    nif: Optional[str] = None
+    note: Optional[str] = None
+
+class SupplierOrderItemIn(BaseModel):
+    product_id: str
+    quantity: int
+    unit_cost: float
+
+class SupplierOrderIn(BaseModel):
+    supplier_id: str
+    items: List[SupplierOrderItemIn]
+    paid: bool = False  # se já está pago, não vai para "em dívida"
+    invoice_ref: Optional[str] = None
+    note: Optional[str] = None
+
+class SupplierOrderPay(BaseModel):
+    amount: float
+    note: Optional[str] = None
+
 # ---------- Auth helpers ----------
 def hash_password(pw: str) -> str:
     return bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
@@ -322,16 +355,21 @@ async def list_clients(user: dict = Depends(get_current_user)):
 @api_router.post("/clients")
 async def create_client(body: ClientIn, user: dict = Depends(get_current_user)):
     cid = str(uuid.uuid4())
+    role = user.get("role")
+    # Funcionário não pode definir is_member, member_number ou pin
+    is_member = bool(body.is_member) if role in ("admin", "tesoureiro") else False
+    member_number = body.member_number if role in ("admin", "tesoureiro") else None
+    pin_hash = hash_password(body.pin) if (body.pin and role in ("admin", "tesoureiro")) else None
     doc = {
         "id": cid,
         "name": body.name,
         "contact": body.contact,
         "email": body.email,
         "note": body.note,
-        "member_number": body.member_number,
-        "is_member": bool(body.is_member),
+        "member_number": member_number,
+        "is_member": is_member,
         "morada": body.morada,
-        "pin_hash": hash_password(body.pin) if body.pin else None,
+        "pin_hash": pin_hash,
         "points": 0,
         "balance": 0.0,
         "total_spent": 0.0,
@@ -350,14 +388,14 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
     # Funcionários só podem editar contact, email e morada
     if user.get("role") == "funcionario":
         allowed = {"contact", "email", "morada"}
-        raw = {k: v for k, v in raw.items() if k in allowed}
-        if not raw:
+        if any(k not in allowed for k in raw.keys()):
             raise HTTPException(status_code=403, detail="Funcionários só podem editar contacto, email e morada")
-    # PIN only set by admin/tesoureiro
+    # PIN, is_member e member_number só podem ser definidos por admin/tesoureiro
     update = dict(raw)
+    sensitive = {"pin", "is_member", "member_number"}
+    if any(k in update for k in sensitive) and user.get("role") not in ("admin", "tesoureiro"):
+        raise HTTPException(status_code=403, detail="Sem permissão para alterar estes campos")
     if "pin" in update:
-        if user.get("role") not in ("admin", "tesoureiro"):
-            raise HTTPException(status_code=403, detail="Sem permissão para definir PIN")
         pin_value = update.pop("pin")
         if pin_value:
             update["pin_hash"] = hash_password(str(pin_value))
@@ -521,9 +559,9 @@ async def dashboard(user: dict = Depends(get_current_user)):
 # ---------- Admin Directory ----------
 @api_router.get("/admin/clients")
 async def admin_clients_directory(user: dict = Depends(require_role("admin"))):
-    clients = await db.clients.find({}, {"_id": 0, "pin_hash": 0}).sort("name", 1).to_list(5000)
-    # enrich with stats already on the doc (balance, total_spent, points)
-    return clients
+    # Sócios directory: only registered members
+    socios = await db.clients.find({"is_member": True}, {"_id": 0, "pin_hash": 0}).sort("name", 1).to_list(5000)
+    return socios
 
 # ---------- Notifications ----------
 def _build_payment_message(client_doc: dict, payment: dict, total_balance_after: float) -> dict:
@@ -688,6 +726,45 @@ async def socio_mbway_request(body: MBWayRequestIn, socio: dict = Depends(get_cu
     rec.pop("_id", None)
     return rec
 
+# 5 pontos = 1 €
+POINTS_PER_EURO = 5
+
+@api_router.post("/socio/pay-with-points")
+async def socio_pay_with_points(body: SocioPayPointsIn, socio: dict = Depends(get_current_socio)):
+    if body.points <= 0:
+        raise HTTPException(status_code=400, detail="Quantidade de pontos inválida")
+    if body.points % POINTS_PER_EURO != 0:
+        raise HTTPException(status_code=400, detail=f"Os pontos devem ser múltiplos de {POINTS_PER_EURO}")
+    current = await db.clients.find_one({"id": socio["id"]}, {"_id": 0, "pin_hash": 0})
+    if not current:
+        raise HTTPException(status_code=404, detail="Sócio não encontrado")
+    available = int(current.get("points", 0))
+    if body.points > available:
+        raise HTTPException(status_code=400, detail="Pontos insuficientes")
+    debt = max(float(current.get("balance", 0)), 0)
+    euros = body.points / POINTS_PER_EURO
+    if euros > debt + 1e-9:
+        raise HTTPException(status_code=400, detail=f"Valor a pagar ({euros:.2f} €) excede a dívida ({debt:.2f} €)")
+    pid = str(uuid.uuid4())
+    pay = {
+        "id": pid,
+        "client_id": socio["id"],
+        "client_name": socio["name"],
+        "amount": float(euros),
+        "points_used": int(body.points),
+        "note": f"Pagamento com {body.points} pontos",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "user_email": socio.get("email") or "socio-self",
+        "source": "points",
+    }
+    await db.payments.insert_one(pay)
+    await db.clients.update_one(
+        {"id": socio["id"]},
+        {"$inc": {"balance": -float(euros), "points": -int(body.points)}},
+    )
+    pay.pop("_id", None)
+    return pay
+
 # ---------- MBWay management (staff) ----------
 @api_router.get("/mbway-payments")
 async def list_mbway_payments(status_filter: Optional[str] = None, user: dict = Depends(get_current_user)):
@@ -741,6 +818,145 @@ async def reject_mbway_payment(mb_id: str, user: dict = Depends(get_current_user
         {"$set": {"status": "rejected", "confirmed_at": datetime.now(timezone.utc).isoformat(), "confirmed_by": user["email"]}},
     )
     return {"ok": True}
+
+# ---------- Suppliers ----------
+@api_router.get("/suppliers")
+async def list_suppliers(user: dict = Depends(get_current_user)):
+    items = await db.suppliers.find({}, {"_id": 0}).sort("name", 1).to_list(1000)
+    # add debt summary by aggregating supplier orders unpaid balance
+    for s in items:
+        orders = await db.supplier_orders.find({"supplier_id": s["id"], "paid": False}, {"_id": 0}).to_list(500)
+        s["outstanding"] = sum(o.get("balance_due", 0) for o in orders)
+        s["orders_count"] = await db.supplier_orders.count_documents({"supplier_id": s["id"]})
+    return items
+
+@api_router.post("/suppliers")
+async def create_supplier(body: SupplierIn, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    sid = str(uuid.uuid4())
+    doc = {
+        "id": sid,
+        "name": body.name,
+        "contact": body.contact,
+        "email": body.email,
+        "nif": body.nif,
+        "note": body.note,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.suppliers.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api_router.put("/suppliers/{supplier_id}")
+async def update_supplier(supplier_id: str, body: SupplierUpdate, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    update = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not update:
+        raise HTTPException(status_code=400, detail="Nada para atualizar")
+    res = await db.suppliers.update_one({"id": supplier_id}, {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Fornecedor não encontrado")
+    doc = await db.suppliers.find_one({"id": supplier_id}, {"_id": 0})
+    return doc
+
+@api_router.delete("/suppliers/{supplier_id}")
+async def delete_supplier(supplier_id: str, user: dict = Depends(require_role("admin"))):
+    res = await db.suppliers.delete_one({"id": supplier_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Fornecedor não encontrado")
+    return {"ok": True}
+
+@api_router.get("/suppliers/{supplier_id}")
+async def supplier_detail(supplier_id: str, user: dict = Depends(get_current_user)):
+    s = await db.suppliers.find_one({"id": supplier_id}, {"_id": 0})
+    if not s:
+        raise HTTPException(status_code=404, detail="Fornecedor não encontrado")
+    orders = await db.supplier_orders.find({"supplier_id": supplier_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    s["outstanding"] = sum(o.get("balance_due", 0) for o in orders if not o.get("paid"))
+    return {"supplier": s, "orders": orders}
+
+# ---------- Supplier Orders (encomendas) ----------
+@api_router.post("/supplier-orders")
+async def create_supplier_order(body: SupplierOrderIn, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    sup = await db.suppliers.find_one({"id": body.supplier_id})
+    if not sup:
+        raise HTTPException(status_code=404, detail="Fornecedor não encontrado")
+    if not body.items:
+        raise HTTPException(status_code=400, detail="Sem itens")
+    line_items = []
+    total = 0.0
+    for it in body.items:
+        prod = await db.products.find_one({"id": it.product_id})
+        if not prod:
+            raise HTTPException(status_code=404, detail=f"Produto {it.product_id} não encontrado")
+        if it.quantity <= 0:
+            raise HTTPException(status_code=400, detail="Quantidade inválida")
+        sub = float(it.unit_cost) * int(it.quantity)
+        total += sub
+        line_items.append({
+            "product_id": prod["id"],
+            "product_name": prod["name"],
+            "quantity": int(it.quantity),
+            "unit_cost": float(it.unit_cost),
+            "subtotal": sub,
+        })
+
+    # Adicionar stock automaticamente
+    for it in body.items:
+        await db.products.update_one({"id": it.product_id}, {"$inc": {"quantity": int(it.quantity)}})
+
+    oid = str(uuid.uuid4())
+    paid = bool(body.paid)
+    doc = {
+        "id": oid,
+        "supplier_id": body.supplier_id,
+        "supplier_name": sup["name"],
+        "items": line_items,
+        "total": total,
+        "paid": paid,
+        "balance_due": 0.0 if paid else total,
+        "amount_paid": total if paid else 0.0,
+        "invoice_ref": body.invoice_ref,
+        "note": body.note,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "user_email": user["email"],
+    }
+    await db.supplier_orders.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api_router.get("/supplier-orders")
+async def list_supplier_orders(supplier_id: Optional[str] = None, only_unpaid: bool = False, user: dict = Depends(get_current_user)):
+    q = {}
+    if supplier_id:
+        q["supplier_id"] = supplier_id
+    if only_unpaid:
+        q["paid"] = False
+    items = await db.supplier_orders.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return items
+
+@api_router.post("/supplier-orders/{order_id}/pay")
+async def pay_supplier_order(order_id: str, body: SupplierOrderPay, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    o = await db.supplier_orders.find_one({"id": order_id}, {"_id": 0})
+    if not o:
+        raise HTTPException(status_code=404, detail="Encomenda não encontrada")
+    if o.get("paid"):
+        raise HTTPException(status_code=400, detail="Encomenda já paga")
+    if body.amount <= 0:
+        raise HTTPException(status_code=400, detail="Valor inválido")
+    new_paid_total = float(o.get("amount_paid", 0)) + float(body.amount)
+    total = float(o["total"])
+    if new_paid_total > total + 1e-9:
+        raise HTTPException(status_code=400, detail=f"Valor excede o em dívida ({total - o.get('amount_paid', 0):.2f} €)")
+    fully = abs(new_paid_total - total) < 1e-9
+    await db.supplier_orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "amount_paid": new_paid_total,
+            "balance_due": max(total - new_paid_total, 0),
+            "paid": fully,
+            "last_payment_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    return await db.supplier_orders.find_one({"id": order_id}, {"_id": 0})
 
 # ---------- Bootstrap ----------
 @app.on_event("startup")

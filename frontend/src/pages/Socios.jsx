@@ -39,8 +39,7 @@ export default function Socios() {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return clients.filter((c) => {
-      if (filter === "member" && !c.is_member) return false;
-      if (filter === "nonmember" && c.is_member) return false;
+      if (filter === "paid" && !c.is_member) return false;
       if (filter === "debt" && (c.balance || 0) <= 0) return false;
       if (!q) return true;
       return (
@@ -54,10 +53,11 @@ export default function Socios() {
 
   const stats = useMemo(() => {
     const total = clients.length;
-    const members = clients.filter((c) => c.is_member).length;
+    const paid = clients.filter((c) => c.is_member).length;
+    const unpaid = total - paid; // member_number assigned but cotas not paid; shouldn't happen since backend only returns is_member=true; kept for completeness
     const totalDebt = clients.reduce((s, c) => s + Math.max(c.balance || 0, 0), 0);
     const totalPoints = clients.reduce((s, c) => s + (c.points || 0), 0);
-    return { total, members, totalDebt, totalPoints };
+    return { total, paid, unpaid, totalDebt, totalPoints };
   }, [clients]);
 
   const openMsg = (client) => {
@@ -93,13 +93,12 @@ export default function Socios() {
           Diretório de Sócios
         </h1>
         <p className="text-sm text-slate-400 mt-1">
-          Vista completa com toda a informação dos sócios/clientes. Acesso restrito ao admin.
+          Apenas sócios registados — clientes regulares estão em <code className="text-amber-400">Clientes</code>.
         </p>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatBox label="Total" value={stats.total} accent="bg-slate-800/60 text-slate-200" />
-        <StatBox label="Sócios c/ cotas" value={stats.members} accent="bg-green-500/10 text-green-300" />
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+        <StatBox label="Sócios c/ cotas pagas" value={stats.paid} accent="bg-green-500/10 text-green-300" />
         <StatBox label="A receber" value={euro(stats.totalDebt)} accent="bg-rose-500/10 text-rose-300" />
         <StatBox label="Pontos atribuídos" value={stats.totalPoints} accent="bg-amber-500/10 text-amber-300" />
       </div>
@@ -118,8 +117,6 @@ export default function Socios() {
         <div className="flex gap-2">
           {[
             { v: "all", label: "Todos" },
-            { v: "member", label: "Sócios" },
-            { v: "nonmember", label: "Não-sócios" },
             { v: "debt", label: "Com dívida" },
           ].map((f) => (
             <button
