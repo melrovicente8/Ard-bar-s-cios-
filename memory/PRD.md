@@ -2,36 +2,37 @@
 
 ## Decisões consolidadas
 - 3 perfis staff + 1 perfil sócio (login separado)
-- Pontos: 1pt/5€ sócios c/ cotas pagas · 1pt/10€ não-sócios
+- **Pontos**: 1pt/5€ sócios c/ cotas pagas · 1pt/10€ não-sócios
+- **Pagar com pontos**: 5 pts = 1€ (sócio decide no portal)
+- **Pagamento MBWay manual**: sócio pede, staff confirma
+- **Fornecedores + Encomendas**: encomenda adiciona ao stock automaticamente, suporta valor em dívida ao fornecedor
 - Notificação após pagamento via WhatsApp/SMS (deep link) e Email (Resend, inativo até chave)
-- Pagamento MBWay manual: sócio pede, staff confirma
 - Moeda EUR (pt-PT)
 
-## Permissões (resumo)
-| Ação | Admin | Tesoureiro | Funcionário | Sócio (portal) |
+## Permissões
+| Ação | Admin | Tesoureiro | Funcionário | Sócio |
 |---|:-:|:-:|:-:|:-:|
-| Criar/editar produtos | ✅ | ✅ | ❌ | ❌ |
-| Carregar stock | ✅ | ✅ | ❌ | ❌ |
+| Editar produtos / carregar stock | ✅ | ✅ | ❌ | ❌ |
 | Eliminar produtos | ✅ | ❌ | ❌ | ❌ |
-| Criar cliente | ✅ | ✅ | ✅ | ❌ |
-| Editar cliente | tudo (+PIN) | tudo (+PIN) | `contact`/`email`/`morada` | só os seus |
+| Criar cliente | ✅ | ✅ | ✅ (sem nº sócio/cotas/PIN) | ❌ |
+| Editar cliente | tudo (+ PIN) | tudo (+ PIN) | só `contact`/`email`/`morada` | só os seus |
 | Eliminar cliente | ✅ | ❌ | ❌ | ❌ |
+| Definir/alterar `is_member`/`member_number`/`pin` | ✅ | ✅ | ❌ | ❌ |
 | Vender / Pagamentos | ✅ | ✅ | ✅ | ❌ |
 | Confirmar MBWay | ✅ | ✅ | ✅ | ❌ |
+| Fornecedores (CRUD) | ✅ | ✅ | ❌ | ❌ |
+| Eliminar fornecedor | ✅ | ❌ | ❌ | ❌ |
+| Encomendas / Pagar fornecedor | ✅ | ✅ | ❌ | ❌ |
 | Diretório Sócios | ✅ | ❌ | ❌ | ❌ |
-| Portal próprio | — | — | — | ✅ |
+| Portal próprio (saldo + pagar c/ pontos + MBWay) | — | — | — | ✅ |
 
-## Implementado (12/Fev/2026) — Iterações 1+2+3
-- ARD branding (verde+amarelo, escudo, copy)
-- Stock, Vendas com decremento, Clientes
-- Pontos automáticos por venda
-- 5 contas staff + role guards (frontend e backend)
-- Diretório de Sócios (admin)
-- Modal de notificação WhatsApp/SMS/Email após pagamento
-- **Iter 3**: Lápis para editar ficha do cliente, top-bar com Voltar/Início, campo Morada
-- **Iter 3**: Portal do sócio `/socio/login` por Nº+PIN → ficha própria, edição de telemóvel/email/morada, pedido MBWay
-- **Iter 3**: Página `/mbway` para staff confirmar ou rejeitar (qualquer dos 3 perfis pode validar)
-- **Iter 3**: PIN gerido por admin/tesoureiro (no formulário do cliente ou via lápis); `pin_hash` nunca devolvido nas APIs
+## Implementado — Iteração 4
+- Restrição completa: funcionário **não** pode alterar `is_member`, `member_number` ou `pin`
+- Ficha do cliente: badge claro **Sócio nº X · Cotas pagas** (verde) / **Por regularizar** (âmbar) / **Não-sócio** (cinza)
+- Diretório de Sócios filtra apenas `is_member=true` (não inclui clientes regulares)
+- Nova página **Fornecedores** (admin+tesoureiro): CRUD + tab Encomendas
+- Encomenda incrementa stock automaticamente; balance_due tracked; pagamentos parciais ao fornecedor
+- **Sócio pode pagar com pontos**: 5 pts = 1€, múltiplos de 5, decrementa pontos e dívida
 
 ## Credenciais
 | Perfil | Acesso |
@@ -42,20 +43,9 @@
 | Sócio (exemplo) | Nº `1982` · PIN `1234` em `/socio/login` (Ana Ferreira) |
 
 ## Testes
-- Iter 1: 8 pytest passou + smoke frontend
-- Iter 2: +12 pytest (roles, pontos, notify)
-- Iter 3: +18 pytest (sócio, MBWay, PIN, morada)
-- **Total: 44/44 backend; frontend 100% nos fluxos testados**
+- **Iter 4**: +23 pytest backend (100%), +16 verificações frontend (100%)
+- **Total: 66/67** (1 asserção iter2 desatualizada por design)
 
-## Backlog (P1)
-- Ativar emails reais via Resend (adicionar `RESEND_API_KEY`)
-- Catálogo de benefícios — trocar pontos por brindes
-- Marcação em massa de "cotas pagas" no início de cada ano
-- Recibo PDF imprimível por venda
-
-## Backlog (P2)
-- MBWay automático via IfThenPay/Eupago (quando volume justificar)
-- Notificação push para alertas de stock baixo
-- Estatísticas por produto (top vendidos)
-- Painel "Caixa" com fecho de dia para tesoureiro
-- Modo offline (PWA)
+## Backlog
+- P1: ativar emails reais via Resend; catálogo de recompensas (trocar pontos por brindes); marcação em massa de cotas anuais; recibo PDF
+- P2: MBWay automático (IfThenPay/Eupago); push de stock baixo; relatórios por produto; modo offline (PWA)
