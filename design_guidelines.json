@@ -1,0 +1,82 @@
+{
+  "theme": "dark",
+  "archetype": "5 (Jewel & Luxury)",
+  "colors": {
+    "background": "bg-slate-950",
+    "surface": "bg-slate-900/40",
+    "surface_hover": "bg-slate-800/60",
+    "border": "border-slate-800",
+    "primary": "bg-amber-500",
+    "primary_hover": "bg-amber-600",
+    "primary_text": "text-amber-500",
+    "primary_text_contrast": "text-slate-950",
+    "danger": "text-rose-500",
+    "danger_bg": "bg-rose-500/10",
+    "danger_border": "border-rose-500/20",
+    "success": "text-emerald-400",
+    "success_bg": "bg-emerald-400/10",
+    "text_main": "text-slate-100",
+    "text_muted": "text-slate-400"
+  },
+  "typography": {
+    "headings": "font-outfit",
+    "body": "font-manrope",
+    "h1": "text-3xl sm:text-4xl lg:text-5xl font-bold tracking-tight text-white",
+    "h2": "text-2xl sm:text-3xl font-semibold tracking-tight text-white",
+    "h3": "text-xl sm:text-2xl font-medium tracking-tight text-slate-200",
+    "card_title": "text-lg sm:text-xl font-medium tracking-tight text-slate-200",
+    "body_text": "text-base leading-relaxed text-slate-300",
+    "small_label": "text-xs font-bold uppercase tracking-[0.2em] text-slate-500"
+  },
+  "spacing_and_layout": {
+    "container_padding": "p-6 md:p-8 lg:p-12",
+    "gap_large": "gap-8",
+    "gap_medium": "gap-6",
+    "gap_small": "gap-4",
+    "dashboard_grid": "grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6",
+    "bento_grid": "grid-cols-1 md:grid-cols-12 gap-6",
+    "pos_layout": "grid-cols-1 lg:grid-cols-12 gap-8"
+  },
+  "components": {
+    "card": "bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl overflow-hidden",
+    "button_primary": "bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold px-5 py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2",
+    "button_secondary": "bg-slate-800 hover:bg-slate-700 text-white font-medium px-5 py-2.5 rounded-lg transition-colors border border-slate-700 flex items-center justify-center gap-2",
+    "input": "bg-slate-900/80 border border-slate-800 rounded-lg px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500 transition-all",
+    "table": "w-full text-left text-sm text-slate-300 border-collapse",
+    "th": "pb-4 font-medium text-slate-400 border-b border-slate-800 uppercase tracking-wider text-xs",
+    "td": "py-4 border-b border-slate-800/50",
+    "badge_low_stock": "px-2.5 py-1 rounded-full text-xs font-medium bg-rose-500/10 text-rose-500 border border-rose-500/20",
+    "badge_in_stock": "px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
+    "glass_panel": "backdrop-blur-xl bg-slate-950/60 border border-slate-800/60 shadow-[0_8px_32px_rgba(0,0,0,0.5)]"
+  },
+  "media": {
+    "login_background": {
+      "url": "https://images.unsplash.com/photo-1776774984185-91c34b326420?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjV8MHwxfHNlYXJjaHwxfHxtb29keSUyMGRhcmslMjBiYXIlMjBpbnRlcmlvciUyMGxpZ2h0aW5nfGVufDB8fHx8MTc3ODU4OTA0OXww&ixlib=rb-4.1.0&q=85",
+      "description": "Moody dark bar interior with empty wine glasses hanging above a counter. Use for the left half of the login screen to set the premium nightlife atmosphere."
+    },
+    "product_cocktail_1": {
+      "url": "https://images.unsplash.com/photo-1774806245018-a2bdd2eb620b?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NDh8MHwxfHNlYXJjaHwyfHxjb2NrdGFpbCUyMGRyaW5rJTIwZGFyayUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzc4NTg5MDQ5fDA&ixlib=rb-4.1.0&q=85",
+      "description": "Orange cocktail with rosemary. Use as a product image placeholder in the POS view for visually appealing inventory."
+    },
+    "product_cocktail_2": {
+      "url": "https://images.unsplash.com/photo-1746784867908-e96d3b4bb7d3?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NDh8MHwxfHNlYXJjaHw0fHxjb2NrdGFpbCUyMGRyaW5rJTIwZGFyayUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzc4NTg5MDQ5fDA&ixlib=rb-4.1.0&q=85",
+      "description": "Smoked cocktail with fruit. Use as a product image placeholder."
+    },
+    "product_cocktail_3": {
+      "url": "https://images.unsplash.com/photo-1694021256251-ca1607500703?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NDh8MHwxfHNlYXJjaHwzfHxjb2NrdGFpbCUyMGRyaW5rJTIwZGFyayUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzc4NTg5MDQ5fDA&ixlib=rb-4.1.0&q=85",
+      "description": "Close up drink. Use as a product image placeholder."
+    }
+  },
+  "instructions_to_main_agent": [
+    "Install the required fonts via Google Fonts in index.html or import in CSS: 'Outfit' (weights 400,500,600,700) and 'Manrope' (weights 400,500,600,700).",
+    "Install Phosphor icons: `yarn add @phosphor-icons/react` for high-end POS iconography. Do not use generic icons.",
+    "Install Recharts for the Dashboard sales chart: `yarn add recharts`. Customize charts to use the dark theme (grid lines slate-800, bars amber-500).",
+    "All components must be written in Javascript (.jsx/.js), not Typescript.",
+    "The application should force a dark mode experience globally (`bg-slate-950` as the app root). Use the Archetype 5 (Jewel & Luxury) palette with Amber and Slate.",
+    "Design the main POS (Point of Sale) layout under the 'Vender' page: Create a 70/30 grid split. The left 70% shows a grid of available stock items (use provided cocktail images). The right 30% is a fixed 'Conta Corrente/Carrinho' panel where you select the Client from a dropdown, review items, see the total debt increase, and click a massive Amber 'REGISTAR VENDA' button.",
+    "Client Profile (Ficha do Cliente): Build a dedicated view showing total amount owed ('Conta Corrente'), a list of their past consumptions, and a 'Registar Pagamento' button to clear debts.",
+    "Stock Management (Gestão de Stock): Build a data-dense table showing Product Name, Quantity, Price, and Status. Include a 'Carregar Stock' action to replenish quantities and register costs.",
+    "Low Stock Alerts: Emphasize items with low stock directly on the dashboard using the 'badge_low_stock' styles and a dedicated card.",
+    "CRITICAL TESTABILITY: Add kebab-case `data-testid` attributes to every button, input, list item, and key text element (e.g., `data-testid='login-email-input'`, `data-testid='pos-checkout-btn'`, `data-testid='client-debt-total'`)."
+  ]
+}
