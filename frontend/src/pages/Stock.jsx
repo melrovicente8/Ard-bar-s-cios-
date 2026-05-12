@@ -40,6 +40,7 @@ export default function Stock() {
     low_stock_threshold: "5",
     category: "Bebida",
     image_url: "",
+    is_quota: false,
   });
   const [replForm, setReplForm] = useState({ quantity: "", cost_price: "", note: "" });
 
@@ -65,6 +66,7 @@ export default function Stock() {
       low_stock_threshold: "5",
       category: "Bebida",
       image_url: "",
+      is_quota: false,
     });
     setShowAdd(true);
   };
@@ -77,6 +79,7 @@ export default function Stock() {
       low_stock_threshold: String(p.low_stock_threshold),
       category: p.category || "",
       image_url: p.image_url || "",
+      is_quota: !!p.is_quota,
     });
     setShowEdit(p);
   };
@@ -91,6 +94,7 @@ export default function Stock() {
         low_stock_threshold: parseInt(form.low_stock_threshold, 10),
         category: form.category,
         image_url: form.image_url || null,
+        is_quota: !!form.is_quota,
       });
       toast.success("Produto adicionado");
       setShowAdd(false);
@@ -110,6 +114,7 @@ export default function Stock() {
         low_stock_threshold: parseInt(form.low_stock_threshold, 10),
         category: form.category,
         image_url: form.image_url || null,
+        is_quota: !!form.is_quota,
       });
       toast.success("Produto atualizado");
       setShowEdit(null);
@@ -200,14 +205,27 @@ export default function Stock() {
                       data-testid={`product-row-${p.id}`}
                       className="border-t border-slate-800/60 hover:bg-slate-900/60"
                     >
-                      <td className="px-5 py-4 font-medium text-slate-100">{p.name}</td>
+                      <td className="px-5 py-4 font-medium text-slate-100">
+                        <div className="flex items-center gap-2">
+                          {p.name}
+                          {p.is_quota && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-500/15 text-green-300 border border-green-500/30">
+                              Cota
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-5 py-4 text-slate-400">{p.category || "—"}</td>
                       <td className="px-5 py-4 text-right text-amber-400 font-semibold">
                         {euro(p.price)}
                       </td>
-                      <td className="px-5 py-4 text-right text-slate-200">{p.quantity}</td>
+                      <td className="px-5 py-4 text-right text-slate-200">{p.is_quota ? "—" : p.quantity}</td>
                       <td className="px-5 py-4">
-                        {out ? (
+                        {p.is_quota ? (
+                          <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-green-500/10 text-green-400 border border-green-500/20">
+                            Receita
+                          </span>
+                        ) : out ? (
                           <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20">
                             Esgotado
                           </span>
@@ -398,6 +416,18 @@ function ProductForm({ form, setForm, onSubmit, cta, testidPrefix }) {
           placeholder="https://..."
         />
       </Field>
+      <label className="flex items-start gap-3 px-3 py-3 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-amber-500/40">
+        <input
+          data-testid={`${testidPrefix}-is-quota-toggle`}
+          type="checkbox"
+          checked={!!form.is_quota}
+          onChange={(e) => setForm({ ...form, is_quota: e.target.checked })}
+          className="mt-0.5 w-4 h-4 accent-amber-500"
+        />
+        <span className="text-xs text-slate-200">
+          <strong>Cota / Quota</strong> — receita do clube, <em>não conta</em> para o valor em stock nem alertas de stock baixo.
+        </span>
+      </label>
       <button
         data-testid={`${testidPrefix}-submit-btn`}
         type="submit"

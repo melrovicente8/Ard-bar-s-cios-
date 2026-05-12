@@ -27,6 +27,7 @@ const navGroups = [
     section: null,
     items: [
       { to: "/", label: "Dashboard", icon: ChartLineUp, testid: "nav-dashboard", roles: ["admin", "tesoureiro", "funcionario"] },
+      { to: "/dividas", label: "Dívidas hoje", icon: Wallet, testid: "nav-dividas", roles: ["admin", "tesoureiro", "funcionario"] },
       { to: "/vender", label: "Vender", icon: Storefront, testid: "nav-sell", roles: ["admin", "tesoureiro", "funcionario"] },
     ],
   },
@@ -42,7 +43,6 @@ const navGroups = [
     items: [
       { to: "/clientes", label: "Clientes", icon: Users, testid: "nav-clients", roles: ["admin", "tesoureiro", "funcionario"] },
       { to: "/socios", label: "Sócios", icon: IdentificationCard, testid: "nav-socios", roles: ["admin"] },
-      { to: "/dividas", label: "Dívidas hoje", icon: Wallet, testid: "nav-dividas", roles: ["admin", "tesoureiro", "funcionario"] },
       { to: "/mbway", label: "MBWay", icon: DeviceMobile, testid: "nav-mbway", roles: ["admin", "tesoureiro", "funcionario"] },
     ],
   },

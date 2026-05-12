@@ -12,6 +12,7 @@ import {
   Check,
   Receipt,
   Calendar,
+  Printer,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
@@ -60,6 +61,10 @@ export default function Fornecedores() {
 
   const [payOrder, setPayOrder] = useState(null);
   const [payForm, setPayForm] = useState({ amount: "" });
+
+  // Report modal
+  const [reportSupplier, setReportSupplier] = useState(null);
+  const [reportRange, setReportRange] = useState({ from: "", to: "" });
 
   const [showExpense, setShowExpense] = useState(null); // null/false | {mode:"new"} | {mode:"edit",id}
   const [expForm, setExpForm] = useState({ supplier_id: "", description: "", amount: "", due_date: "", paid: false, recurring: "", note: "" });
@@ -231,6 +236,106 @@ export default function Fornecedores() {
     }
   };
 
+  const openReport = (s) => {
+    const today = new Date().toISOString().slice(0, 10);
+    setReportRange({ from: today.slice(0, 7) + "-01", to: today });
+    setReportSupplier(s);
+  };
+
+  const printSupplierReport = async () => {
+    try {
+      const params = {};
+      if (reportRange.from) params.date_from = reportRange.from;
+      if (reportRange.to) params.date_to = reportRange.to;
+      const { data } = await api.get(`/reports/supplier/${reportSupplier.id}`, { params });
+      const w = window.open("", "_blank");
+      if (!w) return toast.error("Permite popups para imprimir");
+      const fmtD = (iso) => new Date(iso).toLocaleString("pt-PT");
+      const periodLabel = `${reportRange.from || "início"} → ${reportRange.to || "hoje"}`;
+      const ordersRows = data.orders.map((o) => `
+        <tr>
+          <td>${fmtD(o.created_at)}</td>
+          <td>${o.invoice_ref || "—"}</td>
+          <td>${o.items.map((it) => `${it.quantity}× ${it.product_name}`).join("<br/>")}</td>
+          <td class="right"><strong>${euro(o.total)}</strong></td>
+          <td class="right">${euro(o.amount_paid || 0)}</td>
+          <td class="right ${o.balance_due > 0 ? "neg" : "pos"}">${euro(o.balance_due || 0)}</td>
+          <td>${o.paid ? "Pago" : "Em dívida"}</td>
+        </tr>
+      `).join("");
+      const expensesRows = data.expenses.map((e) => `
+        <tr>
+          <td>${e.due_date || fmtD(e.created_at).slice(0,10)}</td>
+          <td>${e.description}</td>
+          <td>${e.recurring || "—"}</td>
+          <td class="right ${e.paid ? "pos" : "neg"}"><strong>${euro(e.amount)}</strong></td>
+          <td>${e.paid ? `Pago ${e.paid_at ? "em " + fmtD(e.paid_at) : ""}` : "Em dívida"}</td>
+        </tr>
+      `).join("");
+      w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Conta-corrente · ${data.supplier.name}</title>
+<style>
+  body{font-family:Arial,Helvetica,sans-serif;color:#0f172a;margin:24px;font-size:13px}
+  header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #15803d;padding-bottom:14px;margin-bottom:16px}
+  .brand{font-size:20px;font-weight:800;letter-spacing:.15em;color:#15803d}
+  .sub{font-size:10px;letter-spacing:.3em;color:#666}
+  h1{font-size:18px;margin:0}
+  h2{font-size:14px;margin:24px 0 8px;border-bottom:1px solid #ddd;padding-bottom:4px}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:8px 10px;border-bottom:1px solid #e5e7eb;text-align:left;font-size:12px;vertical-align:top}
+  th{background:#f3f4f6;text-transform:uppercase;letter-spacing:.08em;font-size:10px;color:#444}
+  .right{text-align:right}
+  .neg{color:#b91c1c}
+  .pos{color:#15803d}
+  .totals{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:20px}
+  .card{background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:12px}
+  .card .lbl{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.15em}
+  .card .val{font-size:16px;font-weight:800;margin-top:4px}
+  .meta{font-size:11px;color:#555;margin-top:4px}
+  footer{margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:10px;color:#666;display:flex;justify-content:space-between}
+  @media print{ button{display:none} body{margin:12mm} }
+</style></head><body>
+  <header>
+    <div>
+      <div class="brand">${data.club_name || "ARD NESPEREIRA"}</div>
+      <div class="sub">CONTA-CORRENTE · FORNECEDOR</div>
+    </div>
+    <div style="text-align:right">
+      <h1>${data.supplier.name}</h1>
+      <div class="meta">${data.supplier.nif ? "NIF: " + data.supplier.nif + " · " : ""}${data.supplier.contact || ""}${data.supplier.email ? " · "+data.supplier.email : ""}</div>
+      <div class="meta">Período: <strong>${periodLabel}</strong></div>
+      <div class="meta">Emitido em ${new Date(data.generated_at).toLocaleString("pt-PT")}</div>
+    </div>
+  </header>
+  <h2>Encomendas</h2>
+  <table>
+    <thead><tr><th>Data</th><th>Fatura</th><th>Itens</th><th class="right">Total</th><th class="right">Pago</th><th class="right">Em dívida</th><th>Estado</th></tr></thead>
+    <tbody>${ordersRows || `<tr><td colspan="7" style="text-align:center;color:#666;padding:18px">Sem encomendas no período</td></tr>`}</tbody>
+  </table>
+  <h2>Despesas / Contratos</h2>
+  <table>
+    <thead><tr><th>Vencimento</th><th>Descrição</th><th>Recorrência</th><th class="right">Valor</th><th>Estado</th></tr></thead>
+    <tbody>${expensesRows || `<tr><td colspan="5" style="text-align:center;color:#666;padding:18px">Sem despesas no período</td></tr>`}</tbody>
+  </table>
+  <div class="totals">
+    <div class="card"><div class="lbl">Total encomendas</div><div class="val">${euro(data.totals.orders)}</div></div>
+    <div class="card"><div class="lbl">Pago</div><div class="val pos">${euro(data.totals.paid_orders)}</div></div>
+    <div class="card"><div class="lbl">Dívida encomendas</div><div class="val neg">${euro(data.totals.debt_orders)}</div></div>
+    <div class="card"><div class="lbl">Dívida despesas</div><div class="val neg">${euro(data.totals.debt_expenses)}</div></div>
+  </div>
+  <div class="meta" style="margin-top:14px">Dívida total no período: <strong>${euro(data.totals.total_debt)}</strong></div>
+  <footer>
+    <span>${data.club_name}</span>
+    <span><button onclick="window.print()">Imprimir</button></span>
+  </footer>
+  <script>setTimeout(()=>window.print(),300);</script>
+</body></html>`);
+      w.document.close();
+      setReportSupplier(null);
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    }
+  };
+
   return (
     <div className="p-6 md:p-10 animate-in" data-testid="fornecedores-page">
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
@@ -341,6 +446,14 @@ export default function Fornecedores() {
                       <td className="px-5 py-3 text-right text-slate-300">{s.orders_count || 0}</td>
                       <td className="px-5 py-3">
                         <div className="flex items-center justify-end gap-2">
+                          <button
+                            data-testid={`supplier-report-${s.id}`}
+                            onClick={() => openReport(s)}
+                            title="Imprimir conta-corrente"
+                            className="p-2 rounded-md bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
+                          >
+                            <Printer size={14} weight="duotone" />
+                          </button>
                           {canManage && (
                             <button
                               data-testid={`supplier-edit-${s.id}`}
@@ -697,6 +810,69 @@ export default function Fornecedores() {
             <button data-testid="expense-submit-btn" type="submit" className="flex-1 px-4 py-2.5 rounded-lg bg-fuchsia-500 hover:bg-fuchsia-400 text-slate-950 font-bold">Guardar</button>
           </div>
         </form>
+      </Modal>
+      <Modal open={!!reportSupplier} onClose={() => setReportSupplier(null)} title={`Imprimir conta-corrente · ${reportSupplier?.name || ""}`}>
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="De">
+              <input
+                data-testid="supplier-report-from"
+                type="date"
+                value={reportRange.from}
+                onChange={(e) => setReportRange({ ...reportRange, from: e.target.value })}
+                className={inputCls}
+              />
+            </Field>
+            <Field label="Até">
+              <input
+                data-testid="supplier-report-to"
+                type="date"
+                value={reportRange.to}
+                onChange={(e) => setReportRange({ ...reportRange, to: e.target.value })}
+                className={inputCls}
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                const t = new Date().toISOString().slice(0, 10);
+                setReportRange({ from: t.slice(0, 7) + "-01", to: t });
+              }}
+              className="text-xs px-2 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700"
+            >
+              Este mês
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const t = new Date().toISOString().slice(0, 10);
+                setReportRange({ from: t.slice(0, 4) + "-01-01", to: t });
+              }}
+              className="text-xs px-2 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700"
+            >
+              Este ano
+            </button>
+            <button
+              type="button"
+              onClick={() => setReportRange({ from: "", to: "" })}
+              className="text-xs px-2 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700"
+            >
+              Sempre
+            </button>
+          </div>
+          <div className="flex gap-2 pt-2">
+            <button type="button" onClick={() => setReportSupplier(null)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Cancelar</button>
+            <button
+              data-testid="supplier-report-print-btn"
+              onClick={printSupplierReport}
+              className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold flex items-center justify-center gap-2"
+            >
+              <Printer size={16} weight="bold" /> Imprimir
+            </button>
+          </div>
+        </div>
       </Modal>
     </div>
   );

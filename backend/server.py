@@ -66,6 +66,7 @@ class ProductIn(BaseModel):
     low_stock_threshold: int = 5
     category: Optional[str] = "Bebida"
     image_url: Optional[str] = None
+    is_quota: bool = False  # Quotas/cotas — não contam para valor de stock
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -74,6 +75,7 @@ class ProductUpdate(BaseModel):
     low_stock_threshold: Optional[int] = None
     category: Optional[str] = None
     image_url: Optional[str] = None
+    is_quota: Optional[bool] = None
 
 class StockReplenishIn(BaseModel):
     product_id: str
@@ -113,6 +115,10 @@ class PaymentIn(BaseModel):
     client_id: str
     amount: float
     points_used: int = 0
+    note: Optional[str] = None
+
+class PaymentUpdate(BaseModel):
+    amount: Optional[float] = None
     note: Optional[str] = None
 
 class NotifyPaymentIn(BaseModel):
@@ -316,6 +322,7 @@ async def create_product(body: ProductIn, user: dict = Depends(require_role("adm
         "low_stock_threshold": int(body.low_stock_threshold),
         "category": body.category or "Bebida",
         "image_url": body.image_url,
+        "is_quota": bool(body.is_quota),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.products.insert_one(doc)
@@ -597,13 +604,126 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
     pay.pop("_id", None)
     return pay
 
+@api_router.put("/payments/{payment_id}")
+async def update_payment(payment_id: str, body: PaymentUpdate, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    pay = await db.payments.find_one({"id": payment_id}, {"_id": 0})
+    if not pay:
+        raise HTTPException(status_code=404, detail="Pagamento não encontrado")
+    update = {}
+    if body.note is not None:
+        update["note"] = body.note
+    if body.amount is not None:
+        if body.amount < 0:
+            raise HTTPException(status_code=400, detail="Valor inválido")
+        # ajustar diferença no saldo do cliente
+        old_total = float(pay.get("total_credited", pay.get("amount", 0)))
+        points_value = float(pay.get("points_value", 0))
+        new_total = float(body.amount) + points_value
+        diff = new_total - old_total  # positivo → desconta mais à dívida
+        if abs(diff) > 1e-9:
+            await db.clients.update_one({"id": pay["client_id"]}, {"$inc": {"balance": -diff}})
+        update["amount"] = float(body.amount)
+        update["total_credited"] = new_total
+        update["edited_at"] = datetime.now(timezone.utc).isoformat()
+        update["edited_by"] = user["email"]
+    if not update:
+        raise HTTPException(status_code=400, detail="Nada para atualizar")
+    await db.payments.update_one({"id": payment_id}, {"$set": update})
+    return await db.payments.find_one({"id": payment_id}, {"_id": 0})
+
+@api_router.delete("/payments/{payment_id}")
+async def delete_payment(payment_id: str, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    pay = await db.payments.find_one({"id": payment_id}, {"_id": 0})
+    if not pay:
+        raise HTTPException(status_code=404, detail="Pagamento não encontrado")
+    # Reverter saldo do cliente e pontos usados
+    total_credited = float(pay.get("total_credited", pay.get("amount", 0)))
+    points_used = int(pay.get("points_used", 0))
+    inc = {"balance": total_credited}
+    if points_used:
+        inc["points"] = points_used
+    await db.clients.update_one({"id": pay["client_id"]}, {"$inc": inc})
+    await db.payments.delete_one({"id": payment_id})
+    return {"ok": True, "restored_balance": total_credited, "restored_points": points_used}
+
+# ---------- Reports ----------
+def _date_in_range(iso_str: str, dfrom: Optional[str], dto: Optional[str]) -> bool:
+    if not iso_str:
+        return False
+    if dfrom and iso_str < dfrom:
+        return False
+    if dto and iso_str > dto:
+        return False
+    return True
+
+@api_router.get("/reports/client/{client_id}")
+async def report_client(client_id: str, date_from: Optional[str] = None, date_to: Optional[str] = None, user: dict = Depends(get_current_user)):
+    c = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
+    if not c:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    # Aceitar YYYY-MM-DD (incl. hora 00:00) ou ISO completo
+    dfrom = date_from + "T00:00:00" if (date_from and "T" not in date_from) else date_from
+    dto = date_to + "T23:59:59" if (date_to and "T" not in date_to) else date_to
+    sales = await db.sales.find({"client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    payments = await db.payments.find({"client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    sales = [s for s in sales if _date_in_range(s.get("created_at", ""), dfrom, dto)]
+    payments = [p for p in payments if _date_in_range(p.get("created_at", ""), dfrom, dto)]
+    total_sales = sum(s.get("total", 0) for s in sales)
+    total_paid = sum(float(p.get("total_credited", p.get("amount", 0))) for p in payments)
+    return {
+        "client": c,
+        "period": {"from": date_from, "to": date_to},
+        "sales": sales,
+        "payments": payments,
+        "totals": {
+            "sales": total_sales,
+            "paid": total_paid,
+            "diff": total_sales - total_paid,
+        },
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "club_name": CLUB_NAME,
+    }
+
+@api_router.get("/reports/supplier/{supplier_id}")
+async def report_supplier(supplier_id: str, date_from: Optional[str] = None, date_to: Optional[str] = None, user: dict = Depends(get_current_user)):
+    s = await db.suppliers.find_one({"id": supplier_id}, {"_id": 0})
+    if not s:
+        raise HTTPException(status_code=404, detail="Fornecedor não encontrado")
+    dfrom = date_from + "T00:00:00" if (date_from and "T" not in date_from) else date_from
+    dto = date_to + "T23:59:59" if (date_to and "T" not in date_to) else date_to
+    orders = await db.supplier_orders.find({"supplier_id": supplier_id}, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    expenses = await db.supplier_expenses.find({"supplier_id": supplier_id}, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    orders = [o for o in orders if _date_in_range(o.get("created_at", ""), dfrom, dto)]
+    expenses = [e for e in expenses if _date_in_range(e.get("created_at", ""), dfrom, dto)]
+    total_orders = sum(o.get("total", 0) for o in orders)
+    total_paid_orders = sum(o.get("amount_paid", 0) for o in orders)
+    debt_orders = sum(o.get("balance_due", 0) for o in orders if not o.get("paid"))
+    debt_expenses = sum(e.get("amount", 0) for e in expenses if not e.get("paid"))
+    return {
+        "supplier": s,
+        "period": {"from": date_from, "to": date_to},
+        "orders": orders,
+        "expenses": expenses,
+        "totals": {
+            "orders": total_orders,
+            "paid_orders": total_paid_orders,
+            "debt_orders": debt_orders,
+            "debt_expenses": debt_expenses,
+            "total_debt": debt_orders + debt_expenses,
+        },
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "club_name": CLUB_NAME,
+    }
+
 # ---------- Dashboard ----------
 @api_router.get("/dashboard")
 async def dashboard(user: dict = Depends(get_current_user)):
     products = await db.products.find({}, {"_id": 0}).to_list(1000)
     clients_total = await db.clients.count_documents({})
-    total_stock_value = sum(p.get("price", 0) * p.get("quantity", 0) for p in products)
-    low_stock = [p for p in products if p.get("quantity", 0) <= p.get("low_stock_threshold", 0)]
+    # Cotas não contam para valor de stock nem para alertas de stock baixo
+    stockable_products = [p for p in products if not p.get("is_quota")]
+    total_stock_value = sum(p.get("price", 0) * p.get("quantity", 0) for p in stockable_products)
+    low_stock = [p for p in stockable_products if p.get("quantity", 0) <= p.get("low_stock_threshold", 0)]
 
     # today sales
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)

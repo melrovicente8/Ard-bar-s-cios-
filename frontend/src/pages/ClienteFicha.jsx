@@ -21,6 +21,9 @@ import {
   Storefront,
   MagnifyingGlass,
   Wine,
+  Printer,
+  Phone,
+  MapPin,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
@@ -55,6 +58,12 @@ export default function ClienteFicha() {
   const [products, setProducts] = useState([]);
   const [cart, setCart] = useState({});
   const [sellSearch, setSellSearch] = useState("");
+  // Edit payment modal
+  const [editPay, setEditPay] = useState(null); // payment object
+  const [editPayForm, setEditPayForm] = useState({ amount: "", note: "" });
+  // Report modal
+  const [showReport, setShowReport] = useState(false);
+  const [reportRange, setReportRange] = useState({ from: "", to: "" });
 
   const load = async () => {
     setLoading(true);
@@ -161,6 +170,151 @@ export default function ClienteFicha() {
       await api.delete(`/sales/${sale.id}`);
       toast.success("Venda cancelada · stock reposto");
       await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const openEditPay = (p) => {
+    setEditPay(p);
+    setEditPayForm({ amount: String(Number(p.amount || 0).toFixed(2)), note: p.note || "" });
+  };
+
+  const submitEditPay = async (e) => {
+    e.preventDefault();
+    try {
+      await api.put(`/payments/${editPay.id}`, {
+        amount: parseFloat(editPayForm.amount || 0),
+        note: editPayForm.note || "",
+      });
+      toast.success("Pagamento atualizado");
+      setEditPay(null);
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const deletePayment = async (p) => {
+    if (!window.confirm(`Eliminar pagamento de ${euro(p.amount)}? A dívida será reposta.`)) return;
+    try {
+      await api.delete(`/payments/${p.id}`);
+      toast.success("Pagamento eliminado · dívida reposta");
+      setEditPay(null);
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const printReceipt = () => {
+    if (!notifyPayment) return;
+    const w = window.open("", "_blank", "width=420,height=640");
+    if (!w) return toast.error("Permite popups para imprimir");
+    const dateStr = new Date(notifyPayment.created_at || Date.now()).toLocaleString("pt-PT");
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Recibo</title>
+<style>
+  body{font-family:'Courier New',monospace;color:#000;max-width:320px;margin:14px auto;padding:0 12px;font-size:13px}
+  h1{font-size:16px;text-align:center;margin:4px 0 0;letter-spacing:.18em}
+  h2{font-size:11px;text-align:center;margin:0 0 14px;color:#444;letter-spacing:.25em}
+  hr{border:0;border-top:1px dashed #000;margin:10px 0}
+  .row{display:flex;justify-content:space-between;margin:4px 0}
+  .big{font-size:20px;font-weight:bold}
+  .center{text-align:center}
+  .muted{color:#555;font-size:11px}
+  @media print{ body{margin:0} button{display:none} }
+</style></head><body>
+  <h1>${(c.is_member ? "ARD · NESPEREIRA" : "ARD · NESPEREIRA")}</h1>
+  <h2>RECIBO DE PAGAMENTO</h2>
+  <div class="muted">${dateStr}</div>
+  <hr/>
+  <div class="row"><span>Cliente</span><strong>${c.name}</strong></div>
+  ${c.member_number ? `<div class="row"><span>Nº Sócio</span><strong>${c.member_number}</strong></div>` : ""}
+  <hr/>
+  <div class="row"><span>Em numerário</span><span>${euro(notifyPayment.amount || 0)}</span></div>
+  ${notifyPayment.points_used ? `<div class="row"><span>Pontos descontados</span><span>${notifyPayment.points_used} pts (${euro((notifyPayment.points_value)||(notifyPayment.points_used/5))})</span></div>` : ""}
+  ${notifyPayment.note ? `<div class="row"><span>Nota</span><span>${notifyPayment.note}</span></div>` : ""}
+  <hr/>
+  <div class="row big"><span>TOTAL ABATIDO</span><span>${euro(notifyPayment.total_credited || notifyPayment.amount || 0)}</span></div>
+  <div class="row"><span>Dívida actual</span><strong>${euro(Math.max(c.balance || 0, 0))}</strong></div>
+  <div class="row"><span>Pontos actuais</span><strong>${c.points || 0}</strong></div>
+  <hr/>
+  <div class="center muted">Obrigado pela preferência<br/>${(window.location.host || "ARD Nespereira")}</div>
+  <div class="center" style="margin-top:14px"><button onclick="window.print()">Imprimir</button></div>
+  <script>setTimeout(()=>window.print(),300);</script>
+</body></html>`);
+    w.document.close();
+  };
+
+  const printReport = async () => {
+    try {
+      const params = {};
+      if (reportRange.from) params.date_from = reportRange.from;
+      if (reportRange.to) params.date_to = reportRange.to;
+      const { data } = await api.get(`/reports/client/${id}`, { params });
+      const w = window.open("", "_blank");
+      if (!w) return toast.error("Permite popups para imprimir");
+      const rows = [
+        ...data.sales.map((s) => ({ d: s.created_at, t: "Consumo", desc: s.items.map((it) => `${it.quantity}× ${it.product_name}`).join(", "), v: -s.total })),
+        ...data.payments.map((p) => ({ d: p.created_at, t: "Pagamento", desc: p.note || (p.source || "—"), v: +(p.total_credited || p.amount) })),
+      ].sort((a, b) => (a.d < b.d ? -1 : 1));
+      const fmtD = (iso) => new Date(iso).toLocaleString("pt-PT");
+      const periodLabel = `${reportRange.from || "início"} → ${reportRange.to || "hoje"}`;
+      w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Conta-corrente · ${data.client.name}</title>
+<style>
+  *{box-sizing:border-box}
+  body{font-family:Arial,Helvetica,sans-serif;color:#0f172a;margin:24px;font-size:13px}
+  header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #15803d;padding-bottom:14px;margin-bottom:16px}
+  .brand{font-size:20px;font-weight:800;letter-spacing:.15em;color:#15803d}
+  .sub{font-size:10px;letter-spacing:.3em;color:#666}
+  h1{font-size:18px;margin:0}
+  table{width:100%;border-collapse:collapse;margin-top:8px}
+  th,td{padding:8px 10px;border-bottom:1px solid #e5e7eb;text-align:left;font-size:12px}
+  th{background:#f3f4f6;text-transform:uppercase;letter-spacing:.08em;font-size:10px;color:#444}
+  .right{text-align:right}
+  .neg{color:#b91c1c}
+  .pos{color:#15803d}
+  .totals{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:20px}
+  .card{background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:12px}
+  .card .lbl{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.15em}
+  .card .val{font-size:18px;font-weight:800;margin-top:4px}
+  footer{margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:10px;color:#666;display:flex;justify-content:space-between}
+  .meta{font-size:11px;color:#555;margin-top:4px}
+  @media print{ button{display:none} body{margin:12mm} }
+</style></head><body>
+  <header>
+    <div>
+      <div class="brand">${data.club_name || "ARD NESPEREIRA"}</div>
+      <div class="sub">CONTA-CORRENTE · CLIENTE</div>
+    </div>
+    <div style="text-align:right">
+      <h1>${data.client.name}</h1>
+      <div class="meta">${data.client.member_number ? `Nº Sócio: ${data.client.member_number} · ` : ""}${data.client.contact || ""}${data.client.email ? " · "+data.client.email : ""}</div>
+      <div class="meta">Período: <strong>${periodLabel}</strong></div>
+      <div class="meta">Emitido em ${new Date(data.generated_at).toLocaleString("pt-PT")}</div>
+    </div>
+  </header>
+  <table>
+    <thead><tr><th>Data</th><th>Tipo</th><th>Descrição</th><th class="right">Valor</th></tr></thead>
+    <tbody>
+      ${rows.length === 0 ? `<tr><td colspan="4" style="text-align:center;color:#666;padding:24px">Sem movimentos no período</td></tr>` : ""}
+      ${rows.map((r) => `<tr><td>${fmtD(r.d)}</td><td>${r.t}</td><td>${r.desc}</td><td class="right ${r.v < 0 ? "neg" : "pos"}"><strong>${r.v < 0 ? "-" : "+"}${euro(Math.abs(r.v))}</strong></td></tr>`).join("")}
+    </tbody>
+  </table>
+  <div class="totals">
+    <div class="card"><div class="lbl">Total consumido</div><div class="val neg">${euro(data.totals.sales)}</div></div>
+    <div class="card"><div class="lbl">Total pago</div><div class="val pos">${euro(data.totals.paid)}</div></div>
+    <div class="card"><div class="lbl">Em dívida (período)</div><div class="val">${euro(Math.max(data.totals.diff, 0))}</div></div>
+  </div>
+  <div class="meta" style="margin-top:18px">Saldo atual em dívida: <strong>${euro(Math.max(data.client.balance || 0, 0))}</strong> · Pontos: <strong>${data.client.points || 0}</strong></div>
+  <footer>
+    <span>${data.club_name}</span>
+    <span><button onclick="window.print()">Imprimir</button></span>
+  </footer>
+  <script>setTimeout(()=>window.print(),300);</script>
+</body></html>`);
+      w.document.close();
+      setShowReport(false);
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
@@ -279,13 +433,49 @@ export default function ClienteFicha() {
               )}
             </div>
             {(c.contact || c.email || c.morada) && (
-              <div className="text-sm text-slate-400 mt-1 space-y-0.5">
-                <div>
-                  {c.contact}
-                  {c.contact && c.email ? " · " : ""}
-                  {c.email}
+              <div className="text-sm text-slate-400 mt-1 space-y-0.5" data-testid="client-links">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  {c.contact && (
+                    <a
+                      href={`tel:${c.contact}`}
+                      data-testid="client-phone-link"
+                      className="inline-flex items-center gap-1.5 text-slate-300 hover:text-amber-400 underline-offset-2 hover:underline"
+                    >
+                      <Phone size={13} weight="duotone" /> {c.contact}
+                    </a>
+                  )}
+                  {c.email && (
+                    <a
+                      href={`mailto:${c.email}`}
+                      data-testid="client-email-link"
+                      className="inline-flex items-center gap-1.5 text-slate-300 hover:text-amber-400 underline-offset-2 hover:underline"
+                    >
+                      <EnvelopeSimple size={13} weight="duotone" /> {c.email}
+                    </a>
+                  )}
+                  {c.contact && (
+                    <a
+                      href={`https://wa.me/${(c.contact || "").replace(/\D/g, "")}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      data-testid="client-wa-link"
+                      className="inline-flex items-center gap-1.5 text-green-400 hover:text-green-300 underline-offset-2 hover:underline"
+                    >
+                      <WhatsappLogo size={13} weight="fill" /> WhatsApp
+                    </a>
+                  )}
                 </div>
-                {c.morada && <div className="text-slate-500">{c.morada}</div>}
+                {c.morada && (
+                  <a
+                    href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(c.morada)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    data-testid="client-morada-link"
+                    className="inline-flex items-center gap-1.5 text-slate-500 hover:text-amber-400 underline-offset-2 hover:underline"
+                  >
+                    <MapPin size={13} weight="duotone" /> {c.morada}
+                  </a>
+                )}
               </div>
             )}
           </div>
@@ -305,6 +495,19 @@ export default function ClienteFicha() {
             className="bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold px-5 py-3 rounded-lg flex items-center gap-2"
           >
             <CurrencyEur size={18} weight="bold" /> Registar pagamento
+          </button>
+          <button
+            data-testid="print-report-btn"
+            onClick={() => {
+              const today = new Date().toISOString().slice(0, 10);
+              const monthStart = today.slice(0, 7) + "-01";
+              setReportRange({ from: monthStart, to: today });
+              setShowReport(true);
+            }}
+            className="bg-slate-800 hover:bg-slate-700 text-slate-100 font-bold px-4 py-3 rounded-lg flex items-center gap-2 border border-slate-700"
+            title="Imprimir conta-corrente"
+          >
+            <Printer size={18} weight="duotone" /> Imprimir
           </button>
           {canDeleteClient && (
             <button
@@ -439,27 +642,37 @@ export default function ClienteFicha() {
               {events.map((ev, i) => (
                 <li
                   key={i}
-                  className={`flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border ${
+                  data-testid={ev.type === "payment" ? `event-payment-${ev.id}` : `event-sale-${ev.id}`}
+                  onClick={() => ev.type === "payment" && canEditAll && openEditPay(ev)}
+                  className={`flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border transition-colors ${
                     ev.type === "sale"
                       ? "bg-rose-500/5 border-rose-500/10"
-                      : "bg-emerald-500/5 border-emerald-500/10"
+                      : `bg-emerald-500/5 border-emerald-500/10 ${canEditAll ? "cursor-pointer hover:bg-emerald-500/10" : ""}`
                   }`}
                 >
-                  <div>
+                  <div className="flex-1 min-w-0">
                     <div className="text-xs text-slate-500">
                       {new Date(ev.date).toLocaleString("pt-PT")}
                     </div>
                     <div className="text-sm font-medium text-slate-200">
                       {ev.type === "sale" ? "Venda" : "Pagamento"}
+                      {ev.type === "payment" && ev.note ? (
+                        <span className="text-xs text-slate-500 ml-2">· {ev.note}</span>
+                      ) : null}
                     </div>
                   </div>
                   <div
-                    className={`font-bold ${
+                    className={`font-bold flex items-center gap-2 ${
                       ev.type === "sale" ? "text-rose-400" : "text-emerald-400"
                     }`}
                   >
-                    {ev.type === "sale" ? "+" : "-"}
-                    {euro(ev.type === "sale" ? ev.total : ev.amount)}
+                    <span>
+                      {ev.type === "sale" ? "+" : "-"}
+                      {euro(ev.type === "sale" ? ev.total : (ev.total_credited || ev.amount))}
+                    </span>
+                    {ev.type === "payment" && canEditAll && (
+                      <PencilSimple size={12} weight="bold" className="text-emerald-400/60" />
+                    )}
                   </div>
                 </li>
               ))}
@@ -485,6 +698,34 @@ export default function ClienteFicha() {
               <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-rose-300/80">Valor em aberto</span>
               <span data-testid="payment-open-amount" className="font-outfit text-2xl font-bold text-rose-300">{euro(debt)}</span>
             </div>
+
+            {/* Itens consumidos em aberto (descrição) */}
+            {sales.length > 0 && (
+              <details className="mb-4 bg-slate-950 border border-slate-800 rounded-lg" data-testid="payment-items-breakdown">
+                <summary className="cursor-pointer px-3 py-2 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400 hover:text-amber-400 list-none flex items-center justify-between">
+                  <span>O que está em dívida</span>
+                  <span className="text-slate-500 normal-case tracking-normal">{sales.length} venda(s)</span>
+                </summary>
+                <div className="max-h-44 overflow-y-auto px-3 pb-3 space-y-2 text-xs">
+                  {sales.slice(0, 12).map((s) => (
+                    <div key={s.id} className="border-t border-slate-800/60 pt-2">
+                      <div className="flex items-center justify-between text-slate-400 text-[10px]">
+                        <span>{new Date(s.created_at).toLocaleString("pt-PT")}</span>
+                        <strong className="text-amber-400">{euro(s.total)}</strong>
+                      </div>
+                      <ul className="text-slate-300 mt-0.5">
+                        {s.items.map((it, i) => (
+                          <li key={i} className="flex items-center justify-between">
+                            <span><span className="text-slate-500">{it.quantity}×</span> {it.product_name}</span>
+                            <span className="text-slate-500">{euro(it.subtotal)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
 
             <form onSubmit={submitPay} className="space-y-4">
               <div>
@@ -633,6 +874,16 @@ export default function ClienteFicha() {
                   <EnvelopeSimple size={20} weight="duotone" /> Enviar Email
                 </span>
                 <span className="text-xs text-slate-400">{c.email || "sem email"}</span>
+              </button>
+              <button
+                data-testid="notify-print-btn"
+                onClick={printReceipt}
+                className="w-full flex items-center justify-between px-4 py-3 rounded-lg bg-slate-700/30 border border-slate-600/40 text-slate-100 hover:bg-slate-700/50 transition-colors"
+              >
+                <span className="flex items-center gap-3 font-medium">
+                  <Printer size={20} weight="duotone" /> Emitir recibo (imprimir)
+                </span>
+                <span className="text-xs text-slate-400">Talão A6</span>
               </button>
             </div>
             <button
@@ -859,6 +1110,142 @@ export default function ClienteFicha() {
               <button type="button" onClick={() => setShowSell(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Cancelar</button>
               <button data-testid="sell-submit-btn" disabled={!Object.keys(cart).length} onClick={submitSale} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold">
                 Registar venda
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editPay && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+          onClick={() => setEditPay(null)}
+          data-testid="edit-payment-modal"
+        >
+          <div
+            className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-amber-400/80">Caixa do bar</div>
+            <h3 className="font-outfit text-xl font-semibold mb-1 mt-1">Editar pagamento</h3>
+            <p className="text-xs text-slate-500 mb-5">
+              {new Date(editPay.created_at).toLocaleString("pt-PT")}
+              {editPay.points_used ? ` · ${editPay.points_used} pts descontados` : ""}
+            </p>
+            <form onSubmit={submitEditPay} className="space-y-4">
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Valor em numerário €</label>
+                <input
+                  data-testid="edit-payment-amount-input"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  required
+                  value={editPayForm.amount}
+                  onChange={(e) => setEditPayForm({ ...editPayForm, amount: e.target.value })}
+                  className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white text-lg font-bold focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                />
+                <p className="text-[11px] text-slate-500 mt-1">Descrição do pagamento — usa a nota para indicar a que itens / vendas se refere.</p>
+              </div>
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Nota / Descrição</label>
+                <input
+                  data-testid="edit-payment-note-input"
+                  value={editPayForm.note}
+                  onChange={(e) => setEditPayForm({ ...editPayForm, note: e.target.value })}
+                  placeholder="Ex: refere-se aos consumos de 12/02..."
+                  className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                />
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  data-testid="delete-payment-btn"
+                  onClick={() => deletePayment(editPay)}
+                  className="px-4 py-2.5 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 font-medium flex items-center gap-2"
+                >
+                  <Trash size={16} weight="bold" /> Eliminar
+                </button>
+                <button type="button" onClick={() => setEditPay(null)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Cancelar</button>
+                <button data-testid="edit-payment-submit-btn" type="submit" className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold">
+                  Guardar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showReport && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+          onClick={() => setShowReport(false)}
+          data-testid="report-modal"
+        >
+          <div
+            className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-amber-400/80">Contabilidade</div>
+            <h3 className="font-outfit text-xl font-semibold mb-5 mt-1">Imprimir conta-corrente</h3>
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">De</label>
+                <input
+                  data-testid="report-from-input"
+                  type="date"
+                  value={reportRange.from}
+                  onChange={(e) => setReportRange({ ...reportRange, from: e.target.value })}
+                  className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Até</label>
+                <input
+                  data-testid="report-to-input"
+                  type="date"
+                  value={reportRange.to}
+                  onChange={(e) => setReportRange({ ...reportRange, to: e.target.value })}
+                  className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-2 mb-4">
+              <button
+                type="button"
+                data-testid="report-preset-month"
+                onClick={() => {
+                  const t = new Date().toISOString().slice(0, 10);
+                  setReportRange({ from: t.slice(0, 7) + "-01", to: t });
+                }}
+                className="text-xs px-2 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700"
+              >
+                Este mês
+              </button>
+              <button
+                type="button"
+                data-testid="report-preset-year"
+                onClick={() => {
+                  const t = new Date().toISOString().slice(0, 10);
+                  setReportRange({ from: t.slice(0, 4) + "-01-01", to: t });
+                }}
+                className="text-xs px-2 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700"
+              >
+                Este ano
+              </button>
+              <button
+                type="button"
+                data-testid="report-preset-all"
+                onClick={() => setReportRange({ from: "", to: "" })}
+                className="text-xs px-2 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700"
+              >
+                Sempre
+              </button>
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button type="button" onClick={() => setShowReport(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Cancelar</button>
+              <button data-testid="report-print-btn" onClick={printReport} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold flex items-center justify-center gap-2">
+                <Printer size={16} weight="bold" /> Imprimir
               </button>
             </div>
           </div>
