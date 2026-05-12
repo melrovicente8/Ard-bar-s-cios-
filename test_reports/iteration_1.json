@@ -1,0 +1,28 @@
+{
+  "summary": "Backend: 8/8 pytest passing (auth, products CRUD+replenish, clients CRUD+detail, sales flow with stock decrement & client balance increment, insufficient-stock 400, payments decrement balance, dashboard structure, logout). Frontend: login -> dashboard with all KPIs and low-stock panel renders; Vender flow (add to cart, select client, Registar venda) succeeded -> dashboard recent sales shows new sale 8,00 EUR; Stock add product + Carregar (replenish) both show success toasts; Ficha do Cliente reachable; logout returns to login. Currency formatted as pt-PT EUR throughout. No critical bugs found.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard 7-day chart", "issues": ["Recharts emits width(-1)/height(-1) warning on initial mount; chart still renders. Could add minWidth/minHeight or aspect to ResponsiveContainer to silence."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_bar_api.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Optional: stabilize Recharts ResponsiveContainer to remove width/height(-1) console warnings.",
+    "Note: CORS uses allow_origins='*' combined with allow_credentials=True; browsers reject credentialed requests with wildcard. Currently OK because frontend is same-origin via ingress, but set CORS_ORIGINS to explicit origin for safety."
+  ],
+  "critical_code_review_comments": [
+    "server.py: set_auth_cookie hardcodes secure=True & samesite='none'. Fine for HTTPS preview; would break local HTTP dev.",
+    "Sales create: stock decrement & client balance update are not transactional; partial failure could leave inconsistent state. Acceptable for MVP, consider Mongo transaction.",
+    "CORS allow_origins fallback is '*' with allow_credentials=True — browsers will refuse credentialed XHR with wildcard. Recommend setting CORS_ORIGINS in .env explicitly."
+  ],
+  "updated_files": ["/app/backend/tests/test_bar_api.py"],
+  "success_rate": {"backend": "100%", "frontend": "95%"},
+  "test_credentials": "admin@bar.pt / admin123 (seeded)",
+  "seed_data_creation": "Test created and cleaned up TEST_ prefixed products/clients via pytest; UI test created one TEST_UI client and one TEST_UI product (not cleaned up) and recorded one 8,00 EUR sale. Minor residual data.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All endpoints under /api are working with httpOnly cookie auth. Frontend data-testids match the spec. Use /app/backend/tests/test_bar_api.py for regression."
+}
