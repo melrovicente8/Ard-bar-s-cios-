@@ -1,15 +1,18 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
-import { Plus, User, ArrowRight, MagnifyingGlass, Trash } from "@phosphor-icons/react";
+import { Plus, User, ArrowRight, MagnifyingGlass, Trash, Medal } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { useAuth } from "../context/AuthContext";
 
 export default function Clientes() {
+  const { user } = useAuth();
+  const canDelete = user?.role === "admin";
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [search, setSearch] = useState("");
-  const [form, setForm] = useState({ name: "", contact: "", email: "", note: "" });
+  const [form, setForm] = useState({ name: "", contact: "", email: "", note: "", member_number: "", is_member: false });
 
   const load = async () => {
     setLoading(true);
@@ -33,9 +36,11 @@ export default function Clientes() {
         contact: form.contact || null,
         email: form.email || null,
         note: form.note || null,
+        member_number: form.member_number || null,
+        is_member: !!form.is_member,
       });
       toast.success("Cliente adicionado");
-      setForm({ name: "", contact: "", email: "", note: "" });
+      setForm({ name: "", contact: "", email: "", note: "", member_number: "", is_member: false });
       setShowAdd(false);
       await load();
     } catch (e) {
@@ -117,32 +122,52 @@ export default function Clientes() {
                     {c.name[0]?.toUpperCase()}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="font-outfit text-lg font-semibold truncate">{c.name}</div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-outfit text-lg font-semibold truncate">{c.name}</span>
+                      {c.is_member ? (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-500/15 text-green-300 border border-green-500/30 flex items-center gap-1">
+                          <Medal size={11} weight="fill" /> Sócio
+                          {c.member_number ? ` nº ${c.member_number}` : ""}
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-700/50 text-slate-300 border border-slate-600/30">
+                          Não-sócio
+                        </span>
+                      )}
+                    </div>
                     {c.contact && <div className="text-xs text-slate-500 truncate">{c.contact}</div>}
                     {c.email && <div className="text-xs text-slate-500 truncate">{c.email}</div>}
                   </div>
                 </div>
 
-                <div className="mt-4 grid grid-cols-2 gap-3">
-                  <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
+                <div className="mt-4 grid grid-cols-3 gap-2">
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-2.5">
+                    <div className="text-[9px] font-bold uppercase tracking-[0.15em] text-slate-500">
                       A pagar
                     </div>
                     <div
                       data-testid={`client-debt-${c.id}`}
-                      className={`mt-1 font-outfit text-lg font-bold ${
+                      className={`mt-1 font-outfit text-base font-bold ${
                         debt ? "text-rose-400" : "text-emerald-400"
                       }`}
                     >
                       {euro(Math.max(c.balance || 0, 0))}
                     </div>
                   </div>
-                  <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3">
-                    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
+                  <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-2.5">
+                    <div className="text-[9px] font-bold uppercase tracking-[0.15em] text-slate-500">
                       Total
                     </div>
-                    <div className="mt-1 font-outfit text-lg font-bold text-slate-200">
+                    <div className="mt-1 font-outfit text-base font-bold text-slate-200">
                       {euro(c.total_spent || 0)}
+                    </div>
+                  </div>
+                  <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-2.5">
+                    <div className="text-[9px] font-bold uppercase tracking-[0.15em] text-amber-500/80">
+                      Pontos
+                    </div>
+                    <div className="mt-1 font-outfit text-base font-bold text-amber-300">
+                      {c.points || 0}
                     </div>
                   </div>
                 </div>
@@ -155,13 +180,15 @@ export default function Clientes() {
                   >
                     Ficha <ArrowRight size={14} weight="bold" />
                   </Link>
-                  <button
-                    data-testid={`client-delete-${c.id}`}
-                    onClick={() => remove(c)}
-                    className="p-2 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20"
-                  >
-                    <Trash size={14} />
-                  </button>
+                  {canDelete && (
+                    <button
+                      data-testid={`client-delete-${c.id}`}
+                      onClick={() => remove(c)}
+                      className="p-2 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20"
+                    >
+                      <Trash size={14} />
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -224,6 +251,35 @@ export default function Clientes() {
                   onChange={(e) => setForm({ ...form, note: e.target.value })}
                   className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
                 />
+              </div>
+              <div className="grid grid-cols-2 gap-3 items-end">
+                <div>
+                  <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
+                    Nº de Sócio
+                  </label>
+                  <input
+                    data-testid="new-client-member-number-input"
+                    value={form.member_number}
+                    onChange={(e) => setForm({ ...form, member_number: e.target.value })}
+                    className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                    placeholder="Ex: 1234"
+                  />
+                </div>
+                <label className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-green-600/40">
+                  <input
+                    data-testid="new-client-is-member-toggle"
+                    type="checkbox"
+                    checked={form.is_member}
+                    onChange={(e) => setForm({ ...form, is_member: e.target.checked })}
+                    className="w-4 h-4 accent-green-500"
+                  />
+                  <span className="text-xs font-medium text-slate-200">
+                    Sócio com cotas pagas
+                  </span>
+                </label>
+              </div>
+              <div className="text-[11px] text-slate-500 -mt-2">
+                Sócio com cotas pagas ganha 1 ponto por cada 5€. Caso contrário, 1 ponto por cada 10€.
               </div>
               <div className="flex gap-2 pt-2">
                 <button

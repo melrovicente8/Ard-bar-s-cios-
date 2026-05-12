@@ -1,10 +1,12 @@
 import React, { useState } from "react";
 import { useAuth } from "../context/AuthContext";
-import { Wine, SignIn } from "@phosphor-icons/react";
+import { SignIn, SoccerBall } from "@phosphor-icons/react";
+
+const ARD_LOGO = "https://customer-assets.emergentagent.com/job_inventory-bar-app/artifacts/4pd029nv_image.png";
 
 export default function Login() {
   const { login } = useAuth();
-  const [email, setEmail] = useState("admin@bar.pt");
+  const [email, setEmail] = useState("admin@ard.pt");
   const [password, setPassword] = useState("admin123");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -28,24 +30,33 @@ export default function Login() {
         className="hidden lg:flex w-1/2 relative bg-cover bg-center"
         style={{
           backgroundImage:
-            "linear-gradient(rgba(2,6,23,0.55), rgba(2,6,23,0.85)), url('https://images.unsplash.com/photo-1776774984185-91c34b326420?crop=entropy&cs=srgb&fm=jpg&q=85&w=1400')",
+            "linear-gradient(rgba(2,6,23,0.75), rgba(2,6,23,0.92)), url('" + ARD_LOGO + "')",
         }}
       >
         <div className="absolute inset-0 flex flex-col justify-end p-12">
           <div className="flex items-center gap-3 mb-6">
-            <Wine size={36} weight="duotone" className="text-amber-500" />
-            <span className="font-outfit text-2xl font-bold tracking-tight">
-              Cellar<span className="text-amber-500">.</span>
-            </span>
+            <div className="w-12 h-12 rounded-lg bg-green-600/90 border-2 border-amber-400 flex items-center justify-center">
+              <SoccerBall size={28} weight="duotone" className="text-amber-400" />
+            </div>
+            <div>
+              <div className="font-outfit text-2xl font-bold tracking-tight leading-tight">
+                ARD<span className="text-amber-400">.</span>
+              </div>
+              <div className="text-[10px] uppercase tracking-[0.25em] text-slate-400 -mt-0.5">
+                Nespereira · Bar
+              </div>
+            </div>
           </div>
           <h2 className="font-outfit text-5xl font-bold leading-tight max-w-md">
-            O teu bar.<br />
-            <span className="text-amber-500">Sob controlo.</span>
+            <span className="text-amber-400">Associação</span><br />
+            Recreativa e Desportiva
           </h2>
           <p className="text-slate-400 mt-4 max-w-md text-base">
-            Gestão de stock, vendas e contas correntes — feito para quem está
-            atrás do balcão.
+            Gestão de stock, vendas, sócios e pontos do bar do clube.
           </p>
+          <div className="mt-6 text-[10px] uppercase tracking-[0.3em] text-slate-500">
+            Fundado a 1 de Maio de 1982
+          </div>
         </div>
       </div>
 
@@ -57,10 +68,17 @@ export default function Login() {
           data-testid="login-form"
         >
           <div className="lg:hidden flex items-center gap-3 mb-8">
-            <Wine size={32} weight="duotone" className="text-amber-500" />
-            <span className="font-outfit text-xl font-bold tracking-tight">
-              Cellar<span className="text-amber-500">.</span>
-            </span>
+            <div className="w-10 h-10 rounded-lg bg-green-600 border-2 border-amber-400 flex items-center justify-center">
+              <SoccerBall size={22} weight="duotone" className="text-amber-400" />
+            </div>
+            <div>
+              <div className="font-outfit text-xl font-bold tracking-tight leading-tight">
+                ARD<span className="text-amber-400">.</span>
+              </div>
+              <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500 -mt-0.5">
+                Nespereira
+              </div>
+            </div>
           </div>
 
           <div>
@@ -123,7 +141,7 @@ export default function Login() {
           </button>
 
           <p className="text-xs text-slate-500 text-center">
-            Credenciais de demonstração: admin@bar.pt / admin123
+            Demo: admin@ard.pt / admin123 · tesoureiro@ard.pt / tesoureiro123 · func1@ard.pt / func123
           </p>
         </form>
       </div>

@@ -1,7 +1,17 @@
 import React, { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
-import { ArrowLeft, CurrencyEur, ShoppingBag, Receipt } from "@phosphor-icons/react";
+import {
+  ArrowLeft,
+  CurrencyEur,
+  ShoppingBag,
+  Receipt,
+  Medal,
+  WhatsappLogo,
+  EnvelopeSimple,
+  ChatCircleText,
+  Star,
+} from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 export default function ClienteFicha() {
@@ -10,6 +20,7 @@ export default function ClienteFicha() {
   const [loading, setLoading] = useState(true);
   const [showPay, setShowPay] = useState(false);
   const [payForm, setPayForm] = useState({ amount: "", note: "" });
+  const [notifyPayment, setNotifyPayment] = useState(null); // payment object after success
 
   const load = async () => {
     setLoading(true);
@@ -30,7 +41,7 @@ export default function ClienteFicha() {
   const submitPay = async (e) => {
     e.preventDefault();
     try {
-      await api.post("/payments", {
+      const { data: payment } = await api.post("/payments", {
         client_id: id,
         amount: parseFloat(payForm.amount),
         note: payForm.note || null,
@@ -38,6 +49,26 @@ export default function ClienteFicha() {
       toast.success("Pagamento registado");
       setShowPay(false);
       await load();
+      // Open notify modal
+      setNotifyPayment(payment);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const sendNotification = async (channel) => {
+    try {
+      const { data } = await api.post("/notify/payment", {
+        payment_id: notifyPayment.id,
+        channel,
+      });
+      if (channel === "email") {
+        if (data.sent) toast.success(`Email enviado para ${data.to}`);
+        else toast.message("Resend não está configurado", { description: "Adiciona RESEND_API_KEY para ativar envio automático." });
+      } else if (data.url) {
+        window.open(data.url, "_blank");
+        toast.success(`A abrir ${channel === "whatsapp" ? "WhatsApp" : "SMS"}...`);
+      }
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
@@ -74,9 +105,21 @@ export default function ClienteFicha() {
             <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">
               Ficha do cliente
             </div>
-            <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight" data-testid="ficha-client-name">
-              {c.name}
-            </h1>
+            <div className="flex items-center gap-3 mt-1 flex-wrap">
+              <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight" data-testid="ficha-client-name">
+                {c.name}
+              </h1>
+              {c.is_member ? (
+                <span className="px-3 py-1 rounded-full text-xs font-bold bg-green-500/15 text-green-300 border border-green-500/30 flex items-center gap-1.5">
+                  <Medal size={14} weight="fill" />
+                  Sócio {c.member_number ? `nº ${c.member_number}` : ""}
+                </span>
+              ) : (
+                <span className="px-3 py-1 rounded-full text-xs font-bold bg-slate-700/50 text-slate-300 border border-slate-600/30">
+                  Não-sócio
+                </span>
+              )}
+            </div>
             {(c.contact || c.email) && (
               <div className="text-sm text-slate-400 mt-1">
                 {c.contact}
@@ -96,31 +139,42 @@ export default function ClienteFicha() {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8">
-        <div className="bg-gradient-to-br from-amber-500/10 to-amber-500/5 border border-amber-500/20 rounded-xl p-6">
-          <div className="text-xs font-bold uppercase tracking-[0.2em] text-amber-500/80">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        <div className="bg-gradient-to-br from-amber-500/10 to-amber-500/5 border border-amber-500/20 rounded-xl p-5">
+          <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-500/80">
             A pagar
           </div>
           <div
             data-testid="ficha-debt"
-            className="mt-3 font-outfit text-4xl font-bold text-amber-300"
+            className="mt-2 font-outfit text-3xl font-bold text-amber-300"
           >
             {euro(debt)}
           </div>
         </div>
-        <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-6">
-          <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">
+        <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5">
+          <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
             Total consumido
           </div>
-          <div className="mt-3 font-outfit text-4xl font-bold text-slate-200">
+          <div className="mt-2 font-outfit text-3xl font-bold text-slate-200">
             {euro(c.total_spent || 0)}
           </div>
         </div>
-        <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-6">
-          <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">
+        <div className="bg-gradient-to-br from-green-600/10 to-green-600/5 border border-green-500/20 rounded-xl p-5">
+          <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-green-400/80 flex items-center gap-1.5">
+            <Star size={11} weight="fill" /> Pontos
+          </div>
+          <div data-testid="ficha-points" className="mt-2 font-outfit text-3xl font-bold text-green-300">
+            {c.points || 0}
+          </div>
+          <div className="text-[10px] text-slate-500 mt-1">
+            {c.is_member ? "1 pt cada 5€" : "1 pt cada 10€"}
+          </div>
+        </div>
+        <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5">
+          <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
             Vendas
           </div>
-          <div className="mt-3 font-outfit text-4xl font-bold text-slate-200">
+          <div className="mt-2 font-outfit text-3xl font-bold text-slate-200">
             {sales.length}
           </div>
         </div>
@@ -142,13 +196,20 @@ export default function ClienteFicha() {
                   key={s.id}
                   className="bg-slate-950/60 border border-slate-800 rounded-lg p-4"
                 >
-                  <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
                     <span className="text-xs text-slate-500">
                       {new Date(s.created_at).toLocaleString("pt-PT")}
                     </span>
-                    <span className="font-outfit text-lg font-bold text-amber-400">
-                      {euro(s.total)}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      {s.points_earned > 0 && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-500/15 text-green-300 border border-green-500/30 flex items-center gap-1">
+                          <Star size={10} weight="fill" /> +{s.points_earned} pts
+                        </span>
+                      )}
+                      <span className="font-outfit text-lg font-bold text-amber-400">
+                        {euro(s.total)}
+                      </span>
+                    </div>
                   </div>
                   <ul className="text-sm text-slate-300 space-y-1">
                     {s.items.map((it, i) => (
@@ -262,6 +323,71 @@ export default function ClienteFicha() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {notifyPayment && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+          onClick={() => setNotifyPayment(null)}
+          data-testid="notify-modal"
+        >
+          <div
+            className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80">
+              Pagamento confirmado
+            </div>
+            <h3 className="font-outfit text-2xl font-semibold mt-1 mb-1">
+              Enviar recibo?
+            </h3>
+            <p className="text-sm text-slate-400 mb-5">
+              {euro(notifyPayment.amount)} de {c.name}. Pontos atuais: {c.points || 0}.
+            </p>
+            <div className="space-y-2">
+              <button
+                data-testid="notify-whatsapp-btn"
+                onClick={() => sendNotification("whatsapp")}
+                disabled={!c.contact}
+                className="w-full flex items-center justify-between px-4 py-3 rounded-lg bg-green-600/10 border border-green-500/30 text-green-300 hover:bg-green-600/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <span className="flex items-center gap-3 font-medium">
+                  <WhatsappLogo size={20} weight="fill" /> Enviar por WhatsApp
+                </span>
+                <span className="text-xs text-slate-400">{c.contact || "sem contacto"}</span>
+              </button>
+              <button
+                data-testid="notify-sms-btn"
+                onClick={() => sendNotification("sms")}
+                disabled={!c.contact}
+                className="w-full flex items-center justify-between px-4 py-3 rounded-lg bg-sky-600/10 border border-sky-500/30 text-sky-300 hover:bg-sky-600/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <span className="flex items-center gap-3 font-medium">
+                  <ChatCircleText size={20} weight="duotone" /> Enviar SMS
+                </span>
+                <span className="text-xs text-slate-400">{c.contact || "sem contacto"}</span>
+              </button>
+              <button
+                data-testid="notify-email-btn"
+                onClick={() => sendNotification("email")}
+                disabled={!c.email}
+                className="w-full flex items-center justify-between px-4 py-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 hover:bg-amber-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <span className="flex items-center gap-3 font-medium">
+                  <EnvelopeSimple size={20} weight="duotone" /> Enviar Email
+                </span>
+                <span className="text-xs text-slate-400">{c.email || "sem email"}</span>
+              </button>
+            </div>
+            <button
+              onClick={() => setNotifyPayment(null)}
+              data-testid="notify-skip-btn"
+              className="w-full mt-4 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium"
+            >
+              Saltar
+            </button>
           </div>
         </div>
       )}

@@ -9,6 +9,7 @@ import logging
 import uuid
 import jwt
 import bcrypt
+import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, status
@@ -16,17 +17,30 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
 
+try:
+    import resend
+except Exception:
+    resend = None
+
 # ---------- DB ----------
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 # ---------- App ----------
-app = FastAPI(title="Bar Stock Manager")
+app = FastAPI(title="ARD Nespereira · Bar Manager")
 api_router = APIRouter(prefix="/api")
 
 JWT_ALGORITHM = "HS256"
 JWT_SECRET = os.environ["JWT_SECRET"]
+CLUB_NAME = os.environ.get("CLUB_NAME", "ARD Nespereira")
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
+
+if resend and RESEND_API_KEY:
+    resend.api_key = RESEND_API_KEY
+
+ROLES = {"admin", "tesoureiro", "funcionario"}
 
 # ---------- Models ----------
 class UserOut(BaseModel):
@@ -71,12 +85,16 @@ class ClientIn(BaseModel):
     contact: Optional[str] = None
     email: Optional[str] = None
     note: Optional[str] = None
+    member_number: Optional[str] = None
+    is_member: bool = False  # sócio com cotas pagas
 
 class ClientUpdate(BaseModel):
     name: Optional[str] = None
     contact: Optional[str] = None
     email: Optional[str] = None
     note: Optional[str] = None
+    member_number: Optional[str] = None
+    is_member: Optional[bool] = None
 
 class SaleItemIn(BaseModel):
     product_id: str
@@ -90,6 +108,10 @@ class PaymentIn(BaseModel):
     client_id: str
     amount: float
     note: Optional[str] = None
+
+class NotifyPaymentIn(BaseModel):
+    payment_id: str
+    channel: str  # "email" | "whatsapp" | "sms"
 
 # ---------- Auth helpers ----------
 def hash_password(pw: str) -> str:
@@ -142,6 +164,28 @@ def set_auth_cookie(response: Response, token: str):
         path="/",
     )
 
+def require_role(*allowed_roles):
+    """Dependency factory: ensure current user has one of allowed_roles."""
+    async def _checker(user: dict = Depends(get_current_user)):
+        if user.get("role") not in allowed_roles:
+            raise HTTPException(status_code=403, detail="Sem permissão para esta ação")
+        return user
+    return _checker
+
+async def send_email(to: str, subject: str, html: str) -> bool:
+    """Send email via Resend. Returns False (gracefully) if not configured."""
+    if not resend or not RESEND_API_KEY:
+        logger_local = logging.getLogger(__name__)
+        logger_local.info("Email skipped (Resend não configurado) → %s | %s", to, subject)
+        return False
+    try:
+        params = {"from": SENDER_EMAIL, "to": [to], "subject": subject, "html": html}
+        result = await asyncio.to_thread(resend.Emails.send, params)
+        return bool(result.get("id"))
+    except Exception as e:
+        logging.getLogger(__name__).warning("Resend send failed: %s", e)
+        return False
+
 # ---------- Auth routes ----------
 @api_router.post("/auth/register", response_model=UserOut)
 async def register(body: RegisterIn, response: Response):
@@ -189,7 +233,7 @@ async def list_products(user: dict = Depends(get_current_user)):
     return items
 
 @api_router.post("/products")
-async def create_product(body: ProductIn, user: dict = Depends(get_current_user)):
+async def create_product(body: ProductIn, user: dict = Depends(require_role("admin", "tesoureiro"))):
     pid = str(uuid.uuid4())
     doc = {
         "id": pid,
@@ -206,7 +250,7 @@ async def create_product(body: ProductIn, user: dict = Depends(get_current_user)
     return doc
 
 @api_router.put("/products/{product_id}")
-async def update_product(product_id: str, body: ProductUpdate, user: dict = Depends(get_current_user)):
+async def update_product(product_id: str, body: ProductUpdate, user: dict = Depends(require_role("admin", "tesoureiro"))):
     update = {k: v for k, v in body.model_dump().items() if v is not None}
     if not update:
         raise HTTPException(status_code=400, detail="Nada para atualizar")
@@ -217,14 +261,14 @@ async def update_product(product_id: str, body: ProductUpdate, user: dict = Depe
     return doc
 
 @api_router.delete("/products/{product_id}")
-async def delete_product(product_id: str, user: dict = Depends(get_current_user)):
+async def delete_product(product_id: str, user: dict = Depends(require_role("admin"))):
     res = await db.products.delete_one({"id": product_id})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
     return {"ok": True}
 
 @api_router.post("/products/replenish")
-async def replenish_stock(body: StockReplenishIn, user: dict = Depends(get_current_user)):
+async def replenish_stock(body: StockReplenishIn, user: dict = Depends(require_role("admin", "tesoureiro"))):
     prod = await db.products.find_one({"id": body.product_id})
     if not prod:
         raise HTTPException(status_code=404, detail="Produto não encontrado")
@@ -266,6 +310,9 @@ async def create_client(body: ClientIn, user: dict = Depends(get_current_user)):
         "contact": body.contact,
         "email": body.email,
         "note": body.note,
+        "member_number": body.member_number,
+        "is_member": bool(body.is_member),
+        "points": 0,
         "balance": 0.0,
         "total_spent": 0.0,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -279,6 +326,12 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
     update = {k: v for k, v in body.model_dump().items() if v is not None}
     if not update:
         raise HTTPException(status_code=400, detail="Nada para atualizar")
+    # Funcionários só podem editar contacto e email; admin/tesoureiro tudo.
+    if user.get("role") == "funcionario":
+        allowed = {"contact", "email"}
+        update = {k: v for k, v in update.items() if k in allowed}
+        if not update:
+            raise HTTPException(status_code=403, detail="Funcionários só podem editar contacto e email")
     res = await db.clients.update_one({"id": client_id}, {"$set": update})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
@@ -286,7 +339,7 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
     return doc
 
 @api_router.delete("/clients/{client_id}")
-async def delete_client(client_id: str, user: dict = Depends(get_current_user)):
+async def delete_client(client_id: str, user: dict = Depends(require_role("admin"))):
     res = await db.clients.delete_one({"id": client_id})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
@@ -336,21 +389,26 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
         await db.products.update_one({"id": it.product_id}, {"$inc": {"quantity": -int(it.quantity)}})
 
     sale_id = str(uuid.uuid4())
+    # Points: 1 ponto por cada 5€ se sócio com cotas pagas, senão por cada 10€
+    points_step = 5.0 if client_doc.get("is_member") else 10.0
+    points_earned = int(total // points_step)
     sale_doc = {
         "id": sale_id,
         "client_id": body.client_id,
         "client_name": client_doc["name"],
         "items": line_items,
         "total": total,
+        "points_earned": points_earned,
+        "is_member_at_sale": bool(client_doc.get("is_member", False)),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "user_email": user["email"],
     }
     await db.sales.insert_one(sale_doc)
 
-    # update client balance and total spent
+    # update client balance, total spent, and points
     await db.clients.update_one(
         {"id": body.client_id},
-        {"$inc": {"balance": total, "total_spent": total}},
+        {"$inc": {"balance": total, "total_spent": total, "points": points_earned}},
     )
     sale_doc.pop("_id", None)
     return sale_doc
@@ -429,6 +487,81 @@ async def dashboard(user: dict = Depends(get_current_user)):
         "recent_sales": recent_sales,
     }
 
+# ---------- Admin Directory ----------
+@api_router.get("/admin/clients")
+async def admin_clients_directory(user: dict = Depends(require_role("admin"))):
+    clients = await db.clients.find({}, {"_id": 0}).sort("name", 1).to_list(5000)
+    # enrich with stats already on the doc (balance, total_spent, points)
+    return clients
+
+# ---------- Notifications ----------
+def _build_payment_message(client_doc: dict, payment: dict, total_balance_after: float) -> dict:
+    pts = client_doc.get("points", 0)
+    member_line = f" (Sócio nº {client_doc.get('member_number')})" if client_doc.get("is_member") and client_doc.get("member_number") else ""
+    text = (
+        f"Olá {client_doc['name']}{member_line},\n\n"
+        f"Recebemos o seu pagamento de {payment['amount']:.2f} € no bar da {CLUB_NAME}.\n"
+        f"Saldo em dívida: {max(total_balance_after, 0):.2f} €.\n"
+        f"Pontos acumulados: {pts}.\n\n"
+        f"Obrigado!\n— {CLUB_NAME}"
+    )
+    html = (
+        f"<div style='font-family:Arial,sans-serif;max-width:520px;color:#111'>"
+        f"<div style='background:#15803d;color:#fef3c7;padding:18px 22px;border-radius:8px 8px 0 0'>"
+        f"<div style='font-size:12px;letter-spacing:.2em'>ARD · NESPEREIRA</div>"
+        f"<div style='font-size:22px;font-weight:700;margin-top:4px'>Recibo de pagamento</div>"
+        f"</div>"
+        f"<div style='border:1px solid #e5e7eb;border-top:0;padding:22px;border-radius:0 0 8px 8px'>"
+        f"<p>Olá <strong>{client_doc['name']}</strong>{member_line},</p>"
+        f"<p>Recebemos o seu pagamento de <strong>{payment['amount']:.2f} €</strong>.</p>"
+        f"<table style='width:100%;border-collapse:collapse;margin:14px 0'>"
+        f"<tr><td style='padding:8px;background:#f9fafb'>Saldo em dívida</td><td style='padding:8px;text-align:right;background:#f9fafb'><strong>{max(total_balance_after,0):.2f} €</strong></td></tr>"
+        f"<tr><td style='padding:8px'>Pontos acumulados</td><td style='padding:8px;text-align:right'><strong>{pts} pts</strong></td></tr>"
+        f"</table>"
+        f"<p style='color:#6b7280;font-size:13px'>Obrigado pela sua preferência.<br/>— {CLUB_NAME}</p>"
+        f"</div></div>"
+    )
+    return {"text": text, "html": html}
+
+@api_router.post("/notify/payment")
+async def notify_payment(body: NotifyPaymentIn, user: dict = Depends(get_current_user)):
+    payment = await db.payments.find_one({"id": body.payment_id}, {"_id": 0})
+    if not payment:
+        raise HTTPException(status_code=404, detail="Pagamento não encontrado")
+    c = await db.clients.find_one({"id": payment["client_id"]}, {"_id": 0})
+    if not c:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+
+    msg = _build_payment_message(c, payment, c.get("balance", 0))
+    subject = f"Recibo de pagamento · {CLUB_NAME}"
+
+    channel = body.channel.lower()
+    if channel == "email":
+        if not c.get("email"):
+            raise HTTPException(status_code=400, detail="Cliente não tem email")
+        sent = await send_email(c["email"], subject, msg["html"])
+        return {
+            "channel": "email",
+            "sent": sent,
+            "to": c["email"],
+            "note": "Email enviado." if sent else "Resend não configurado — adiciona RESEND_API_KEY para ativar.",
+        }
+    if channel == "whatsapp":
+        if not c.get("contact"):
+            raise HTTPException(status_code=400, detail="Cliente não tem contacto")
+        phone = "".join(ch for ch in c["contact"] if ch.isdigit())
+        import urllib.parse
+        url = f"https://wa.me/{phone}?text={urllib.parse.quote(msg['text'])}"
+        return {"channel": "whatsapp", "url": url, "phone": phone}
+    if channel == "sms":
+        if not c.get("contact"):
+            raise HTTPException(status_code=400, detail="Cliente não tem contacto")
+        phone = c["contact"]
+        import urllib.parse
+        url = f"sms:{phone}?body={urllib.parse.quote(msg['text'])}"
+        return {"channel": "sms", "url": url, "phone": phone}
+    raise HTTPException(status_code=400, detail="Canal inválido")
+
 # ---------- Bootstrap ----------
 @app.on_event("startup")
 async def on_startup():
@@ -438,24 +571,40 @@ async def on_startup():
     await db.clients.create_index("id", unique=True)
     await db.sales.create_index("created_at")
 
-    # seed admin
-    admin_email = os.environ.get("ADMIN_EMAIL", "admin@bar.pt").lower()
-    admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
-    existing = await db.users.find_one({"email": admin_email})
-    if existing is None:
-        await db.users.insert_one({
-            "id": str(uuid.uuid4()),
-            "email": admin_email,
-            "name": "Admin",
-            "role": "admin",
-            "password_hash": hash_password(admin_password),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
-    elif not verify_password(admin_password, existing["password_hash"]):
-        await db.users.update_one(
-            {"email": admin_email},
-            {"$set": {"password_hash": hash_password(admin_password)}}
-        )
+    # seed users (admin + tesoureiro + 3 funcionários)
+    seed_list = [
+        {"email": os.environ.get("ADMIN_EMAIL", "admin@ard.pt").lower(),
+         "password": os.environ.get("ADMIN_PASSWORD", "admin123"),
+         "name": "Administrador", "role": "admin"},
+        {"email": "tesoureiro@ard.pt", "password": "tesoureiro123",
+         "name": "Tesoureiro", "role": "tesoureiro"},
+        {"email": "func1@ard.pt", "password": "func123",
+         "name": "Funcionário 1", "role": "funcionario"},
+        {"email": "func2@ard.pt", "password": "func123",
+         "name": "Funcionário 2", "role": "funcionario"},
+        {"email": "func3@ard.pt", "password": "func123",
+         "name": "Funcionário 3", "role": "funcionario"},
+    ]
+    for u in seed_list:
+        existing = await db.users.find_one({"email": u["email"]})
+        if existing is None:
+            await db.users.insert_one({
+                "id": str(uuid.uuid4()),
+                "email": u["email"],
+                "name": u["name"],
+                "role": u["role"],
+                "password_hash": hash_password(u["password"]),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+        else:
+            # keep password in sync with seed config; ensure role is set
+            updates = {}
+            if existing.get("role") != u["role"]:
+                updates["role"] = u["role"]
+            if not verify_password(u["password"], existing.get("password_hash", "")):
+                updates["password_hash"] = hash_password(u["password"])
+            if updates:
+                await db.users.update_one({"email": u["email"]}, {"$set": updates})
 
 @app.on_event("shutdown")
 async def on_shutdown():

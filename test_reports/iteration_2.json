@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 2 testing PASSED end-to-end. Backend: 18/18 pytest passing (roles, permissions, member fields, points rules for sócio and não-sócio, notify endpoints for email/whatsapp/sms with validation). Frontend: ARD branding visible, role badges correct (Administrador / Funcionário), Sócios nav only for admin, Stock page correctly gates buttons for funcionário ('Apenas visualização' on 9 rows, no edit/replenish/delete), Clientes new-client modal has member_number + 'Sócio com cotas pagas' toggle, green Sócio nº badge renders on cards, Ficha do Cliente shows Pontos card with rule '1pt cada 5€' and +2pts indicator on member sale, payment flow opens notify modal (Enviar recibo?) with WhatsApp/SMS/Email actions — Email click shows 'Resend não configurado' toast, WhatsApp click shows 'A abrir WhatsApp' toast. Sócios admin page lists 8 rows with per-row WA buttons and bulk msg modal containing wa/sms/email options.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard 7-day chart", "issues": ["Recharts still emits width(-1)/height(-1) warnings on initial mount (carry-over from iter1)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter2_roles_points_notify.py",
+    "/app/backend/tests/test_bar_api.py",
+    "/app/test_reports/pytest/iter2_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL — Funcionário accessing /socios directly still renders the Sócios page (frontend) and the GET /api/admin/clients returns 403 silently (table stays empty). Spec accepts this. If stricter UX desired, add a route guard in App.js for /socios that redirects non-admin to /.",
+    "OPTIONAL — Add CORS_ORIGINS explicit value (still '*' with allow_credentials=True; OK because same-origin via ingress).",
+    "OPTIONAL — Silence Recharts width/height(-1) warnings (set minWidth/minHeight on ResponsiveContainer)."
+  ],
+  "critical_code_review_comments": [
+    "server.py update_client(): when a funcionário sends a body with no allowed fields (e.g. only 'name'), the code raises 403 — correct per spec. Be aware the call still succeeds (200) when 'name' is sent together with 'contact'/'email' because those allowed fields get applied and the disallowed ones are silently dropped; matches spec but could surprise integrators. Consider returning a warning in the response payload listing dropped fields.",
+    "server.py notify_payment(): WhatsApp/SMS endpoints return raw `url` for the client to open; the frontend opens it client-side. No server-side rate limiting on /api/notify/payment — low risk but worth noting.",
+    "server.py: hardcoded secure=True & samesite='none' for cookie (carry-over from iter1). Fine for HTTPS preview.",
+    "server.py seed: keeps password in sync via update — good. But create_index('id', unique=True) on products/clients without sparse — existing docs are fine, just noted."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter2_roles_points_notify.py (new)"
+  ],
+  "success_rate": {"backend": "100% (18/18)", "frontend": "100% on tested flows"},
+  "test_credentials": "admin@ard.pt/admin123, tesoureiro@ard.pt/tesoureiro123, func1@ard.pt/func123 (also func2,func3) — all 5 verified working",
+  "seed_data_creation": "Tests create TEST_ prefixed products/clients and clean them up. UI test left one socio 'TEST_UI_Socio_<ts>' on Ana Ferreira's existing data; also added a 2,00€ payment to Ana Ferreira ficha during notify modal test.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All 5 user roles verified. /api/admin/clients gated to admin. /api/notify/payment supports email (sent:false when RESEND_API_KEY empty — graceful), whatsapp (wa.me URL with digits-only phone), sms (sms: URL). Points rule: members 5€/pt, non-members 10€/pt. Use /app/backend/tests/test_iter2_roles_points_notify.py + /app/backend/tests/test_bar_api.py for regression. Run with REACT_APP_BACKEND_URL exported in env (the file expects it; preview URL works). Ana Ferreira and Cliente Mesa 3 are pre-promoted sócios; Sócios admin page already shows 8 rows.",
+  "rca_of_the_issue": "N/A — no bugs found in iteration 2 scope."
+}

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { Plus, Package, ArrowsClockwise, PencilSimple, Trash } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { useAuth } from "../context/AuthContext";
 
 function Modal({ open, onClose, title, children }) {
   if (!open) return null;
@@ -23,6 +24,9 @@ function Modal({ open, onClose, title, children }) {
 }
 
 export default function Stock() {
+  const { user } = useAuth();
+  const canManage = user?.role === "admin" || user?.role === "tesoureiro";
+  const canDelete = user?.role === "admin";
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
@@ -158,7 +162,8 @@ export default function Stock() {
         <button
           data-testid="add-product-btn"
           onClick={openAdd}
-          className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-5 py-2.5 rounded-lg flex items-center gap-2 transition-colors"
+          disabled={!canManage}
+          className="bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold px-5 py-2.5 rounded-lg flex items-center gap-2 transition-colors"
         >
           <Plus size={18} weight="bold" /> Novo produto
         </button>
@@ -218,27 +223,36 @@ export default function Stock() {
                       </td>
                       <td className="px-5 py-4">
                         <div className="flex items-center justify-end gap-2">
-                          <button
-                            data-testid={`replenish-btn-${p.id}`}
-                            onClick={() => setShowReplenish(p)}
-                            className="px-3 py-1.5 rounded-md text-xs font-medium bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 flex items-center gap-1.5"
-                          >
-                            <ArrowsClockwise size={14} weight="bold" /> Carregar
-                          </button>
-                          <button
-                            data-testid={`edit-btn-${p.id}`}
-                            onClick={() => openEdit(p)}
-                            className="p-2 rounded-md bg-slate-800 hover:bg-slate-700"
-                          >
-                            <PencilSimple size={14} />
-                          </button>
-                          <button
-                            data-testid={`delete-btn-${p.id}`}
-                            onClick={() => remove(p)}
-                            className="p-2 rounded-md bg-rose-500/10 text-rose-400 hover:bg-rose-500/20"
-                          >
-                            <Trash size={14} />
-                          </button>
+                          {canManage && (
+                            <button
+                              data-testid={`replenish-btn-${p.id}`}
+                              onClick={() => setShowReplenish(p)}
+                              className="px-3 py-1.5 rounded-md text-xs font-medium bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 flex items-center gap-1.5"
+                            >
+                              <ArrowsClockwise size={14} weight="bold" /> Carregar
+                            </button>
+                          )}
+                          {canManage && (
+                            <button
+                              data-testid={`edit-btn-${p.id}`}
+                              onClick={() => openEdit(p)}
+                              className="p-2 rounded-md bg-slate-800 hover:bg-slate-700"
+                            >
+                              <PencilSimple size={14} />
+                            </button>
+                          )}
+                          {canDelete && (
+                            <button
+                              data-testid={`delete-btn-${p.id}`}
+                              onClick={() => remove(p)}
+                              className="p-2 rounded-md bg-rose-500/10 text-rose-400 hover:bg-rose-500/20"
+                            >
+                              <Trash size={14} />
+                            </button>
+                          )}
+                          {!canManage && (
+                            <span className="text-xs text-slate-500">Apenas visualização</span>
+                          )}
                         </div>
                       </td>
                     </tr>

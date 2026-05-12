@@ -11,6 +11,7 @@ import Vender from "./pages/Vender";
 import Stock from "./pages/Stock";
 import Clientes from "./pages/Clientes";
 import ClienteFicha from "./pages/ClienteFicha";
+import Socios from "./pages/Socios";
 
 function Protected({ children }) {
   const { user } = useAuth();
@@ -65,6 +66,7 @@ function App() {
               <Route path="stock" element={<Stock />} />
               <Route path="clientes" element={<Clientes />} />
               <Route path="clientes/:id" element={<ClienteFicha />} />
+              <Route path="socios" element={<Socios />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
