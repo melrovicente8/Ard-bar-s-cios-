@@ -39,6 +39,12 @@ function PublicOnly({ children }) {
   return children;
 }
 
+function AdminOnly({ children }) {
+  const { user } = useAuth();
+  if (!user || user.role !== "admin") return <Navigate to="/" replace />;
+  return children;
+}
+
 function App() {
   return (
     <div className="App">
@@ -66,7 +72,10 @@ function App() {
               <Route path="stock" element={<Stock />} />
               <Route path="clientes" element={<Clientes />} />
               <Route path="clientes/:id" element={<ClienteFicha />} />
-              <Route path="socios" element={<Socios />} />
+              <Route
+                path="socios"
+                element={<AdminOnly><Socios /></AdminOnly>}
+              />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
