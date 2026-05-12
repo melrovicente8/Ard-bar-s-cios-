@@ -12,7 +12,7 @@ export default function Clientes() {
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [search, setSearch] = useState("");
-  const [form, setForm] = useState({ name: "", contact: "", email: "", note: "", member_number: "", is_member: false });
+  const [form, setForm] = useState({ name: "", contact: "", email: "", note: "", member_number: "", is_member: false, morada: "", pin: "" });
 
   const load = async () => {
     setLoading(true);
@@ -38,9 +38,11 @@ export default function Clientes() {
         note: form.note || null,
         member_number: form.member_number || null,
         is_member: !!form.is_member,
+        morada: form.morada || null,
+        pin: form.pin || null,
       });
       toast.success("Cliente adicionado");
-      setForm({ name: "", contact: "", email: "", note: "", member_number: "", is_member: false });
+      setForm({ name: "", contact: "", email: "", note: "", member_number: "", is_member: false, morada: "", pin: "" });
       setShowAdd(false);
       await load();
     } catch (e) {
@@ -281,6 +283,32 @@ export default function Clientes() {
               <div className="text-[11px] text-slate-500 -mt-2">
                 Sócio com cotas pagas ganha 1 ponto por cada 5€. Caso contrário, 1 ponto por cada 10€.
               </div>
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
+                  Morada
+                </label>
+                <input
+                  data-testid="new-client-morada-input"
+                  value={form.morada}
+                  onChange={(e) => setForm({ ...form, morada: e.target.value })}
+                  className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                />
+              </div>
+              {(user?.role === "admin" || user?.role === "tesoureiro") && (
+                <div>
+                  <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
+                    PIN do portal de sócio (opcional)
+                  </label>
+                  <input
+                    data-testid="new-client-pin-input"
+                    type="password"
+                    value={form.pin}
+                    onChange={(e) => setForm({ ...form, pin: e.target.value })}
+                    placeholder="Permite ao sócio aceder ao portal /socio/login"
+                    className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50 tracking-widest"
+                  />
+                </div>
+              )}
               <div className="flex gap-2 pt-2">
                 <button
                   type="button"

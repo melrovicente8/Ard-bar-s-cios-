@@ -87,6 +87,8 @@ class ClientIn(BaseModel):
     note: Optional[str] = None
     member_number: Optional[str] = None
     is_member: bool = False  # sócio com cotas pagas
+    morada: Optional[str] = None
+    pin: Optional[str] = None  # set by admin/tesoureiro to enable sócio portal login
 
 class ClientUpdate(BaseModel):
     name: Optional[str] = None
@@ -95,6 +97,8 @@ class ClientUpdate(BaseModel):
     note: Optional[str] = None
     member_number: Optional[str] = None
     is_member: Optional[bool] = None
+    morada: Optional[str] = None
+    pin: Optional[str] = None
 
 class SaleItemIn(BaseModel):
     product_id: str
@@ -112,6 +116,20 @@ class PaymentIn(BaseModel):
 class NotifyPaymentIn(BaseModel):
     payment_id: str
     channel: str  # "email" | "whatsapp" | "sms"
+
+class SocioLoginIn(BaseModel):
+    member_number: str
+    pin: str
+
+class SocioUpdateIn(BaseModel):
+    contact: Optional[str] = None
+    email: Optional[str] = None
+    morada: Optional[str] = None
+
+class MBWayRequestIn(BaseModel):
+    amount: float
+    mbway_phone: str  # phone used to pay
+    note: Optional[str] = None
 
 # ---------- Auth helpers ----------
 def hash_password(pw: str) -> str:
@@ -298,7 +316,7 @@ async def list_replenishments(user: dict = Depends(get_current_user)):
 # ---------- Clients ----------
 @api_router.get("/clients")
 async def list_clients(user: dict = Depends(get_current_user)):
-    items = await db.clients.find({}, {"_id": 0}).sort("name", 1).to_list(2000)
+    items = await db.clients.find({}, {"_id": 0, "pin_hash": 0}).sort("name", 1).to_list(2000)
     return items
 
 @api_router.post("/clients")
@@ -312,6 +330,8 @@ async def create_client(body: ClientIn, user: dict = Depends(get_current_user)):
         "note": body.note,
         "member_number": body.member_number,
         "is_member": bool(body.is_member),
+        "morada": body.morada,
+        "pin_hash": hash_password(body.pin) if body.pin else None,
         "points": 0,
         "balance": 0.0,
         "total_spent": 0.0,
@@ -319,23 +339,34 @@ async def create_client(body: ClientIn, user: dict = Depends(get_current_user)):
     }
     await db.clients.insert_one(doc)
     doc.pop("_id", None)
+    doc.pop("pin_hash", None)
     return doc
 
 @api_router.put("/clients/{client_id}")
 async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends(get_current_user)):
-    update = {k: v for k, v in body.model_dump().items() if v is not None}
-    if not update:
+    raw = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not raw:
         raise HTTPException(status_code=400, detail="Nada para atualizar")
-    # Funcionários só podem editar contacto e email; admin/tesoureiro tudo.
+    # Funcionários só podem editar contact, email e morada
     if user.get("role") == "funcionario":
-        allowed = {"contact", "email"}
-        update = {k: v for k, v in update.items() if k in allowed}
-        if not update:
-            raise HTTPException(status_code=403, detail="Funcionários só podem editar contacto e email")
+        allowed = {"contact", "email", "morada"}
+        raw = {k: v for k, v in raw.items() if k in allowed}
+        if not raw:
+            raise HTTPException(status_code=403, detail="Funcionários só podem editar contacto, email e morada")
+    # PIN only set by admin/tesoureiro
+    update = dict(raw)
+    if "pin" in update:
+        if user.get("role") not in ("admin", "tesoureiro"):
+            raise HTTPException(status_code=403, detail="Sem permissão para definir PIN")
+        pin_value = update.pop("pin")
+        if pin_value:
+            update["pin_hash"] = hash_password(str(pin_value))
+        else:
+            update["pin_hash"] = None
     res = await db.clients.update_one({"id": client_id}, {"$set": update})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
-    doc = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    doc = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
     return doc
 
 @api_router.delete("/clients/{client_id}")
@@ -347,7 +378,7 @@ async def delete_client(client_id: str, user: dict = Depends(require_role("admin
 
 @api_router.get("/clients/{client_id}")
 async def client_detail(client_id: str, user: dict = Depends(get_current_user)):
-    c = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    c = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
     if not c:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
     sales = await db.sales.find({"client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
@@ -490,7 +521,7 @@ async def dashboard(user: dict = Depends(get_current_user)):
 # ---------- Admin Directory ----------
 @api_router.get("/admin/clients")
 async def admin_clients_directory(user: dict = Depends(require_role("admin"))):
-    clients = await db.clients.find({}, {"_id": 0}).sort("name", 1).to_list(5000)
+    clients = await db.clients.find({}, {"_id": 0, "pin_hash": 0}).sort("name", 1).to_list(5000)
     # enrich with stats already on the doc (balance, total_spent, points)
     return clients
 
@@ -561,6 +592,155 @@ async def notify_payment(body: NotifyPaymentIn, user: dict = Depends(get_current
         url = f"sms:{phone}?body={urllib.parse.quote(msg['text'])}"
         return {"channel": "sms", "url": url, "phone": phone}
     raise HTTPException(status_code=400, detail="Canal inválido")
+
+# ---------- Sócio Portal (self-service) ----------
+def create_socio_token(client_id: str, member_number: str) -> str:
+    payload = {
+        "sub": client_id,
+        "member_number": member_number,
+        "exp": datetime.now(timezone.utc) + timedelta(days=30),
+        "type": "socio",
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+async def get_current_socio(request: Request) -> dict:
+    token = request.cookies.get("socio_token")
+    if not token:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[7:]
+    if not token:
+        raise HTTPException(status_code=401, detail="Não autenticado")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "socio":
+            raise HTTPException(status_code=401, detail="Token inválido")
+        c = await db.clients.find_one({"id": payload["sub"]}, {"_id": 0, "pin_hash": 0})
+        if not c:
+            raise HTTPException(status_code=401, detail="Sócio não encontrado")
+        return c
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Sessão expirada")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+@api_router.get("/club/info")
+async def club_info():
+    return {
+        "name": CLUB_NAME,
+        "mbway_phone": os.environ.get("CLUB_MBWAY_PHONE", ""),
+    }
+
+@api_router.post("/socio/login")
+async def socio_login(body: SocioLoginIn, response: Response):
+    mn = body.member_number.strip()
+    c = await db.clients.find_one({"member_number": mn}, {"_id": 0})
+    if not c or not c.get("pin_hash"):
+        raise HTTPException(status_code=401, detail="Nº de sócio ou PIN inválidos")
+    if not verify_password(body.pin, c["pin_hash"]):
+        raise HTTPException(status_code=401, detail="Nº de sócio ou PIN inválidos")
+    token = create_socio_token(c["id"], mn)
+    response.set_cookie(
+        key="socio_token", value=token, httponly=True, secure=True,
+        samesite="none", max_age=60 * 60 * 24 * 30, path="/",
+    )
+    c.pop("pin_hash", None)
+    return {"client": c}
+
+@api_router.post("/socio/logout")
+async def socio_logout(response: Response):
+    response.delete_cookie("socio_token", path="/")
+    return {"ok": True}
+
+@api_router.get("/socio/me")
+async def socio_me(socio: dict = Depends(get_current_socio)):
+    sales = await db.sales.find({"client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    payments = await db.payments.find({"client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    mbway = await db.mbway_payments.find({"client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return {"client": socio, "sales": sales, "payments": payments, "mbway": mbway}
+
+@api_router.put("/socio/me")
+async def socio_update_me(body: SocioUpdateIn, socio: dict = Depends(get_current_socio)):
+    update = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not update:
+        raise HTTPException(status_code=400, detail="Nada para atualizar")
+    await db.clients.update_one({"id": socio["id"]}, {"$set": update})
+    c = await db.clients.find_one({"id": socio["id"]}, {"_id": 0, "pin_hash": 0})
+    return c
+
+@api_router.post("/socio/mbway-request")
+async def socio_mbway_request(body: MBWayRequestIn, socio: dict = Depends(get_current_socio)):
+    if body.amount <= 0:
+        raise HTTPException(status_code=400, detail="Valor inválido")
+    rec = {
+        "id": str(uuid.uuid4()),
+        "client_id": socio["id"],
+        "client_name": socio["name"],
+        "amount": float(body.amount),
+        "mbway_phone": body.mbway_phone.strip(),
+        "note": body.note,
+        "status": "pending",  # pending | confirmed | rejected
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "confirmed_at": None,
+        "confirmed_by": None,
+    }
+    await db.mbway_payments.insert_one(rec)
+    rec.pop("_id", None)
+    return rec
+
+# ---------- MBWay management (staff) ----------
+@api_router.get("/mbway-payments")
+async def list_mbway_payments(status_filter: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = {}
+    if status_filter:
+        q["status"] = status_filter
+    items = await db.mbway_payments.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return items
+
+@api_router.post("/mbway-payments/{mb_id}/confirm")
+async def confirm_mbway_payment(mb_id: str, user: dict = Depends(get_current_user)):
+    mb = await db.mbway_payments.find_one({"id": mb_id}, {"_id": 0})
+    if not mb:
+        raise HTTPException(status_code=404, detail="Pedido MBWay não encontrado")
+    if mb["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Pedido já tratado")
+    c = await db.clients.find_one({"id": mb["client_id"]})
+    if not c:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    # create actual payment
+    pid = str(uuid.uuid4())
+    pay = {
+        "id": pid,
+        "client_id": mb["client_id"],
+        "client_name": mb["client_name"],
+        "amount": float(mb["amount"]),
+        "note": f"MBWay {mb['mbway_phone']}" + (f" · {mb['note']}" if mb.get("note") else ""),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "user_email": user["email"],
+        "source": "mbway",
+        "mbway_id": mb_id,
+    }
+    await db.payments.insert_one(pay)
+    await db.clients.update_one({"id": mb["client_id"]}, {"$inc": {"balance": -float(mb["amount"])}})
+    await db.mbway_payments.update_one(
+        {"id": mb_id},
+        {"$set": {"status": "confirmed", "confirmed_at": datetime.now(timezone.utc).isoformat(), "confirmed_by": user["email"], "payment_id": pid}},
+    )
+    pay.pop("_id", None)
+    return {"ok": True, "payment": pay}
+
+@api_router.post("/mbway-payments/{mb_id}/reject")
+async def reject_mbway_payment(mb_id: str, user: dict = Depends(get_current_user)):
+    mb = await db.mbway_payments.find_one({"id": mb_id}, {"_id": 0})
+    if not mb:
+        raise HTTPException(status_code=404, detail="Pedido MBWay não encontrado")
+    if mb["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Pedido já tratado")
+    await db.mbway_payments.update_one(
+        {"id": mb_id},
+        {"$set": {"status": "rejected", "confirmed_at": datetime.now(timezone.utc).isoformat(), "confirmed_by": user["email"]}},
+    )
+    return {"ok": True}
 
 # ---------- Bootstrap ----------
 @app.on_event("startup")

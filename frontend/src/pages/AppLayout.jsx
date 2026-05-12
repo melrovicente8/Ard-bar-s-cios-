@@ -1,5 +1,5 @@
 import React from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import {
   ChartLineUp,
@@ -9,6 +9,9 @@ import {
   SignOut,
   SoccerBall,
   IdentificationCard,
+  DeviceMobile,
+  ArrowLeft,
+  House,
 } from "@phosphor-icons/react";
 
 const ROLE_LABEL = {
@@ -22,12 +25,15 @@ const navItemsBase = [
   { to: "/vender", label: "Vender", icon: Storefront, testid: "nav-sell", roles: ["admin", "tesoureiro", "funcionario"] },
   { to: "/stock", label: "Stock", icon: Package, testid: "nav-stock", roles: ["admin", "tesoureiro", "funcionario"] },
   { to: "/clientes", label: "Clientes", icon: Users, testid: "nav-clients", roles: ["admin", "tesoureiro", "funcionario"] },
+  { to: "/mbway", label: "MBWay", icon: DeviceMobile, testid: "nav-mbway", roles: ["admin", "tesoureiro", "funcionario"] },
   { to: "/socios", label: "Sócios", icon: IdentificationCard, testid: "nav-socios", roles: ["admin"] },
 ];
 
 export default function AppLayout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const isHome = location.pathname === "/" || location.pathname === "";
 
   const onLogout = async () => {
     await logout();
@@ -106,8 +112,29 @@ export default function AppLayout() {
       </aside>
 
       {/* Main */}
-      <main className="flex-1 overflow-x-hidden">
-        <Outlet />
+      <main className="flex-1 overflow-x-hidden flex flex-col">
+        <div className="sticky top-0 z-20 bg-slate-950/80 backdrop-blur-xl border-b border-slate-900 px-6 py-3 flex items-center gap-2">
+          <button
+            data-testid="topbar-back-btn"
+            onClick={() => navigate(-1)}
+            disabled={isHome}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm text-slate-400 hover:text-white hover:bg-slate-900 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            title="Voltar"
+          >
+            <ArrowLeft size={16} weight="bold" /> Voltar
+          </button>
+          <button
+            data-testid="topbar-home-btn"
+            onClick={() => navigate("/")}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm text-slate-400 hover:text-white hover:bg-slate-900 transition-colors"
+            title="Início"
+          >
+            <House size={16} weight="duotone" />
+          </button>
+        </div>
+        <div className="flex-1">
+          <Outlet />
+        </div>
       </main>
     </div>
   );

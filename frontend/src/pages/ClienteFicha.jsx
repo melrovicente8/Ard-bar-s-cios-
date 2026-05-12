@@ -11,16 +11,34 @@ import {
   EnvelopeSimple,
   ChatCircleText,
   Star,
+  PencilSimple,
+  Check,
+  X as XIcon,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { useAuth } from "../context/AuthContext";
 
 export default function ClienteFicha() {
   const { id } = useParams();
+  const { user } = useAuth();
+  const canEditAll = user?.role === "admin" || user?.role === "tesoureiro";
+  const canEditAny = !!user; // funcionario can edit contact/email/morada
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showPay, setShowPay] = useState(false);
   const [payForm, setPayForm] = useState({ amount: "", note: "" });
-  const [notifyPayment, setNotifyPayment] = useState(null); // payment object after success
+  const [notifyPayment, setNotifyPayment] = useState(null);
+  const [showEdit, setShowEdit] = useState(false);
+  const [editForm, setEditForm] = useState({
+    name: "",
+    contact: "",
+    email: "",
+    morada: "",
+    note: "",
+    member_number: "",
+    is_member: false,
+    pin: "",
+  });
 
   const load = async () => {
     setLoading(true);
@@ -74,6 +92,44 @@ export default function ClienteFicha() {
     }
   };
 
+  const openEdit = () => {
+    const c = data.client;
+    setEditForm({
+      name: c.name || "",
+      contact: c.contact || "",
+      email: c.email || "",
+      morada: c.morada || "",
+      note: c.note || "",
+      member_number: c.member_number || "",
+      is_member: !!c.is_member,
+      pin: "",
+    });
+    setShowEdit(true);
+  };
+
+  const submitEdit = async (e) => {
+    e.preventDefault();
+    const body = {};
+    if (canEditAll) {
+      body.name = editForm.name;
+      body.note = editForm.note || null;
+      body.member_number = editForm.member_number || null;
+      body.is_member = editForm.is_member;
+      if (editForm.pin) body.pin = editForm.pin;
+    }
+    body.contact = editForm.contact || null;
+    body.email = editForm.email || null;
+    body.morada = editForm.morada || null;
+    try {
+      await api.put(`/clients/${id}`, body);
+      toast.success("Ficha atualizada");
+      setShowEdit(false);
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
   if (loading || !data)
     return <div className="p-12 text-slate-500">A carregar...</div>;
 
@@ -109,6 +165,16 @@ export default function ClienteFicha() {
               <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight" data-testid="ficha-client-name">
                 {c.name}
               </h1>
+              {canEditAny && (
+                <button
+                  data-testid="ficha-edit-btn"
+                  onClick={openEdit}
+                  title="Editar ficha"
+                  className="p-2 rounded-md bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors"
+                >
+                  <PencilSimple size={16} weight="bold" />
+                </button>
+              )}
               {c.is_member ? (
                 <span className="px-3 py-1 rounded-full text-xs font-bold bg-green-500/15 text-green-300 border border-green-500/30 flex items-center gap-1.5">
                   <Medal size={14} weight="fill" />
@@ -120,11 +186,14 @@ export default function ClienteFicha() {
                 </span>
               )}
             </div>
-            {(c.contact || c.email) && (
-              <div className="text-sm text-slate-400 mt-1">
-                {c.contact}
-                {c.contact && c.email ? " · " : ""}
-                {c.email}
+            {(c.contact || c.email || c.morada) && (
+              <div className="text-sm text-slate-400 mt-1 space-y-0.5">
+                <div>
+                  {c.contact}
+                  {c.contact && c.email ? " · " : ""}
+                  {c.email}
+                </div>
+                {c.morada && <div className="text-slate-500">{c.morada}</div>}
               </div>
             )}
           </div>
@@ -388,6 +457,135 @@ export default function ClienteFicha() {
             >
               Saltar
             </button>
+          </div>
+        </div>
+      )}
+
+      {showEdit && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4 overflow-y-auto"
+          onClick={() => setShowEdit(false)}
+          data-testid="ficha-edit-modal"
+        >
+          <div
+            className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg p-6 my-8"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="font-outfit text-xl font-semibold mb-5">Editar ficha</h3>
+            <form onSubmit={submitEdit} className="space-y-4">
+              {canEditAll && (
+                <div>
+                  <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Nome *</label>
+                  <input
+                    data-testid="edit-name-input"
+                    required
+                    value={editForm.name}
+                    onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                    className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                  />
+                </div>
+              )}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Telemóvel</label>
+                  <input
+                    data-testid="edit-contact-input"
+                    value={editForm.contact}
+                    onChange={(e) => setEditForm({ ...editForm, contact: e.target.value })}
+                    className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Email</label>
+                  <input
+                    data-testid="edit-email-input"
+                    type="email"
+                    value={editForm.email}
+                    onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                    className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Morada</label>
+                <input
+                  data-testid="edit-morada-input"
+                  value={editForm.morada}
+                  onChange={(e) => setEditForm({ ...editForm, morada: e.target.value })}
+                  className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                />
+              </div>
+              {canEditAll && (
+                <>
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Nota</label>
+                    <input
+                      value={editForm.note}
+                      onChange={(e) => setEditForm({ ...editForm, note: e.target.value })}
+                      className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 items-end">
+                    <div>
+                      <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Nº de Sócio</label>
+                      <input
+                        data-testid="edit-member-number-input"
+                        value={editForm.member_number}
+                        onChange={(e) => setEditForm({ ...editForm, member_number: e.target.value })}
+                        className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                      />
+                    </div>
+                    <label className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-green-600/40">
+                      <input
+                        data-testid="edit-is-member-toggle"
+                        type="checkbox"
+                        checked={editForm.is_member}
+                        onChange={(e) => setEditForm({ ...editForm, is_member: e.target.checked })}
+                        className="w-4 h-4 accent-green-500"
+                      />
+                      <span className="text-xs font-medium text-slate-200">Sócio com cotas pagas</span>
+                    </label>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
+                      PIN do portal de sócio (deixar vazio = não alterar)
+                    </label>
+                    <input
+                      data-testid="edit-pin-input"
+                      type="password"
+                      value={editForm.pin}
+                      onChange={(e) => setEditForm({ ...editForm, pin: e.target.value })}
+                      placeholder="Definir/alterar PIN para o sócio aceder ao portal"
+                      className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50 tracking-widest"
+                    />
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      Permite ao sócio fazer login em <code className="text-amber-400">/socio/login</code> com o nº de sócio e PIN.
+                    </p>
+                  </div>
+                </>
+              )}
+              {!canEditAll && (
+                <p className="text-[11px] text-slate-500">
+                  Como funcionário só podes editar telemóvel, email e morada.
+                </p>
+              )}
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowEdit(false)}
+                  className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium flex items-center justify-center gap-2"
+                >
+                  <XIcon size={16} /> Cancelar
+                </button>
+                <button
+                  data-testid="edit-submit-btn"
+                  type="submit"
+                  className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold flex items-center justify-center gap-2"
+                >
+                  <Check size={16} weight="bold" /> Guardar
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

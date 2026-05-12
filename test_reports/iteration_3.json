@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 3 PASSED end-to-end. Backend: 18/18 new pytest cases in test_iter3_socio_mbway.py + 44/44 across all 3 iterations. Full sócio portal (login by member_number+PIN, /socio/me with sales/payments/mbway, PUT /socio/me restricted to contact/email/morada), MBWay manual flow (sócio request → staff confirm creates Payment + decrements balance / staff reject), PIN permissions (admin & tesoureiro can set, funcionário 403; pin_hash NEVER returned in any response), funcionário can edit morada alongside contact/email, GET /api/club/info public, /api/clients lists hide pin_hash. Frontend: /socio/login wrong-PIN shows inline error 'Nº de sócio ou PIN inválidos', correct login redirects to /socio. SocioPortal shows hero (Olá Ana / 5,00 € / 2 pts / 24,50 €), 'Os meus dados' Editar→Guardar updated contact to 912000999 + morada, MBWay modal displays CLUB_MBWAY_PHONE '+351 912 345 678', request adds 'MBWay · pendente -1,50 €' to histórico + 'Pedidos MBWay pendentes' card, toast 'Pedido enviado — aguarda confirmação do clube.', Sair returns to /socio/login. TopBar: Voltar disabled on /, enabled on /mbway, Home button present. nav-mbway visible for admin AND funcionário. ClienteFicha pencil button opens modal: admin sees all 6 fields (name, contact, email, morada, member-number, PIN) + member toggle; funcionário sees ONLY contact/email/morada with helper 'Como funcionário só podes editar telemóvel, email e morada.'. MBWay page renders with Pendentes/Confirmados/Rejeitados/Todos filters.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter3_socio_mbway.py",
+    "/app/backend/tests/test_iter2_roles_points_notify.py",
+    "/app/backend/tests/test_bar_api.py",
+    "/app/test_reports/pytest/iter3_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL — On SocioPortal load while user is not yet authenticated, the SocioContext fires GET /api/socio/me and logs a benign 401 in the console (×7 during navigations). Consider gating the request behind a 'has-tried-login' flag or suppressing console errors via try/catch so devtools stays clean.",
+    "OPTIONAL — Same browser tab can hold both access_token (staff) and socio_token (sócio) cookies. Spec accepts this. If desired, /api/socio/login could clear access_token (and vice-versa) to prevent confusion."
+  ],
+  "critical_code_review_comments": [
+    "server.py update_client(): correctly drops pin from body for funcionario via silent allowed-list filter then re-checks pin permission later. Logic is sound and 'name'-only requests from funcionario return 403 as expected.",
+    "server.py /api/clients (list, detail, admin/clients, socio/login) consistently exclude pin_hash via projection — verified by tests.",
+    "server.py confirm_mbway_payment(): atomic enough for current scale (3 separate awaits — payments.insert, clients.$inc, mbway.update). For higher concurrency consider a transaction, but acceptable here.",
+    "server.py /api/mbway-payments (list/confirm/reject) only requires get_current_user (any staff role). Spec allows funcionario to confirm/reject — verified passing.",
+    "SocioContext.jsx silently calls /api/socio/me on mount even when no cookie exists, producing 401 noise. Wrap in try/catch with debug-level only.",
+    "server.py still uses 'CORS_ORIGINS=*' with allow_credentials=True (carry-over). Works behind ingress same-origin but is technically invalid per CORS spec — browsers ignore credentials with wildcard. Not blocking since cookies are set on the preview domain itself."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter3_socio_mbway.py (new, 18 tests)"
+  ],
+  "success_rate": {"backend": "100% (18/18 iter3, 44/44 overall)", "frontend": "100% on tested flows"},
+  "test_credentials": "admin@ard.pt/admin123, tesoureiro@ard.pt/tesoureiro123, func1@ard.pt/func123, sócio: member_number=1982 pin=1234 (Ana Ferreira)",
+  "seed_data_creation": "Tests create TEST_iter3_Socio clients with PINs and consume them; pending MBWay requests created during pytest are all confirmed/rejected by end of run, leaving Ana Ferreira's balance updated. Frontend test added a 1,50 € MBWay request from Ana that was later confirmed by pytest, decrementing her balance.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All iter3 features verified. Use /app/backend/tests/test_iter3_socio_mbway.py for regression. socio_token is a separate JWT (type='socio') under cookie 'socio_token' — distinct from staff 'access_token'. CLUB_MBWAY_PHONE env loads from backend/.env and is exposed at GET /api/club/info without auth. Funcionário CAN confirm/reject MBWay and CAN edit morada (intentional per iter3 spec). Ana Ferreira (1982/1234) currently has balance 3,50 € and 2 points after testing.",
+  "rca_of_the_issue": "N/A — no bugs found in iteration 3 scope."
+}
