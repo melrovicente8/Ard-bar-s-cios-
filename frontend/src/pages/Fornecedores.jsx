@@ -10,6 +10,8 @@ import {
   CurrencyEur,
   Package,
   Check,
+  Receipt,
+  Calendar,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
@@ -40,10 +42,11 @@ export default function Fornecedores() {
   const [suppliers, setSuppliers] = useState([]);
   const [products, setProducts] = useState([]);
   const [orders, setOrders] = useState([]);
+  const [expenses, setExpenses] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState("suppliers"); // suppliers | orders
+  const [tab, setTab] = useState("suppliers"); // suppliers | orders | expenses
 
-  const [showSupplier, setShowSupplier] = useState(null); // null/false or {} new / object edit
+  const [showSupplier, setShowSupplier] = useState(null);
   const [supForm, setSupForm] = useState({ name: "", contact: "", email: "", nif: "", note: "" });
 
   const [showOrder, setShowOrder] = useState(false);
@@ -58,17 +61,22 @@ export default function Fornecedores() {
   const [payOrder, setPayOrder] = useState(null);
   const [payForm, setPayForm] = useState({ amount: "" });
 
+  const [showExpense, setShowExpense] = useState(null); // null/false | {mode:"new"} | {mode:"edit",id}
+  const [expForm, setExpForm] = useState({ supplier_id: "", description: "", amount: "", due_date: "", paid: false, recurring: "", note: "" });
+
   const load = async () => {
     setLoading(true);
     try {
-      const [s, p, o] = await Promise.all([
+      const [s, p, o, e] = await Promise.all([
         api.get("/suppliers"),
         api.get("/products"),
         api.get("/supplier-orders"),
+        api.get("/supplier-expenses"),
       ]);
       setSuppliers(s.data);
       setProducts(p.data);
       setOrders(o.data);
+      setExpenses(e.data);
     } finally {
       setLoading(false);
     }
@@ -77,6 +85,7 @@ export default function Fornecedores() {
   useEffect(() => { load(); }, []);
 
   const totalDebt = suppliers.reduce((s, x) => s + (x.outstanding || 0), 0);
+  const expensesDebt = expenses.filter((x) => !x.paid).reduce((s, x) => s + (x.amount || 0), 0);
 
   const openNewSupplier = () => {
     setSupForm({ name: "", contact: "", email: "", nif: "", note: "" });
@@ -161,6 +170,67 @@ export default function Fornecedores() {
     }
   };
 
+  const openNewExpense = () => {
+    setExpForm({ supplier_id: "", description: "", amount: "", due_date: "", paid: false, recurring: "monthly", note: "" });
+    setShowExpense({ mode: "new" });
+  };
+  const openEditExpense = (e) => {
+    setExpForm({
+      supplier_id: e.supplier_id || "",
+      description: e.description || "",
+      amount: String(e.amount),
+      due_date: e.due_date || "",
+      paid: !!e.paid,
+      recurring: e.recurring || "",
+      note: e.note || "",
+    });
+    setShowExpense({ mode: "edit", id: e.id });
+  };
+  const submitExpense = async (e) => {
+    e.preventDefault();
+    const body = {
+      supplier_id: expForm.supplier_id || null,
+      description: expForm.description,
+      amount: parseFloat(expForm.amount),
+      due_date: expForm.due_date || null,
+      paid: !!expForm.paid,
+      recurring: expForm.recurring || null,
+      note: expForm.note || null,
+    };
+    try {
+      if (showExpense.mode === "new") {
+        await api.post("/supplier-expenses", body);
+        toast.success("Despesa criada");
+      } else {
+        await api.put(`/supplier-expenses/${showExpense.id}`, body);
+        toast.success("Despesa atualizada");
+      }
+      setShowExpense(null);
+      await load();
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    }
+  };
+  const toggleExpensePaid = async (e) => {
+    try {
+      await api.put(`/supplier-expenses/${e.id}`, { paid: !e.paid });
+      toast.success(e.paid ? "Marcada como em aberto" : "Marcada como paga");
+      await load();
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    }
+  };
+  const deleteExpense = async (e) => {
+    if (!window.confirm("Eliminar despesa?")) return;
+    try {
+      await api.delete(`/supplier-expenses/${e.id}`);
+      toast.success("Eliminada");
+      await load();
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    }
+  };
+
   return (
     <div className="p-6 md:p-10 animate-in" data-testid="fornecedores-page">
       <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
@@ -173,7 +243,16 @@ export default function Fornecedores() {
           </h1>
         </div>
         <div className="flex gap-2">
-          {canManage && (
+          {canManage && tab === "expenses" && (
+            <button
+              data-testid="add-expense-btn"
+              onClick={openNewExpense}
+              className="bg-fuchsia-500 hover:bg-fuchsia-400 text-slate-950 font-bold px-4 py-2.5 rounded-lg flex items-center gap-2"
+            >
+              <Plus size={16} weight="bold" /> Despesa
+            </button>
+          )}
+          {canManage && tab !== "expenses" && (
             <button
               data-testid="add-supplier-btn"
               onClick={openNewSupplier}
@@ -182,7 +261,7 @@ export default function Fornecedores() {
               <Plus size={16} weight="bold" /> Fornecedor
             </button>
           )}
-          {canManage && (
+          {canManage && tab !== "expenses" && (
             <button
               data-testid="add-order-btn"
               onClick={() => setShowOrder(true)}
@@ -195,13 +274,14 @@ export default function Fornecedores() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <StatBox label="Fornecedores" value={suppliers.length} />
-        <StatBox label="Em dívida" value={euro(totalDebt)} accent="text-rose-300" />
+        <StatBox label="Dívida encomendas" value={euro(totalDebt)} accent="text-rose-300" />
+        <StatBox label="Despesas em aberto" value={euro(expensesDebt)} accent="text-fuchsia-300" />
         <StatBox label="Encomendas" value={orders.length} />
       </div>
 
-      <div className="flex gap-2 mb-5">
+      <div className="flex gap-2 mb-5 flex-wrap">
         <button
           onClick={() => setTab("suppliers")}
           data-testid="tab-suppliers"
@@ -216,9 +296,16 @@ export default function Fornecedores() {
         >
           Encomendas
         </button>
+        <button
+          onClick={() => setTab("expenses")}
+          data-testid="tab-expenses"
+          className={`px-4 py-2 rounded-lg text-sm font-medium border ${tab === "expenses" ? "bg-amber-500/15 text-amber-300 border-amber-500/30" : "bg-slate-900/40 text-slate-400 border-slate-800"}`}
+        >
+          Despesas mensais
+        </button>
       </div>
 
-      {tab === "suppliers" ? (
+      {tab === "suppliers" && (
         <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl overflow-hidden">
           {loading ? (
             <div className="p-10 text-center text-slate-500">A carregar...</div>
@@ -281,7 +368,8 @@ export default function Fornecedores() {
             </div>
           )}
         </div>
-      ) : (
+      )}
+      {tab === "orders" && (
         <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl overflow-hidden">
           {orders.length === 0 ? (
             <div className="p-12 text-center">
@@ -332,6 +420,77 @@ export default function Fornecedores() {
                               className="px-3 py-1.5 rounded-md text-xs font-bold bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 flex items-center gap-1.5"
                             >
                               <CurrencyEur size={14} weight="bold" /> Pagar
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+      {tab === "expenses" && (
+        <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl overflow-hidden">
+          {expenses.length === 0 ? (
+            <div className="p-12 text-center">
+              <Receipt size={40} className="mx-auto text-slate-700 mb-3" weight="duotone" />
+              <p className="text-slate-400">Sem despesas registadas. Adiciona contratos como luz, água, internet, renda.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="text-slate-500 text-xs uppercase tracking-wider bg-slate-950/40">
+                    <th className="px-5 py-3 font-medium">Descrição</th>
+                    <th className="px-5 py-3 font-medium">Fornecedor</th>
+                    <th className="px-5 py-3 font-medium">Periodicidade</th>
+                    <th className="px-5 py-3 font-medium">Data prevista</th>
+                    <th className="px-5 py-3 font-medium text-right">Valor</th>
+                    <th className="px-5 py-3 font-medium">Estado</th>
+                    <th className="px-5 py-3 font-medium text-right">Ações</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {expenses.map((e) => (
+                    <tr key={e.id} data-testid={`expense-row-${e.id}`} className="border-t border-slate-800/60 hover:bg-slate-900/60">
+                      <td className="px-5 py-3 font-medium text-slate-100">{e.description}</td>
+                      <td className="px-5 py-3 text-slate-400">{e.supplier_name || "—"}</td>
+                      <td className="px-5 py-3 text-slate-500 capitalize">{e.recurring || "única"}</td>
+                      <td className="px-5 py-3 text-slate-400 flex items-center gap-1">
+                        <Calendar size={12} weight="duotone" /> {e.due_date || "—"}
+                      </td>
+                      <td className="px-5 py-3 text-right text-amber-300 font-semibold">{euro(e.amount)}</td>
+                      <td className="px-5 py-3">
+                        {e.paid ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                            Pago{e.paid_at ? ` · ${new Date(e.paid_at).toLocaleDateString("pt-PT")}` : ""}
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-300 border border-rose-500/30">Em aberto</span>
+                        )}
+                      </td>
+                      <td className="px-5 py-3">
+                        <div className="flex items-center justify-end gap-2">
+                          {canManage && (
+                            <button
+                              data-testid={`expense-toggle-${e.id}`}
+                              onClick={() => toggleExpensePaid(e)}
+                              className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1.5 ${e.paid ? "bg-amber-500/15 text-amber-300 hover:bg-amber-500/25" : "bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"}`}
+                            >
+                              {e.paid ? "Reabrir" : "Marcar pago"}
+                            </button>
+                          )}
+                          {canManage && (
+                            <button data-testid={`expense-edit-${e.id}`} onClick={() => openEditExpense(e)} className="p-2 rounded-md bg-slate-800 hover:bg-slate-700">
+                              <PencilSimple size={14} />
+                            </button>
+                          )}
+                          {canDelete && (
+                            <button data-testid={`expense-delete-${e.id}`} onClick={() => deleteExpense(e)} className="p-2 rounded-md bg-rose-500/10 text-rose-400 hover:bg-rose-500/20">
+                              <Trash size={14} />
                             </button>
                           )}
                         </div>
@@ -461,6 +620,81 @@ export default function Fornecedores() {
           <div className="flex gap-2 pt-2">
             <button type="button" onClick={() => setPayOrder(null)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Cancelar</button>
             <button data-testid="pay-order-submit-btn" type="submit" className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold">Pagar</button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={!!showExpense} onClose={() => setShowExpense(null)} title={showExpense?.mode === "edit" ? "Editar despesa" : "Nova despesa mensal"}>
+        <form onSubmit={submitExpense} className="space-y-3">
+          <Field label="Descrição *">
+            <input
+              data-testid="expense-description-input"
+              required
+              value={expForm.description}
+              onChange={(e) => setExpForm({ ...expForm, description: e.target.value })}
+              placeholder="Ex: Renda, Eletricidade, Internet..."
+              className={inputCls}
+            />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Valor € *">
+              <input
+                data-testid="expense-amount-input"
+                type="number" step="0.01" min="0.01" required
+                value={expForm.amount}
+                onChange={(e) => setExpForm({ ...expForm, amount: e.target.value })}
+                className={inputCls}
+              />
+            </Field>
+            <Field label="Data prevista">
+              <input
+                data-testid="expense-due-input"
+                type="date"
+                value={expForm.due_date}
+                onChange={(e) => setExpForm({ ...expForm, due_date: e.target.value })}
+                className={inputCls}
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Periodicidade">
+              <select
+                value={expForm.recurring}
+                onChange={(e) => setExpForm({ ...expForm, recurring: e.target.value })}
+                className={inputCls}
+              >
+                <option value="">Única</option>
+                <option value="monthly">Mensal</option>
+                <option value="yearly">Anual</option>
+              </select>
+            </Field>
+            <Field label="Fornecedor (opcional)">
+              <select
+                value={expForm.supplier_id}
+                onChange={(e) => setExpForm({ ...expForm, supplier_id: e.target.value })}
+                className={inputCls}
+              >
+                <option value="">—</option>
+                {suppliers.map((s) => (<option key={s.id} value={s.id}>{s.name}</option>))}
+              </select>
+            </Field>
+          </div>
+          <label className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer">
+            <input
+              data-testid="expense-paid-toggle"
+              type="checkbox"
+              checked={expForm.paid}
+              onChange={(e) => setExpForm({ ...expForm, paid: e.target.checked })}
+              className="w-4 h-4 accent-green-500"
+            />
+            <span className="text-xs font-medium text-slate-200">Já está pago</span>
+          </label>
+          <Field label="Nota">
+            <input value={expForm.note} onChange={(e) => setExpForm({ ...expForm, note: e.target.value })} className={inputCls} />
+          </Field>
+          <div className="flex gap-2 pt-2">
+            <button type="button" onClick={() => setShowExpense(null)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Cancelar</button>
+            <button data-testid="expense-submit-btn" type="submit" className="flex-1 px-4 py-2.5 rounded-lg bg-fuchsia-500 hover:bg-fuchsia-400 text-slate-950 font-bold">Guardar</button>
           </div>
         </form>
       </Modal>

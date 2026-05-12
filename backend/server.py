@@ -41,6 +41,7 @@ if resend and RESEND_API_KEY:
     resend.api_key = RESEND_API_KEY
 
 ROLES = {"admin", "tesoureiro", "funcionario"}
+POINTS_PER_EURO = 5  # 5 pts = 1 €
 
 # ---------- Models ----------
 class UserOut(BaseModel):
@@ -111,6 +112,7 @@ class SaleIn(BaseModel):
 class PaymentIn(BaseModel):
     client_id: str
     amount: float
+    points_used: int = 0
     note: Optional[str] = None
 
 class NotifyPaymentIn(BaseModel):
@@ -162,6 +164,26 @@ class SupplierOrderIn(BaseModel):
 
 class SupplierOrderPay(BaseModel):
     amount: float
+    note: Optional[str] = None
+
+class SupplierExpenseIn(BaseModel):
+    supplier_id: Optional[str] = None
+    description: str  # ex: "Renda", "Eletricidade", "Internet"
+    amount: float
+    due_date: Optional[str] = None  # ISO date string
+    paid: bool = False
+    paid_at: Optional[str] = None
+    recurring: Optional[str] = None  # "monthly" | "yearly" | None
+    note: Optional[str] = None
+
+class SupplierExpenseUpdate(BaseModel):
+    supplier_id: Optional[str] = None
+    description: Optional[str] = None
+    amount: Optional[float] = None
+    due_date: Optional[str] = None
+    paid: Optional[bool] = None
+    paid_at: Optional[str] = None
+    recurring: Optional[str] = None
     note: Optional[str] = None
 
 # ---------- Auth helpers ----------
@@ -385,11 +407,19 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
     raw = {k: v for k, v in body.model_dump().items() if v is not None}
     if not raw:
         raise HTTPException(status_code=400, detail="Nada para atualizar")
-    # Funcionários só podem editar contact, email e morada
+    # Funcionários: contact, email, morada sempre; name só se NÃO for sócio
     if user.get("role") == "funcionario":
         allowed = {"contact", "email", "morada"}
+        if "name" in raw:
+            # buscar cliente para verificar is_member
+            target = await db.clients.find_one({"id": client_id})
+            if not target:
+                raise HTTPException(status_code=404, detail="Cliente não encontrado")
+            if target.get("is_member"):
+                raise HTTPException(status_code=403, detail="Não podes editar o nome de um sócio")
+            allowed = allowed | {"name"}
         if any(k not in allowed for k in raw.keys()):
-            raise HTTPException(status_code=403, detail="Funcionários só podem editar contacto, email e morada")
+            raise HTTPException(status_code=403, detail="Funcionários só podem editar nome (se não-sócio), contacto, email e morada")
     # PIN, is_member e member_number só podem ser definidos por admin/tesoureiro
     update = dict(raw)
     sensitive = {"pin", "is_member", "member_number"}
@@ -421,7 +451,29 @@ async def client_detail(client_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
     sales = await db.sales.find({"client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
     payments = await db.payments.find({"client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
-    return {"client": c, "sales": sales, "payments": payments}
+    # Consumption breakdown
+    now = datetime.now(timezone.utc)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    year_start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    week_start = (now - timedelta(days=7)).isoformat()
+    by_day = sum(s.get("total", 0) for s in sales if s.get("created_at", "") >= day_start)
+    by_week = sum(s.get("total", 0) for s in sales if s.get("created_at", "") >= week_start)
+    by_month = sum(s.get("total", 0) for s in sales if s.get("created_at", "") >= month_start)
+    by_year = sum(s.get("total", 0) for s in sales if s.get("created_at", "") >= year_start)
+    return {
+        "client": c,
+        "sales": sales,
+        "payments": payments,
+        "consumption": {"day": by_day, "week": by_week, "month": by_month, "year": by_year},
+    }
+
+@api_router.get("/clients-with-debt")
+async def list_debtors(user: dict = Depends(get_current_user)):
+    clients = await db.clients.find({}, {"_id": 0, "pin_hash": 0}).to_list(5000)
+    debtors = [c for c in clients if (c.get("balance", 0) > 0)]
+    debtors.sort(key=lambda x: x.get("balance", 0), reverse=True)
+    return debtors
 
 # ---------- Sales ----------
 @api_router.post("/sales")
@@ -487,26 +539,61 @@ async def list_sales(user: dict = Depends(get_current_user)):
     items = await db.sales.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
     return items
 
+@api_router.delete("/sales/{sale_id}")
+async def cancel_sale(sale_id: str, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    sale = await db.sales.find_one({"id": sale_id}, {"_id": 0})
+    if not sale:
+        raise HTTPException(status_code=404, detail="Venda não encontrada")
+    # restock products
+    for it in sale["items"]:
+        await db.products.update_one({"id": it["product_id"]}, {"$inc": {"quantity": int(it["quantity"])}})
+    # update client: decrement balance, total_spent and points
+    total = float(sale.get("total", 0))
+    pts = int(sale.get("points_earned", 0))
+    inc = {"balance": -total, "total_spent": -total}
+    if pts:
+        inc["points"] = -pts
+    await db.clients.update_one({"id": sale["client_id"]}, {"$inc": inc})
+    await db.sales.delete_one({"id": sale_id})
+    return {"ok": True, "restored_total": total, "restored_points": pts}
+
 # ---------- Payments ----------
 @api_router.post("/payments")
 async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)):
-    if body.amount <= 0:
+    if body.amount < 0:
         raise HTTPException(status_code=400, detail="Valor inválido")
+    if body.points_used < 0:
+        raise HTTPException(status_code=400, detail="Pontos inválidos")
+    if body.points_used and body.points_used % POINTS_PER_EURO != 0:
+        raise HTTPException(status_code=400, detail=f"Os pontos devem ser múltiplos de {POINTS_PER_EURO}")
     c = await db.clients.find_one({"id": body.client_id})
     if not c:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    if body.points_used and body.points_used > int(c.get("points", 0)):
+        raise HTTPException(status_code=400, detail="Pontos insuficientes")
+    points_euros = body.points_used / POINTS_PER_EURO
+    total_paid = float(body.amount) + points_euros
+    if total_paid <= 0:
+        raise HTTPException(status_code=400, detail="O pagamento total tem de ser superior a 0")
     pid = str(uuid.uuid4())
     pay = {
         "id": pid,
         "client_id": body.client_id,
         "client_name": c["name"],
         "amount": float(body.amount),
+        "points_used": int(body.points_used),
+        "points_value": float(points_euros),
+        "total_credited": total_paid,
         "note": body.note,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "user_email": user["email"],
+        "source": "points+cash" if (body.points_used and body.amount) else ("points" if body.points_used else "cash"),
     }
     await db.payments.insert_one(pay)
-    await db.clients.update_one({"id": body.client_id}, {"$inc": {"balance": -float(body.amount)}})
+    inc = {"balance": -total_paid}
+    if body.points_used:
+        inc["points"] = -int(body.points_used)
+    await db.clients.update_one({"id": body.client_id}, {"$inc": inc})
     pay.pop("_id", None)
     return pay
 
@@ -525,9 +612,25 @@ async def dashboard(user: dict = Depends(get_current_user)):
     today_sales = await today_sales_cur.to_list(2000)
     today_total = sum(s.get("total", 0) for s in today_sales)
 
-    # outstanding debts
-    clients = await db.clients.find({}, {"_id": 0}).to_list(2000)
+    # week (last 7 days) and month (last 30 days) sales totals
+    week_start = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    month_start = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    week_sales = await db.sales.find({"created_at": {"$gte": week_start}}, {"_id": 0}).to_list(5000)
+    month_sales = await db.sales.find({"created_at": {"$gte": month_start}}, {"_id": 0}).to_list(20000)
+    week_total = sum(s.get("total", 0) for s in week_sales)
+    month_total = sum(s.get("total", 0) for s in month_sales)
+
+    # outstanding debts (clients)
+    clients = await db.clients.find({}, {"_id": 0, "pin_hash": 0}).to_list(2000)
     outstanding = sum(max(c.get("balance", 0), 0) for c in clients)
+    today_debtors = [c for c in clients if (c.get("balance", 0) > 0)]
+
+    # suppliers debt
+    sup_orders = await db.supplier_orders.find({"paid": False}, {"_id": 0}).to_list(5000)
+    sup_debt_orders = sum(o.get("balance_due", 0) for o in sup_orders)
+    sup_expenses = await db.supplier_expenses.find({"paid": False}, {"_id": 0}).to_list(5000)
+    sup_debt_expenses = sum(e.get("amount", 0) for e in sup_expenses)
+    suppliers_debt = sup_debt_orders + sup_debt_expenses
 
     # last 7 days sales by day
     last_7 = []
@@ -550,7 +653,13 @@ async def dashboard(user: dict = Depends(get_current_user)):
         "total_stock_value": total_stock_value,
         "today_sales_total": today_total,
         "today_sales_count": len(today_sales),
+        "week_sales_total": week_total,
+        "month_sales_total": month_total,
         "outstanding_debt": outstanding,
+        "today_debtors_count": len(today_debtors),
+        "suppliers_debt": suppliers_debt,
+        "suppliers_debt_orders": sup_debt_orders,
+        "suppliers_debt_expenses": sup_debt_expenses,
         "low_stock": low_stock,
         "sales_last_7_days": last_7,
         "recent_sales": recent_sales,
@@ -727,8 +836,6 @@ async def socio_mbway_request(body: MBWayRequestIn, socio: dict = Depends(get_cu
     return rec
 
 # 5 pontos = 1 €
-POINTS_PER_EURO = 5
-
 @api_router.post("/socio/pay-with-points")
 async def socio_pay_with_points(body: SocioPayPointsIn, socio: dict = Depends(get_current_socio)):
     if body.points <= 0:
@@ -957,6 +1064,66 @@ async def pay_supplier_order(order_id: str, body: SupplierOrderPay, user: dict =
         }},
     )
     return await db.supplier_orders.find_one({"id": order_id}, {"_id": 0})
+
+# ---------- Supplier Expenses (recurring/contracts) ----------
+@api_router.get("/supplier-expenses")
+async def list_supplier_expenses(only_unpaid: bool = False, user: dict = Depends(get_current_user)):
+    q = {}
+    if only_unpaid:
+        q["paid"] = False
+    items = await db.supplier_expenses.find(q, {"_id": 0}).sort("due_date", 1).to_list(500)
+    return items
+
+@api_router.post("/supplier-expenses")
+async def create_supplier_expense(body: SupplierExpenseIn, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    sup_name = None
+    if body.supplier_id:
+        sup = await db.suppliers.find_one({"id": body.supplier_id})
+        if not sup:
+            raise HTTPException(status_code=404, detail="Fornecedor não encontrado")
+        sup_name = sup["name"]
+    eid = str(uuid.uuid4())
+    doc = {
+        "id": eid,
+        "supplier_id": body.supplier_id,
+        "supplier_name": sup_name,
+        "description": body.description,
+        "amount": float(body.amount),
+        "due_date": body.due_date,
+        "paid": bool(body.paid),
+        "paid_at": body.paid_at if body.paid else None,
+        "recurring": body.recurring,
+        "note": body.note,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.supplier_expenses.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api_router.put("/supplier-expenses/{expense_id}")
+async def update_supplier_expense(expense_id: str, body: SupplierExpenseUpdate, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    update = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not update:
+        raise HTTPException(status_code=400, detail="Nada para atualizar")
+    if "supplier_id" in update and update["supplier_id"]:
+        sup = await db.suppliers.find_one({"id": update["supplier_id"]})
+        if sup:
+            update["supplier_name"] = sup["name"]
+    if update.get("paid") is True and not update.get("paid_at"):
+        update["paid_at"] = datetime.now(timezone.utc).isoformat()
+    if update.get("paid") is False:
+        update["paid_at"] = None
+    res = await db.supplier_expenses.update_one({"id": expense_id}, {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Despesa não encontrada")
+    return await db.supplier_expenses.find_one({"id": expense_id}, {"_id": 0})
+
+@api_router.delete("/supplier-expenses/{expense_id}")
+async def delete_supplier_expense(expense_id: str, user: dict = Depends(require_role("admin"))):
+    res = await db.supplier_expenses.delete_one({"id": expense_id})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Despesa não encontrada")
+    return {"ok": True}
 
 # ---------- Bootstrap ----------
 @app.on_event("startup")

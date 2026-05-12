@@ -15,6 +15,7 @@ import ClienteFicha from "./pages/ClienteFicha";
 import Socios from "./pages/Socios";
 import MBWay from "./pages/MBWay";
 import Fornecedores from "./pages/Fornecedores";
+import DividasHoje from "./pages/DividasHoje";
 import SocioLogin from "./pages/SocioLogin";
 import SocioPortal from "./pages/SocioPortal";
 
@@ -88,6 +89,7 @@ function App() {
                 <Route path="clientes" element={<Clientes />} />
                 <Route path="clientes/:id" element={<ClienteFicha />} />
                 <Route path="mbway" element={<MBWay />} />
+                <Route path="dividas" element={<DividasHoje />} />
                 <Route path="fornecedores" element={<StaffOnly><Fornecedores /></StaffOnly>} />
                 <Route
                   path="socios"

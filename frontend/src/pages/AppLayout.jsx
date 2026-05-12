@@ -13,6 +13,7 @@ import {
   ArrowLeft,
   House,
   Truck,
+  Wallet,
 } from "@phosphor-icons/react";
 
 const ROLE_LABEL = {
@@ -21,14 +22,30 @@ const ROLE_LABEL = {
   funcionario: "Funcionário",
 };
 
-const navItemsBase = [
-  { to: "/", label: "Dashboard", icon: ChartLineUp, testid: "nav-dashboard", roles: ["admin", "tesoureiro", "funcionario"] },
-  { to: "/vender", label: "Vender", icon: Storefront, testid: "nav-sell", roles: ["admin", "tesoureiro", "funcionario"] },
-  { to: "/stock", label: "Stock", icon: Package, testid: "nav-stock", roles: ["admin", "tesoureiro", "funcionario"] },
-  { to: "/fornecedores", label: "Fornecedores", icon: Truck, testid: "nav-fornecedores", roles: ["admin", "tesoureiro"] },
-  { to: "/clientes", label: "Clientes", icon: Users, testid: "nav-clients", roles: ["admin", "tesoureiro", "funcionario"] },
-  { to: "/mbway", label: "MBWay", icon: DeviceMobile, testid: "nav-mbway", roles: ["admin", "tesoureiro", "funcionario"] },
-  { to: "/socios", label: "Sócios", icon: IdentificationCard, testid: "nav-socios", roles: ["admin"] },
+const navGroups = [
+  {
+    section: null,
+    items: [
+      { to: "/", label: "Dashboard", icon: ChartLineUp, testid: "nav-dashboard", roles: ["admin", "tesoureiro", "funcionario"] },
+      { to: "/vender", label: "Vender", icon: Storefront, testid: "nav-sell", roles: ["admin", "tesoureiro", "funcionario"] },
+    ],
+  },
+  {
+    section: "Stock",
+    items: [
+      { to: "/stock", label: "Stock", icon: Package, testid: "nav-stock", roles: ["admin", "tesoureiro", "funcionario"] },
+      { to: "/fornecedores", label: "Fornecedores", icon: Truck, testid: "nav-fornecedores", roles: ["admin", "tesoureiro"] },
+    ],
+  },
+  {
+    section: "Clientes",
+    items: [
+      { to: "/clientes", label: "Clientes", icon: Users, testid: "nav-clients", roles: ["admin", "tesoureiro", "funcionario"] },
+      { to: "/socios", label: "Sócios", icon: IdentificationCard, testid: "nav-socios", roles: ["admin"] },
+      { to: "/dividas", label: "Dívidas hoje", icon: Wallet, testid: "nav-dividas", roles: ["admin", "tesoureiro", "funcionario"] },
+      { to: "/mbway", label: "MBWay", icon: DeviceMobile, testid: "nav-mbway", roles: ["admin", "tesoureiro", "funcionario"] },
+    ],
+  },
 ];
 
 export default function AppLayout() {
@@ -65,27 +82,38 @@ export default function AppLayout() {
           </div>
         </div>
 
-        <nav className="flex-1 px-4 py-6 space-y-1">
-          {navItemsBase
-            .filter((item) => !user?.role || item.roles.includes(user.role))
-            .map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.to === "/"}
-                data-testid={item.testid}
-                className={({ isActive }) =>
-                  `flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all ${
-                    isActive
-                      ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
-                      : "text-slate-400 hover:text-white hover:bg-slate-900"
-                  }`
-                }
-              >
-                <item.icon size={20} weight="duotone" />
-                {item.label}
-              </NavLink>
-            ))}
+        <nav className="flex-1 px-4 py-6 space-y-5 overflow-y-auto">
+          {navGroups.map((group, gi) => {
+            const visible = group.items.filter((item) => !user?.role || item.roles.includes(user.role));
+            if (!visible.length) return null;
+            return (
+              <div key={gi} className="space-y-1">
+                {group.section && (
+                  <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-slate-600 px-4 mb-2">
+                    {group.section}
+                  </div>
+                )}
+                {visible.map((item) => (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    end={item.to === "/"}
+                    data-testid={item.testid}
+                    className={({ isActive }) =>
+                      `flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                        isActive
+                          ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                          : "text-slate-400 hover:text-white hover:bg-slate-900"
+                      }`
+                    }
+                  >
+                    <item.icon size={20} weight="duotone" />
+                    {item.label}
+                  </NavLink>
+                ))}
+              </div>
+            );
+          })}
         </nav>
 
         <div className="p-4 border-t border-slate-900">

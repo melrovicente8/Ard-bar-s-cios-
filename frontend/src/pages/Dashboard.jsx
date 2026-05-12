@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import api, { euro } from "../lib/api";
 import {
   CurrencyEur,
@@ -7,6 +8,9 @@ import {
   Warning,
   ReceiptX,
   TrendUp,
+  Truck,
+  Calendar,
+  CalendarBlank,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -74,7 +78,7 @@ export default function Dashboard() {
         </h1>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-5">
         <StatCard
           testid="kpi-today-sales"
           icon={CurrencyEur}
@@ -83,11 +87,32 @@ export default function Dashboard() {
           accent="bg-amber-500/10 text-amber-500"
         />
         <StatCard
+          testid="kpi-week-sales"
+          icon={Calendar}
+          label="Vendas semana"
+          value={euro(data.week_sales_total || 0)}
+          accent="bg-amber-500/10 text-amber-400"
+        />
+        <StatCard
+          testid="kpi-month-sales"
+          icon={CalendarBlank}
+          label="Vendas mês"
+          value={euro(data.month_sales_total || 0)}
+          accent="bg-amber-500/10 text-amber-300"
+        />
+        <StatCard
           testid="kpi-outstanding"
           icon={ReceiptX}
-          label="A receber"
+          label="A receber clientes"
           value={euro(data.outstanding_debt)}
           accent="bg-rose-500/10 text-rose-400"
+        />
+        <StatCard
+          testid="kpi-suppliers-debt"
+          icon={Truck}
+          label="A pagar fornecedores"
+          value={euro(data.suppliers_debt || 0)}
+          accent="bg-fuchsia-500/10 text-fuchsia-300"
         />
         <StatCard
           testid="kpi-stock-value"
@@ -102,6 +127,13 @@ export default function Dashboard() {
           label="Clientes"
           value={data.clients_count}
           accent="bg-sky-500/10 text-sky-400"
+        />
+        <StatCard
+          testid="kpi-debtors"
+          icon={Warning}
+          label="Pessoas em dívida"
+          value={data.today_debtors_count || 0}
+          accent="bg-orange-500/10 text-orange-300"
         />
       </div>
 
@@ -211,7 +243,9 @@ export default function Dashboard() {
                       {new Date(s.created_at).toLocaleString("pt-PT")}
                     </td>
                     <td className="py-3 text-slate-200 font-medium">
-                      {s.client_name}
+                      <Link to={`/clientes/${s.client_id}`} className="hover:text-amber-400">
+                        {s.client_name}
+                      </Link>
                     </td>
                     <td className="py-3 text-slate-400">
                       {s.items.reduce((a, b) => a + b.quantity, 0)} produto(s)
