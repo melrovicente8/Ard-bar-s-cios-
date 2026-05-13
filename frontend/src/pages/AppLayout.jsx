@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import {
@@ -15,6 +15,10 @@ import {
   Truck,
   Wallet,
   UsersThree,
+  ClockCounterClockwise,
+  ShoppingCart,
+  List,
+  X as XIcon,
 } from "@phosphor-icons/react";
 
 const ROLE_LABEL = {
@@ -45,12 +49,14 @@ const navGroups = [
       { to: "/clientes", label: "Clientes", icon: Users, testid: "nav-clients", roles: ["admin", "tesoureiro", "funcionario"] },
       { to: "/socios", label: "Sócios", icon: IdentificationCard, testid: "nav-socios", roles: ["admin"] },
       { to: "/mbway", label: "MBWay", icon: DeviceMobile, testid: "nav-mbway", roles: ["admin", "tesoureiro", "funcionario"] },
+      { to: "/pedidos", label: "Pedidos sócio", icon: ShoppingCart, testid: "nav-pedidos", roles: ["admin", "tesoureiro", "funcionario"] },
     ],
   },
   {
     section: "Administração",
     items: [
       { to: "/equipa", label: "Equipa", icon: UsersThree, testid: "nav-equipa", roles: ["admin"] },
+      { to: "/historico", label: "Histórico", icon: ClockCounterClockwise, testid: "nav-historico", roles: ["admin", "tesoureiro"] },
     ],
   },
 ];
@@ -60,6 +66,9 @@ export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const isHome = location.pathname === "/" || location.pathname === "";
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  React.useEffect(() => { setMobileOpen(false); }, [location.pathname]);
 
   const onLogout = async () => {
     await logout();
@@ -68,12 +77,22 @@ export default function AppLayout() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex grain-bg">
+      {/* Mobile overlay */}
+      {mobileOpen && (
+        <div
+          onClick={() => setMobileOpen(false)}
+          className="md:hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-30"
+          aria-hidden="true"
+        />
+      )}
       {/* Sidebar */}
       <aside
         data-testid="sidebar"
-        className="w-64 shrink-0 border-r border-slate-900 flex flex-col bg-slate-950/80 backdrop-blur-xl"
+        className={`fixed md:sticky md:top-0 inset-y-0 left-0 w-64 shrink-0 border-r border-slate-900 flex flex-col bg-slate-950/95 md:bg-slate-950/80 backdrop-blur-xl z-40 transform transition-transform md:transform-none md:translate-x-0 md:h-screen ${
+          mobileOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
       >
-        <div className="px-6 py-7 border-b border-slate-900">
+        <div className="px-6 py-7 border-b border-slate-900 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-11 h-11 rounded-lg bg-gradient-to-br from-green-600 to-green-700 border-2 border-amber-400 flex items-center justify-center flex-shrink-0">
               <SoccerBall size={24} weight="duotone" className="text-amber-400" />
@@ -87,6 +106,13 @@ export default function AppLayout() {
               </div>
             </div>
           </div>
+          <button
+            onClick={() => setMobileOpen(false)}
+            className="md:hidden text-slate-500 hover:text-white p-1"
+            aria-label="Fechar"
+          >
+            <XIcon size={18} weight="bold" />
+          </button>
         </div>
 
         <nav className="flex-1 px-4 py-6 space-y-5 overflow-y-auto">
@@ -149,8 +175,16 @@ export default function AppLayout() {
       </aside>
 
       {/* Main */}
-      <main className="flex-1 overflow-x-hidden flex flex-col">
-        <div className="sticky top-0 z-20 bg-slate-950/80 backdrop-blur-xl border-b border-slate-900 px-6 py-3 flex items-center gap-2">
+      <main className="flex-1 overflow-x-hidden flex flex-col min-w-0">
+        <div className="sticky top-0 z-20 bg-slate-950/80 backdrop-blur-xl border-b border-slate-900 px-3 md:px-6 py-3 flex items-center gap-2">
+          <button
+            data-testid="mobile-menu-btn"
+            onClick={() => setMobileOpen(true)}
+            className="md:hidden flex items-center justify-center w-9 h-9 rounded-md text-slate-300 hover:text-white hover:bg-slate-900 transition-colors"
+            aria-label="Abrir menu"
+          >
+            <List size={20} weight="bold" />
+          </button>
           <button
             data-testid="topbar-back-btn"
             onClick={() => navigate(-1)}
@@ -158,7 +192,7 @@ export default function AppLayout() {
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm text-slate-400 hover:text-white hover:bg-slate-900 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
             title="Voltar"
           >
-            <ArrowLeft size={16} weight="bold" /> Voltar
+            <ArrowLeft size={16} weight="bold" /> <span className="hidden sm:inline">Voltar</span>
           </button>
           <button
             data-testid="topbar-home-btn"

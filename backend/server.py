@@ -34,6 +34,7 @@ api_router = APIRouter(prefix="/api")
 JWT_ALGORITHM = "HS256"
 JWT_SECRET = os.environ["JWT_SECRET"]
 CLUB_NAME = os.environ.get("CLUB_NAME", "ARD Nespereira")
+QUOTA_MONTHLY_VALUE = float(os.environ.get("QUOTA_MONTHLY_VALUE", "5.00"))
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
 
@@ -120,6 +121,7 @@ class PaymentIn(BaseModel):
     amount: float
     points_used: int = 0
     note: Optional[str] = None
+    keep_change_as_credit: bool = False  # se False, valor abate é capped na dívida
 
 class PaymentUpdate(BaseModel):
     amount: Optional[float] = None
@@ -533,6 +535,35 @@ async def list_debtors(user: dict = Depends(get_current_user)):
     debtors.sort(key=lambda x: x.get("balance", 0), reverse=True)
     return debtors
 
+async def _log_points(client_id: str, delta: int, source: str, ref_id: Optional[str], note: str, user_email: str):
+    """Regista uma entrada no histórico de pontos."""
+    if delta == 0:
+        return
+    await db.points_history.insert_one({
+        "id": str(uuid.uuid4()),
+        "client_id": client_id,
+        "delta": int(delta),  # positivo = atribuído, negativo = descontado
+        "source": source,  # "sale" | "sale_cancel" | "sale_edit" | "payment" | "socio_pay"
+        "ref_id": ref_id,
+        "note": note,
+        "user_email": user_email,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+def _compute_points_with_rollover(client: dict, total: float) -> tuple[int, float]:
+    """Retorna (points_earned, new_pending_value).
+    Sócios acumulam o resto (cêntimos não convertidos) para a próxima compra.
+    Não-sócios não fazem rollover."""
+    is_member = bool(client.get("is_member"))
+    step = 5.0 if is_member else 10.0
+    pending = float(client.get("points_pending_value", 0)) if is_member else 0.0
+    effective = pending + float(total)
+    pts = int(effective // step)
+    new_pending = round(effective - pts * step, 2) if is_member else 0.0
+    return pts, new_pending
+
+
 # ---------- Sales ----------
 @api_router.post("/sales")
 async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
@@ -571,9 +602,10 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
         await db.products.update_one({"id": it.product_id}, {"$inc": {"quantity": -int(it.quantity)}})
 
     sale_id = str(uuid.uuid4())
-    # Points: 1 ponto por cada 5€ se sócio com cotas pagas, senão por cada 10€
-    points_step = 5.0 if client_doc.get("is_member") else 10.0
-    points_earned = int(total // points_step)
+    # Points com rollover (sócios apenas)
+    is_member = bool(client_doc.get("is_member"))
+    old_pending = float(client_doc.get("points_pending_value", 0)) if is_member else 0.0
+    points_earned, new_pending = _compute_points_with_rollover(client_doc, total)
     sale_doc = {
         "id": sale_id,
         "client_id": body.client_id,
@@ -581,17 +613,25 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
         "items": line_items,
         "total": total,
         "points_earned": points_earned,
-        "is_member_at_sale": bool(client_doc.get("is_member", False)),
+        "points_pending_before": old_pending,
+        "points_pending_after": new_pending,
+        "is_member_at_sale": is_member,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "user_email": user["email"],
     }
     await db.sales.insert_one(sale_doc)
 
-    # update client balance, total spent, and points
-    await db.clients.update_one(
-        {"id": body.client_id},
-        {"$inc": {"balance": total, "total_spent": total, "points": points_earned}},
-    )
+    # update client balance, total spent, points and pending value
+    set_ops: dict = {}
+    inc_ops = {"balance": total, "total_spent": total, "points": points_earned}
+    if is_member:
+        set_ops["points_pending_value"] = new_pending
+    op = {"$inc": inc_ops}
+    if set_ops:
+        op["$set"] = set_ops
+    await db.clients.update_one({"id": body.client_id}, op)
+    if points_earned:
+        await _log_points(body.client_id, points_earned, "sale", sale_id, f"Venda de {total:.2f} €", user["email"])
     sale_doc.pop("_id", None)
     return sale_doc
 
@@ -620,9 +660,18 @@ async def cancel_sale(sale_id: str, user: dict = Depends(get_current_user)):
     total = float(sale.get("total", 0))
     pts = int(sale.get("points_earned", 0))
     inc = {"balance": -total, "total_spent": -total}
+    set_ops = {}
     if pts:
         inc["points"] = -pts
-    await db.clients.update_one({"id": sale["client_id"]}, {"$inc": inc})
+    # Reverter pending value para o snapshot pré-venda (se gravado)
+    if "points_pending_before" in sale:
+        set_ops["points_pending_value"] = float(sale["points_pending_before"])
+    op = {"$inc": inc}
+    if set_ops:
+        op["$set"] = set_ops
+    await db.clients.update_one({"id": sale["client_id"]}, op)
+    if pts:
+        await _log_points(sale["client_id"], -pts, "sale_cancel", sale["id"], "Venda cancelada", user["email"])
     # audit log
     await db.audit_log.insert_one({
         "id": str(uuid.uuid4()),
@@ -720,9 +769,23 @@ async def update_sale(sale_id: str, body: SaleEditIn, user: dict = Depends(get_c
             await db.clients.update_one({"id": new_client_id}, {"$inc": inc})
 
     # audit
+    changes = {}
+    if new_client_id != sale["client_id"]:
+        changes["client"] = {"before": sale.get("client_name"), "after": new_client["name"]}
+    if body.items is not None:
+        before_items = [f"{it['quantity']}× {it['product_name']}" for it in sale["items"]]
+        after_items = [f"{it['quantity']}× {it['product_name']}" for it in new_line_items]
+        if before_items != after_items:
+            changes["items"] = {"before": before_items, "after": after_items}
+    if abs(new_total - old_total) > 1e-9:
+        changes["total"] = {"before": old_total, "after": new_total}
     await db.audit_log.insert_one({
         "id": str(uuid.uuid4()),
         "type": "sale_edit",
+        "sale_id": sale_id,
+        "client_id": new_client_id,
+        "client_name": new_client["name"],
+        "changes": changes,
         "before": sale,
         "by": user["email"],
         "at": datetime.now(timezone.utc).isoformat(),
@@ -742,6 +805,211 @@ async def update_sale(sale_id: str, body: SaleEditIn, user: dict = Depends(get_c
     )
     return await db.sales.find_one({"id": sale_id}, {"_id": 0})
 
+# ---------- Sales Report (filtros) ----------
+@api_router.get("/reports/sales")
+async def report_sales(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user_email: Optional[str] = None,
+    client_id: Optional[str] = None,
+    status_filter: Optional[str] = None,  # "paid" | "open" | None
+    user: dict = Depends(require_role("admin", "tesoureiro")),
+):
+    dfrom = date_from + "T00:00:00" if (date_from and "T" not in date_from) else date_from
+    dto = date_to + "T23:59:59" if (date_to and "T" not in date_to) else date_to
+    q: dict = {}
+    if user_email:
+        q["user_email"] = user_email
+    if client_id:
+        q["client_id"] = client_id
+    if dfrom or dto:
+        rng = {}
+        if dfrom:
+            rng["$gte"] = dfrom
+        if dto:
+            rng["$lte"] = dto
+        q["created_at"] = rng
+    sales = await db.sales.find(q, {"_id": 0}).sort("created_at", -1).to_list(5000)
+
+    # Determinar estado pago/em aberto por cliente abatendo pagamentos cronologicamente
+    clients_ids = list({s["client_id"] for s in sales})
+    payments = await db.payments.find({"client_id": {"$in": clients_ids}}, {"_id": 0}).sort("created_at", 1).to_list(20000) if clients_ids else []
+    paid_by_client: dict = {}
+    for p in payments:
+        paid_by_client[p["client_id"]] = paid_by_client.get(p["client_id"], 0.0) + float(p.get("total_credited", p.get("amount", 0)))
+    # Sort sales por cliente + asc para imputar
+    by_client: dict = {}
+    for s in sorted(sales, key=lambda x: x["created_at"]):
+        by_client.setdefault(s["client_id"], []).append(s)
+    sale_status: dict = {}
+    for cid, slist in by_client.items():
+        remaining = paid_by_client.get(cid, 0.0)
+        for s in slist:
+            if remaining >= s["total"] - 1e-9:
+                sale_status[s["id"]] = "paid"
+                remaining -= s["total"]
+            elif remaining > 1e-9:
+                sale_status[s["id"]] = "partial"
+                remaining = 0
+            else:
+                sale_status[s["id"]] = "open"
+
+    # Anotar status; aplicar filtro de status
+    for s in sales:
+        s["status"] = sale_status.get(s["id"], "open")
+    if status_filter:
+        if status_filter == "open":
+            sales = [s for s in sales if s["status"] in ("open", "partial")]
+        elif status_filter == "paid":
+            sales = [s for s in sales if s["status"] == "paid"]
+
+    total = sum(s.get("total", 0) for s in sales)
+    by_user: dict = {}
+    for s in sales:
+        ue = s.get("user_email") or "—"
+        by_user[ue] = by_user.get(ue, 0) + s.get("total", 0)
+    return {
+        "sales": sales,
+        "period": {"from": date_from, "to": date_to},
+        "filters": {"user_email": user_email, "client_id": client_id, "status": status_filter},
+        "totals": {"count": len(sales), "amount": total, "by_user": by_user},
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "club_name": CLUB_NAME,
+    }
+
+# ---------- Audit log ----------
+@api_router.get("/audit-log")
+async def list_audit_log(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user_email: Optional[str] = None,
+    event_type: Optional[str] = None,
+    limit: int = 500,
+    user: dict = Depends(require_role("admin", "tesoureiro")),
+):
+    dfrom = date_from + "T00:00:00" if (date_from and "T" not in date_from) else date_from
+    dto = date_to + "T23:59:59" if (date_to and "T" not in date_to) else date_to
+    q: dict = {}
+    if user_email:
+        q["by"] = user_email
+    if event_type:
+        q["type"] = event_type
+    if dfrom or dto:
+        rng = {}
+        if dfrom:
+            rng["$gte"] = dfrom
+        if dto:
+            rng["$lte"] = dto
+        q["at"] = rng
+    items = await db.audit_log.find(q, {"_id": 0}).sort("at", -1).to_list(min(max(limit, 1), 2000))
+    return items
+
+# ---------- Points history ----------
+@api_router.get("/clients/{client_id}/points-history")
+async def client_points_history(client_id: str, user: dict = Depends(get_current_user)):
+    items = await db.points_history.find({"client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    earned = sum(it["delta"] for it in items if it["delta"] > 0)
+    spent = sum(-it["delta"] for it in items if it["delta"] < 0)
+    return {"items": items, "earned": earned, "spent": spent}
+
+# ---------- Sócio consumption requests (Fase C) ----------
+class SocioConsumptionReqIn(BaseModel):
+    items: List[SaleItemIn]
+    note: Optional[str] = None
+
+# Endpoints de sócio (POST/GET /socio/consumption-request*) e validação por staff
+# são definidos mais abaixo, depois de get_current_socio estar disponível.
+
+@api_router.get("/consumption-requests")
+async def list_consumption_requests(status_filter: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q: dict = {}
+    if status_filter:
+        q["status"] = status_filter
+    items = await db.consumption_requests.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return items
+
+@api_router.post("/consumption-requests/{req_id}/approve")
+async def approve_consumption_request(req_id: str, user: dict = Depends(get_current_user)):
+    req = await db.consumption_requests.find_one({"id": req_id}, {"_id": 0})
+    if not req:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if req["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Pedido já tratado")
+    client_doc = await db.clients.find_one({"id": req["client_id"]})
+    if not client_doc:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    # Validar stock + atualizar
+    pids = [it["product_id"] for it in req["items"]]
+    prods = await db.products.find({"id": {"$in": pids}}, {"_id": 0}).to_list(len(pids))
+    pmap = {p["id"]: p for p in prods}
+    for it in req["items"]:
+        prod = pmap.get(it["product_id"])
+        if not prod:
+            raise HTTPException(status_code=400, detail=f"Produto {it['product_name']} foi removido")
+        if prod["quantity"] < it["quantity"]:
+            raise HTTPException(status_code=400, detail=f"Stock insuficiente para {prod['name']}")
+    for it in req["items"]:
+        await db.products.update_one({"id": it["product_id"]}, {"$inc": {"quantity": -int(it["quantity"])}})
+    # Criar venda
+    sale_id = str(uuid.uuid4())
+    is_member = bool(client_doc.get("is_member"))
+    old_pending = float(client_doc.get("points_pending_value", 0)) if is_member else 0.0
+    points_earned, new_pending = _compute_points_with_rollover(client_doc, req["total"])
+    sale_doc = {
+        "id": sale_id,
+        "client_id": req["client_id"],
+        "client_name": req["client_name"],
+        "items": req["items"],
+        "total": req["total"],
+        "points_earned": points_earned,
+        "points_pending_before": old_pending,
+        "points_pending_after": new_pending,
+        "is_member_at_sale": is_member,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "user_email": user["email"],
+        "source": "socio_request",
+        "request_id": req_id,
+    }
+    await db.sales.insert_one(sale_doc)
+    inc = {"balance": req["total"], "total_spent": req["total"], "points": points_earned}
+    set_ops = {}
+    if is_member:
+        set_ops["points_pending_value"] = new_pending
+    op = {"$inc": inc}
+    if set_ops:
+        op["$set"] = set_ops
+    await db.clients.update_one({"id": req["client_id"]}, op)
+    if points_earned:
+        await _log_points(req["client_id"], points_earned, "sale", sale_id, f"Pedido sócio aprovado · {req['total']:.2f} €", user["email"])
+    await db.consumption_requests.update_one(
+        {"id": req_id},
+        {"$set": {
+            "status": "approved",
+            "decided_at": datetime.now(timezone.utc).isoformat(),
+            "decided_by": user["email"],
+            "sale_id": sale_id,
+        }},
+    )
+    sale_doc.pop("_id", None)
+    return {"ok": True, "sale": sale_doc}
+
+@api_router.post("/consumption-requests/{req_id}/reject")
+async def reject_consumption_request(req_id: str, user: dict = Depends(get_current_user)):
+    req = await db.consumption_requests.find_one({"id": req_id}, {"_id": 0})
+    if not req:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if req["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Pedido já tratado")
+    await db.consumption_requests.update_one(
+        {"id": req_id},
+        {"$set": {
+            "status": "rejected",
+            "decided_at": datetime.now(timezone.utc).isoformat(),
+            "decided_by": user["email"],
+        }},
+    )
+    return {"ok": True}
+
 # ---------- Payments ----------
 @api_router.post("/payments")
 async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)):
@@ -757,9 +1025,17 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
     if body.points_used and body.points_used > int(c.get("points", 0)):
         raise HTTPException(status_code=400, detail="Pontos insuficientes")
     points_euros = body.points_used / POINTS_PER_EURO
-    total_paid = float(body.amount) + points_euros
-    if total_paid <= 0:
+    total_paid_raw = float(body.amount) + points_euros
+    if total_paid_raw <= 0:
         raise HTTPException(status_code=400, detail="O pagamento total tem de ser superior a 0")
+    current_debt = max(float(c.get("balance", 0)), 0.0)
+    # Cap o valor creditado se NÃO quiser deixar troco como crédito
+    if not body.keep_change_as_credit and total_paid_raw > current_debt:
+        total_paid = current_debt
+        change_returned = round(total_paid_raw - current_debt, 2)
+    else:
+        total_paid = total_paid_raw
+        change_returned = 0.0
     pid = str(uuid.uuid4())
     pay = {
         "id": pid,
@@ -769,6 +1045,9 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
         "points_used": int(body.points_used),
         "points_value": float(points_euros),
         "total_credited": total_paid,
+        "tendered": total_paid_raw,  # valor total entregue (numerário + pontos)
+        "change_returned": change_returned,  # troco devolvido em dinheiro
+        "keep_change_as_credit": bool(body.keep_change_as_credit),
         "note": body.note,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "user_email": user["email"],
@@ -779,6 +1058,8 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
     if body.points_used:
         inc["points"] = -int(body.points_used)
     await db.clients.update_one({"id": body.client_id}, {"$inc": inc})
+    if body.points_used:
+        await _log_points(body.client_id, -int(body.points_used), "payment", pid, f"Pagamento (descontou {points_euros:.2f} €)", user["email"])
     pay.pop("_id", None)
     return pay
 
@@ -1081,7 +1362,117 @@ async def club_info():
     return {
         "name": CLUB_NAME,
         "mbway_phone": os.environ.get("CLUB_MBWAY_PHONE", ""),
+        "quota_monthly_value": QUOTA_MONTHLY_VALUE,
     }
+
+# ---------- Quotas (cotas mensais) ----------
+MONTHS_PT = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+
+async def _quotas_status(client_id: str, year: int) -> list:
+    """Retorna 12 entradas (uma por mês) com estado pago/em aberto para um sócio."""
+    items = await db.quotas.find({"client_id": client_id, "year": year}, {"_id": 0}).to_list(20)
+    paid_by_month = {it["month"]: it for it in items}
+    out = []
+    for m in range(1, 13):
+        entry = paid_by_month.get(m)
+        out.append({
+            "year": year,
+            "month": m,
+            "label": f"{MONTHS_PT[m-1]}/{year}",
+            "amount": QUOTA_MONTHLY_VALUE,
+            "status": (entry.get("status") if entry else "open"),
+            "paid_at": entry.get("paid_at") if entry else None,
+            "sale_id": entry.get("sale_id") if entry else None,
+        })
+    return out
+
+@api_router.get("/clients/{client_id}/quotas")
+async def get_client_quotas(client_id: str, year: Optional[int] = None, user: dict = Depends(get_current_user)):
+    if year is None:
+        year = datetime.now(timezone.utc).year
+    c = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
+    if not c:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    return {"year": year, "client": c, "quotas": await _quotas_status(client_id, year)}
+
+class QuotaPayIn(BaseModel):
+    client_id: str
+    year: int
+    months: List[int]
+    payment_method: str = "cash"  # cash | mbway
+
+@api_router.post("/quotas/pay")
+async def pay_quotas(body: QuotaPayIn, user: dict = Depends(get_current_user)):
+    if not body.months:
+        raise HTTPException(status_code=400, detail="Sem meses selecionados")
+    c = await db.clients.find_one({"id": body.client_id})
+    if not c:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    # Verificar que nenhum mês já está pago
+    already = await db.quotas.find({"client_id": body.client_id, "year": body.year, "month": {"$in": body.months}, "status": "paid"}, {"_id": 0}).to_list(20)
+    if already:
+        raise HTTPException(status_code=400, detail=f"Já pagos: {', '.join(MONTHS_PT[a['month']-1] for a in already)}")
+    total = QUOTA_MONTHLY_VALUE * len(body.months)
+    sale_id = str(uuid.uuid4())
+    items = [{
+        "product_id": f"quota-{body.year}-{m:02d}",
+        "product_name": f"Cota {MONTHS_PT[m-1]}/{body.year}",
+        "unit_price": QUOTA_MONTHLY_VALUE,
+        "quantity": 1,
+        "subtotal": QUOTA_MONTHLY_VALUE,
+    } for m in body.months]
+    sale = {
+        "id": sale_id,
+        "client_id": body.client_id,
+        "client_name": c["name"],
+        "items": items,
+        "total": total,
+        "points_earned": 0,
+        "is_member_at_sale": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "user_email": user["email"],
+        "source": "quota",
+    }
+    await db.sales.insert_one(sale)
+    # registar pagamento imediato (cotas entram como receita pagas, não a crédito)
+    pay = {
+        "id": str(uuid.uuid4()),
+        "client_id": body.client_id,
+        "client_name": c["name"],
+        "amount": total,
+        "points_used": 0,
+        "points_value": 0.0,
+        "total_credited": total,
+        "tendered": total,
+        "change_returned": 0.0,
+        "keep_change_as_credit": False,
+        "note": f"Cotas {body.year}: {', '.join(MONTHS_PT[m-1] for m in body.months)}",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "user_email": user["email"],
+        "source": f"quota-{body.payment_method}",
+        "sale_id": sale_id,
+    }
+    await db.payments.insert_one(pay)
+    # update client total_spent (não mexer no balance pois pagamento cobre 100%)
+    await db.clients.update_one({"id": body.client_id}, {"$inc": {"total_spent": total}})
+    # marcar cotas pagas
+    for m in body.months:
+        await db.quotas.update_one(
+            {"client_id": body.client_id, "year": body.year, "month": m},
+            {"$set": {
+                "client_id": body.client_id, "year": body.year, "month": m,
+                "status": "paid",
+                "amount": QUOTA_MONTHLY_VALUE,
+                "paid_at": datetime.now(timezone.utc).isoformat(),
+                "sale_id": sale_id,
+                "payment_id": pay["id"],
+                "user_email": user["email"],
+            }},
+            upsert=True,
+        )
+    sale.pop("_id", None)
+    pay.pop("_id", None)
+    return {"sale": sale, "payment": pay}
 
 @api_router.post("/socio/login")
 async def socio_login(body: SocioLoginIn, response: Response):
@@ -1140,6 +1531,99 @@ async def socio_mbway_request(body: MBWayRequestIn, socio: dict = Depends(get_cu
     rec.pop("_id", None)
     return rec
 
+@api_router.post("/socio/consumption-request")
+async def socio_consumption_request(body: SocioConsumptionReqIn, socio: dict = Depends(get_current_socio)):
+    if not body.items:
+        raise HTTPException(status_code=400, detail="Sem itens")
+    pids = [it.product_id for it in body.items]
+    prods = await db.products.find({"id": {"$in": pids}}, {"_id": 0}).to_list(len(pids))
+    pmap = {p["id"]: p for p in prods}
+    line_items = []
+    total = 0.0
+    for it in body.items:
+        prod = pmap.get(it.product_id)
+        if not prod:
+            raise HTTPException(status_code=404, detail=f"Produto {it.product_id} não encontrado")
+        if it.quantity <= 0:
+            raise HTTPException(status_code=400, detail="Quantidade inválida")
+        sub = float(prod["price"]) * int(it.quantity)
+        total += sub
+        line_items.append({
+            "product_id": prod["id"],
+            "product_name": prod["name"],
+            "unit_price": float(prod["price"]),
+            "quantity": int(it.quantity),
+            "subtotal": sub,
+        })
+    rid = str(uuid.uuid4())
+    doc = {
+        "id": rid,
+        "client_id": socio["id"],
+        "client_name": socio["name"],
+        "items": line_items,
+        "total": total,
+        "note": body.note,
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "decided_at": None,
+        "decided_by": None,
+        "sale_id": None,
+    }
+    await db.consumption_requests.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api_router.get("/socio/consumption-requests")
+async def socio_my_requests(socio: dict = Depends(get_current_socio)):
+    items = await db.consumption_requests.find({"client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return items
+
+@api_router.get("/socio/points-history")
+async def socio_points_history(socio: dict = Depends(get_current_socio)):
+    items = await db.points_history.find({"client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    earned = sum(it["delta"] for it in items if it["delta"] > 0)
+    spent = sum(-it["delta"] for it in items if it["delta"] < 0)
+    return {"items": items, "earned": earned, "spent": spent}
+
+@api_router.get("/socio/quotas")
+async def socio_quotas(year: Optional[int] = None, socio: dict = Depends(get_current_socio)):
+    if year is None:
+        year = datetime.now(timezone.utc).year
+    return {"year": year, "quotas": await _quotas_status(socio["id"], year)}
+
+class SocioQuotaPayIn(BaseModel):
+    year: int
+    months: List[int]
+    mbway_phone: str
+
+@api_router.post("/socio/quotas/pay")
+async def socio_pay_quotas(body: SocioQuotaPayIn, socio: dict = Depends(get_current_socio)):
+    """Sócio pede para pagar cotas via MBWay — cria pedido pendente para staff confirmar."""
+    if not body.months:
+        raise HTTPException(status_code=400, detail="Sem meses selecionados")
+    already = await db.quotas.find({"client_id": socio["id"], "year": body.year, "month": {"$in": body.months}, "status": "paid"}, {"_id": 0}).to_list(20)
+    if already:
+        raise HTTPException(status_code=400, detail=f"Já pagos: {', '.join(MONTHS_PT[a['month']-1] for a in already)}")
+    total = QUOTA_MONTHLY_VALUE * len(body.months)
+    rec = {
+        "id": str(uuid.uuid4()),
+        "client_id": socio["id"],
+        "client_name": socio["name"],
+        "amount": total,
+        "mbway_phone": body.mbway_phone.strip(),
+        "note": f"Cotas {body.year}: {', '.join(MONTHS_PT[m-1] for m in body.months)}",
+        "status": "pending",
+        "kind": "quota",
+        "quota_year": body.year,
+        "quota_months": body.months,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "confirmed_at": None,
+        "confirmed_by": None,
+    }
+    await db.mbway_payments.insert_one(rec)
+    rec.pop("_id", None)
+    return rec
+
 # 5 pontos = 1 €
 @api_router.post("/socio/pay-with-points")
 async def socio_pay_with_points(body: SocioPayPointsIn, socio: dict = Depends(get_current_socio)):
@@ -1174,6 +1658,7 @@ async def socio_pay_with_points(body: SocioPayPointsIn, socio: dict = Depends(ge
         {"id": socio["id"]},
         {"$inc": {"balance": -float(euros), "points": -int(body.points)}},
     )
+    await _log_points(socio["id"], -int(body.points), "socio_pay", pay["id"], f"Sócio pagou {euros:.2f} € com pontos", socio.get("email") or "socio-self")
     pay.pop("_id", None)
     return pay
 
@@ -1198,19 +1683,63 @@ async def confirm_mbway_payment(mb_id: str, user: dict = Depends(get_current_use
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
     # create actual payment
     pid = str(uuid.uuid4())
+    is_quota = mb.get("kind") == "quota"
+    # Se é cota: cria também a venda (linha de receita)
+    sale_id = None
+    if is_quota:
+        sale_id = str(uuid.uuid4())
+        items = [{
+            "product_id": f"quota-{mb['quota_year']}-{m:02d}",
+            "product_name": f"Cota {MONTHS_PT[m-1]}/{mb['quota_year']}",
+            "unit_price": QUOTA_MONTHLY_VALUE,
+            "quantity": 1,
+            "subtotal": QUOTA_MONTHLY_VALUE,
+        } for m in mb["quota_months"]]
+        await db.sales.insert_one({
+            "id": sale_id,
+            "client_id": mb["client_id"],
+            "client_name": mb["client_name"],
+            "items": items,
+            "total": float(mb["amount"]),
+            "points_earned": 0,
+            "is_member_at_sale": True,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "user_email": user["email"],
+            "source": "quota",
+        })
+        await db.clients.update_one({"id": mb["client_id"]}, {"$inc": {"total_spent": float(mb["amount"])}})
+        # marcar cotas pagas
+        for m in mb["quota_months"]:
+            await db.quotas.update_one(
+                {"client_id": mb["client_id"], "year": mb["quota_year"], "month": m},
+                {"$set": {
+                    "client_id": mb["client_id"], "year": mb["quota_year"], "month": m,
+                    "status": "paid",
+                    "amount": QUOTA_MONTHLY_VALUE,
+                    "paid_at": datetime.now(timezone.utc).isoformat(),
+                    "sale_id": sale_id,
+                    "user_email": user["email"],
+                }},
+                upsert=True,
+            )
     pay = {
         "id": pid,
         "client_id": mb["client_id"],
         "client_name": mb["client_name"],
         "amount": float(mb["amount"]),
+        "total_credited": float(mb["amount"]),
         "note": f"MBWay {mb['mbway_phone']}" + (f" · {mb['note']}" if mb.get("note") else ""),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "user_email": user["email"],
-        "source": "mbway",
+        "source": "mbway-quota" if is_quota else "mbway",
         "mbway_id": mb_id,
     }
+    if sale_id:
+        pay["sale_id"] = sale_id
     await db.payments.insert_one(pay)
-    await db.clients.update_one({"id": mb["client_id"]}, {"$inc": {"balance": -float(mb["amount"])}})
+    if not is_quota:
+        # Cotas já estão balanceadas (sale + pay = 0); MBWay normal abate dívida existente
+        await db.clients.update_one({"id": mb["client_id"]}, {"$inc": {"balance": -float(mb["amount"])}})
     await db.mbway_payments.update_one(
         {"id": mb_id},
         {"$set": {"status": "confirmed", "confirmed_at": datetime.now(timezone.utc).isoformat(), "confirmed_by": user["email"], "payment_id": pid}},

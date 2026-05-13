@@ -1,0 +1,38 @@
+{
+  "summary": "Iter 9 (Phase B+C) — backend 15/15 pytest PASS + frontend critical flows verified. Backend covers: (a) POST /api/payments default keep_change_as_credit=False CAPS total_credited at debt, returns change_returned, balance=0 — verified; (b) keep_change_as_credit=True keeps full credit, balance negative — verified; (c) GET /api/club/info → mbway_phone='968265272', quota_monthly_value=5.0; (d) GET /api/clients/{id}/quotas?year=2026 returns 12 entries with status open|paid; (e) POST /api/quotas/pay staff path: cria sale+payment instant, marca cotas paid; (f) Sócio session: /api/socio/quotas → 12 cotas; POST /api/socio/quotas/pay cria mbway_payment pending com kind='quota', quota_year, quota_months; POST /api/mbway-payments/{id}/confirm na pending de quota cria sale e marca cotas paid; (g) GET /api/reports/sales filtros user_email, client_id, date_from/date_to funcionam; (h) GET /api/audit-log: admin 200, tesoureiro 200, funcionario 403; (i) audit_log para sale_edit tem campo 'changes' estruturado {items:{before,after}, total:{before,after}}; (j) GET /api/clients/{id}/points-history e /api/socio/points-history retornam {items, earned, spent}; (k) Rollover de pontos sócio: 7×0.80€ acumulou +1 ponto (cêntimos persistem). Frontend (Playwright): Histórico filter-client visível + audit-row 36 rows com strikethrough(before)→verde(after) — VENDAS/AUDIT LOG tabs com presets Hoje/Este mês/Este ano/Sempre; ClienteFicha payment-keep-credit-toggle present, OFF→payment-change visível, ON→payment-new-credit visível; SocioPortal todos os filtros socio-filter-{today/week/month/year/all}, socio-quotas-btn abre modal com socio-quotas-mbway='968265272' + 12 botões quota-{1..12} + socio-quotas-submit; socio-points-hist-btn abre modal; socio-manual-link presente; mobile (390x844): aside/sidebar oculta, mobile-menu-btn visível, click abre drawer com todos os links; desktop (1280x800): mobile-menu-btn oculto; GET /manual.html → 200 'Manual do Sócio · ARD Nespereira'.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Histórico filtros (select 'Todos os utilizadores')", "issues": ["Hydration warning React: a instrumentação Visual Editor injeta um <span x-excluded='true'> dentro do <option>, o que React avisa que não pode ser filho de <option>. Não afeta funcionalidade, mas polui consola. É bug da instrumentação x-array-item, não do código de produto."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter9_phase_bc.py",
+    "/app/test_reports/pytest/iter9_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py linhas 1031-1038 (create_payment): a lógica de cap em current_debt + change_returned está limpa; o flag keep_change_as_credit default False é exatamente o comportamento pedido pelo user. total_paid_raw inclui pontos+amount, change_returned vai para o histórico. Persistido em pay.keep_change_as_credit para auditoria — perfeito.",
+    "server.py /api/quotas/pay: cria sale com source='quota' e payment de igual valor, marca cotas paid atomicamente em loop. Idempotência: bloqueia se algum mês já está paid (HTTP 400) — correto.",
+    "server.py /api/socio/quotas/pay: apenas cria mbway_payment pendente com kind='quota', quota_year, quota_months — NÃO cria sale ainda (acontece apenas no /confirm). Fluxo request-validate respeitado.",
+    "server.py /api/mbway-payments/{id}/confirm (linha 1674+): bifurca por kind — se 'quota' cria sale+payment+marca cotas; senão abate balance normalmente. Bom design.",
+    "server.py sale_edit audit_log: 'changes' inclui {client?, total?, items?:{before:[strings], after:[strings]}} além do 'before' completo. Frontend Historico.jsx renderiza strikethrough(before) vs green(after) — funciona.",
+    "server.py /api/audit-log: tesoureiro tem acesso (não só admin) — coerente com o role permissions matrix.",
+    "Rollover de pontos confirmado: 7×0.80 = 5.60€ acumulou para 1 ponto (sócio com cotas pagas, ratio 1pt/5€). points_pending_after persiste cêntimos não-arredondados — implementação correta.",
+    "ClienteFicha.jsx 1550 linhas — já assinalado em iter6/iter8; refatorar em sub-componentes seria útil mas não bloqueante.",
+    "Hydration warning <span> em <option>: causado pelo runtime do Visual Editor (atributos x-array-item-param), não pelo código Historico.jsx. Não há fix no source code; pode ser ignorado em produção.",
+    "Sócio 1982/1234 (Ana Ferreira) na test_credentials.md NÃO funciona (retorna 'Nº de sócio ou PIN inválidos'). Provavelmente PIN foi alterado ou seed não cobriu — para testes UI E1 deveria reseed este sócio ou actualizar test_credentials.md. Workaround: criar via API POST /api/clients com member_number+pin explícito (foi o que fiz para validar UI)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter9_phase_bc.py (NEW, 15 tests, 100% passing)"
+  ],
+  "success_rate": {"backend": "100% (15/15)", "frontend": "100% verificações Phase B+C (filter-client, audit-row, payment-keep-credit-toggle ON/OFF, all socio-filter-*, socio-quotas-modal com mbway+12 quotas+submit, socio-points-hist-modal, socio-manual-link, mobile-menu-btn drawer, /manual.html 200)"},
+  "test_credentials": "admin@ard.pt/admin123, tesoureiro@ard.pt/tesoureiro123, func1@ard.pt/func123 OK. SÓCIO: 1982/1234 NÃO FUNCIONA (login retorna invalid). Para UI tests usei novo sócio criado via API (member_number=95001 pin=12345, depois eliminado).",
+  "seed_data_creation": "Todos os clientes/produtos prefixados TEST_iter9_ são auto-limpos no fim de cada teste. Apenas audit_log entries permanecem (comportamento desejado para retenção).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase B+C totalmente verde. Backend test_iter9_phase_bc.py cobre keep_change_as_credit, club info, quotas staff+sócio, reports filters, audit-log (com roles + changes structured), points-history, rollover. Frontend (Playwright) confirmou todos os data-testids do request. ATENÇÃO: o sócio seeded '1982' com PIN '1234' descrito em /app/memory/test_credentials.md NÃO autentica (login falha) — recomendar a E1 reseed (atualizar PIN) ou actualizar credenciais. Twilio NÃO foi testado (backlog, sem chaves).",
+  "rca of the issue": "N/A — nenhum bug funcional encontrado. Apenas observações: (1) test_credentials.md desatualizado para PIN do sócio 1982; (2) hydration warning <span> em <option> é da instrumentação do Visual Editor (x-array-item) e não do código de produto, pode-se ignorar."
+}

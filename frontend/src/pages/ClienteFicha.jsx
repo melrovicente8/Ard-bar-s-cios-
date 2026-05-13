@@ -41,7 +41,7 @@ export default function ClienteFicha() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showPay, setShowPay] = useState(false);
-  const [payForm, setPayForm] = useState({ amount: "", points_used: 0, note: "" });
+  const [payForm, setPayForm] = useState({ amount: "", points_used: 0, note: "", keep_change_as_credit: false });
   const [notifyPayment, setNotifyPayment] = useState(null);
   const [showEdit, setShowEdit] = useState(false);
   const [editForm, setEditForm] = useState({
@@ -77,7 +77,7 @@ export default function ClienteFicha() {
     try {
       const { data } = await api.get(`/clients/${id}`);
       setData(data);
-      setPayForm({ amount: "", points_used: 0, note: "" });
+      setPayForm({ amount: "", points_used: 0, note: "", keep_change_as_credit: false });
     } finally {
       setLoading(false);
     }
@@ -96,6 +96,7 @@ export default function ClienteFicha() {
         amount: parseFloat(payForm.amount || 0),
         points_used: Number(payForm.points_used || 0),
         note: payForm.note || null,
+        keep_change_as_credit: !!payForm.keep_change_as_credit,
       });
       toast.success("Pagamento registado");
       setShowPay(false);
@@ -939,13 +940,16 @@ export default function ClienteFicha() {
               {(() => {
                 const cash = Number(payForm.amount) || 0;
                 const ptsValue = (Number(payForm.points_used) || 0) / 5;
-                const totalApplied = Math.min(cash + ptsValue, debt);
-                const change = Math.max(cash + ptsValue - debt, 0);
+                const total = cash + ptsValue;
+                const keepCredit = !!payForm.keep_change_as_credit;
+                const totalApplied = keepCredit ? total : Math.min(total, debt);
+                const change = keepCredit ? 0 : Math.max(total - debt, 0);
+                const newCredit = keepCredit && total > debt ? total - debt : 0;
                 return (
                   <div className="space-y-2">
                     <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 flex items-center justify-between">
                       <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Total recebido</span>
-                      <span className="font-outfit text-xl font-bold text-slate-100">{euro(cash + ptsValue)}</span>
+                      <span className="font-outfit text-xl font-bold text-slate-100">{euro(total)}</span>
                     </div>
                     <div className="bg-slate-950 border border-amber-500/20 rounded-lg p-3 flex items-center justify-between">
                       <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80">Abate na dívida</span>
@@ -953,13 +957,32 @@ export default function ClienteFicha() {
                     </div>
                     {change > 0 && (
                       <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 flex items-center justify-between">
-                        <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300/80">Troco a devolver</span>
+                        <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300/80">Troco a devolver (dinheiro)</span>
                         <span data-testid="payment-change" className="font-outfit text-xl font-bold text-emerald-300">{euro(change)}</span>
+                      </div>
+                    )}
+                    {newCredit > 0 && (
+                      <div className="bg-sky-500/10 border border-sky-500/30 rounded-lg p-3 flex items-center justify-between">
+                        <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-sky-300/80">Fica como crédito a favor</span>
+                        <span data-testid="payment-new-credit" className="font-outfit text-xl font-bold text-sky-300">{euro(newCredit)}</span>
                       </div>
                     )}
                   </div>
                 );
               })()}
+
+              <label className="flex items-start gap-3 px-3 py-3 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-sky-500/40">
+                <input
+                  data-testid="payment-keep-credit-toggle"
+                  type="checkbox"
+                  checked={!!payForm.keep_change_as_credit}
+                  onChange={(e) => setPayForm({ ...payForm, keep_change_as_credit: e.target.checked })}
+                  className="mt-0.5 w-4 h-4 accent-sky-400"
+                />
+                <span className="text-xs text-slate-200">
+                  <strong>Deixar troco como crédito</strong> a favor do cliente — por defeito o excedente é devolvido em dinheiro e não fica em conta.
+                </span>
+              </label>
 
               <div>
                 <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Nota</label>

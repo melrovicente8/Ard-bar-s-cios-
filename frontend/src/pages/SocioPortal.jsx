@@ -15,6 +15,9 @@ import {
   DeviceMobile,
   Clock,
   Coins,
+  Printer,
+  CalendarBlank,
+  BookOpen,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -28,6 +31,12 @@ export default function SocioPortal() {
   const [mbForm, setMbForm] = useState({ amount: "", mbway_phone: "", note: "" });
   const [showPoints, setShowPoints] = useState(false);
   const [pointsToUse, setPointsToUse] = useState(5);
+  const [historyFilter, setHistoryFilter] = useState("all"); // today | week | month | year | all
+  const [showPointsHist, setShowPointsHist] = useState(false);
+  const [pointsHist, setPointsHist] = useState(null);
+  const [showQuotas, setShowQuotas] = useState(false);
+  const [quotas, setQuotas] = useState({ year: new Date().getFullYear(), quotas: [] });
+  const [selectedMonths, setSelectedMonths] = useState([]);
 
   useEffect(() => {
     api.get("/club/info").then((r) => setClub(r.data)).catch(() => {});
@@ -116,6 +125,112 @@ export default function SocioPortal() {
     ...payments.map((p) => ({ type: "payment", date: p.created_at, ...p })),
     ...mbway.map((m) => ({ type: "mbway", date: m.created_at, ...m })),
   ].sort((a, b) => (a.date < b.date ? 1 : -1));
+
+  const inHistoryRange = (iso) => {
+    if (historyFilter === "all") return true;
+    const d = new Date(iso);
+    const now = new Date();
+    if (historyFilter === "today") return d.toDateString() === now.toDateString();
+    if (historyFilter === "week") {
+      const ago = new Date(now); ago.setDate(now.getDate() - 7);
+      return d >= ago;
+    }
+    if (historyFilter === "month") return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+    if (historyFilter === "year") return d.getFullYear() === now.getFullYear();
+    return true;
+  };
+  const filteredEvents = events.filter((e) => inHistoryRange(e.date));
+  const totalConsumed = filteredEvents.filter((e) => e.type === "sale").reduce((s, e) => s + (e.total || 0), 0);
+  const totalPaid = filteredEvents.filter((e) => e.type === "payment").reduce((s, e) => s + (e.amount || 0), 0);
+
+  const loadPointsHist = async () => {
+    try {
+      const { data } = await api.get("/socio/points-history");
+      setPointsHist(data);
+      setShowPointsHist(true);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const loadQuotas = async () => {
+    try {
+      const { data } = await api.get("/socio/quotas");
+      setQuotas(data);
+      setSelectedMonths([]);
+      setShowQuotas(true);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const submitQuotas = async () => {
+    if (!selectedMonths.length) return toast.error("Seleciona pelo menos um mês");
+    try {
+      await api.post("/socio/quotas/pay", {
+        year: quotas.year,
+        months: selectedMonths,
+        mbway_phone: c.contact || "",
+      });
+      toast.success("Pedido de pagamento enviado · aguarda confirmação do clube");
+      setShowQuotas(false);
+      await refresh();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const printReceipt = (p) => {
+    // Encontrar vendas que este pagamento cobriu (heurística: vendas pendentes antes da data, FIFO)
+    const earlierSales = sales.filter((s) => s.created_at <= p.created_at).sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+    let cover = p.total_credited || p.amount;
+    const covered = [];
+    for (const s of earlierSales) {
+      if (cover <= 0) break;
+      const applied = Math.min(cover, s.total);
+      cover -= applied;
+      covered.push({ sale: s, applied });
+    }
+    const w = window.open("", "_blank", "width=420,height=640");
+    if (!w) return toast.error("Permite popups para imprimir");
+    const itemsHtml = covered.length === 0 ? "" : `<hr/><div class="muted">Itens abatidos:</div>${covered.map(({ sale, applied }) => `
+      <div style="margin-top:6px">
+        <div class="row"><span class="muted">${new Date(sale.created_at).toLocaleDateString("pt-PT")}</span><span>${euro(sale.total)}</span></div>
+        ${sale.items.map((it) => `<div class="row" style="font-size:11px"><span>· ${it.quantity}× ${it.product_name}</span><span>${euro(it.subtotal)}</span></div>`).join("")}
+        ${applied < sale.total ? `<div class="row" style="font-size:10px;color:#888"><span>aplicado:</span><span>${euro(applied)}</span></div>` : ""}
+      </div>`).join("")}`;
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Recibo</title>
+<style>
+  body{font-family:'Courier New',monospace;color:#000;max-width:320px;margin:14px auto;padding:0 12px;font-size:13px}
+  h1{font-size:16px;text-align:center;margin:4px 0 0;letter-spacing:.18em}
+  h2{font-size:11px;text-align:center;margin:0 0 14px;color:#444;letter-spacing:.25em}
+  hr{border:0;border-top:1px dashed #000;margin:10px 0}
+  .row{display:flex;justify-content:space-between;margin:4px 0}
+  .big{font-size:20px;font-weight:bold}
+  .muted{color:#555;font-size:11px}
+  @media print{ body{margin:0} button{display:none} }
+</style></head><body>
+  <h1>ARD · NESPEREIRA</h1>
+  <h2>RECIBO DE PAGAMENTO</h2>
+  <div class="muted">${new Date(p.created_at).toLocaleString("pt-PT")}</div>
+  ${p.user_email ? `<div class="muted">Registado por: ${p.user_email}</div>` : ""}
+  <hr/>
+  <div class="row"><span>Sócio</span><strong>${c.name}</strong></div>
+  ${c.member_number ? `<div class="row"><span>Nº</span><strong>${c.member_number}</strong></div>` : ""}
+  ${itemsHtml}
+  <hr/>
+  <div class="row"><span>Em numerário</span><span>${euro(p.amount || 0)}</span></div>
+  ${p.points_used ? `<div class="row"><span>Pontos</span><span>${p.points_used} pts</span></div>` : ""}
+  ${p.note ? `<div class="row"><span>Nota</span><span>${p.note}</span></div>` : ""}
+  <hr/>
+  <div class="row big"><span>TOTAL ABATIDO</span><span>${euro(p.total_credited || p.amount)}</span></div>
+  <hr/>
+  <div style="text-align:center" class="muted">Obrigado pela preferência</div>
+  <div style="text-align:center;margin-top:14px"><button onclick="window.print()">Imprimir / PDF</button></div>
+  <script>setTimeout(()=>window.print(),300);</script>
+</body></html>`);
+    w.document.close();
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 grain-bg" data-testid="socio-portal-page">
@@ -319,17 +434,69 @@ export default function SocioPortal() {
 
         {/* History */}
         <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-6">
-          <div className="flex items-center gap-2 mb-5">
-            <Receipt size={20} weight="duotone" className="text-amber-500" />
-            <h3 className="font-outfit text-xl font-semibold">Histórico</h3>
+          <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+            <div className="flex items-center gap-2">
+              <Receipt size={20} weight="duotone" className="text-amber-500" />
+              <h3 className="font-outfit text-xl font-semibold">Histórico</h3>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                data-testid="socio-quotas-btn"
+                onClick={loadQuotas}
+                className="text-xs px-3 py-1.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1.5"
+              >
+                <CalendarBlank size={13} weight="duotone" /> Pagar cotas
+              </button>
+              <button
+                data-testid="socio-points-hist-btn"
+                onClick={loadPointsHist}
+                className="text-xs px-3 py-1.5 rounded-md bg-green-500/15 text-green-300 border border-green-500/30 hover:bg-green-500/25 flex items-center gap-1.5"
+              >
+                <Star size={13} weight="duotone" /> Extrato de pontos
+              </button>
+              <a
+                href="/manual.html"
+                target="_blank"
+                rel="noreferrer"
+                data-testid="socio-manual-link"
+                className="text-xs px-3 py-1.5 rounded-md bg-sky-500/15 text-sky-300 border border-sky-500/30 hover:bg-sky-500/25 flex items-center gap-1.5"
+              >
+                <BookOpen size={13} weight="duotone" /> Manual
+              </a>
+            </div>
           </div>
-          {events.length === 0 ? (
-            <div className="text-sm text-slate-500 py-8 text-center">Sem atividade ainda.</div>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+            <div className="inline-flex rounded-lg border border-slate-800 bg-slate-950/60 p-1 flex-wrap" data-testid="socio-history-filter">
+              {[
+                { v: "today", l: "Hoje" },
+                { v: "week", l: "Semana" },
+                { v: "month", l: "Mês" },
+                { v: "year", l: "Ano" },
+                { v: "all", l: "Sempre" },
+              ].map((opt) => (
+                <button
+                  key={opt.v}
+                  data-testid={`socio-filter-${opt.v}`}
+                  onClick={() => setHistoryFilter(opt.v)}
+                  className={`px-2.5 py-1.5 rounded-md text-xs font-bold uppercase tracking-wider transition-colors ${
+                    historyFilter === opt.v ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"
+                  }`}
+                >{opt.l}</button>
+              ))}
+            </div>
+            <div className="flex gap-3 text-xs">
+              <span className="text-slate-500">Consumido: <strong className="text-rose-300">{euro(totalConsumed)}</strong></span>
+              <span className="text-slate-500">Pago: <strong className="text-emerald-300">{euro(totalPaid)}</strong></span>
+            </div>
+          </div>
+          {filteredEvents.length === 0 ? (
+            <div className="text-sm text-slate-500 py-8 text-center">Sem atividade no período.</div>
           ) : (
             <ul className="space-y-2" data-testid="socio-history">
-              {events.map((ev, i) => (
+              {filteredEvents.map((ev, i) => (
                 <li
                   key={i}
+                  data-testid={ev.type === "payment" ? `socio-payment-${ev.id}` : ev.type === "sale" ? `socio-sale-${ev.id}` : `socio-mbway-${ev.id}`}
                   className={`flex items-start gap-3 px-4 py-3 rounded-lg border ${
                     ev.type === "sale"
                       ? "bg-rose-500/5 border-rose-500/10"
@@ -362,16 +529,28 @@ export default function SocioPortal() {
                       </ul>
                     )}
                   </div>
-                  <div
-                    className={`font-bold ${
-                      ev.type === "sale"
-                        ? "text-rose-400"
-                        : ev.type === "payment"
-                        ? "text-emerald-400"
-                        : "text-amber-300"
-                    }`}
-                  >
-                    {ev.type === "sale" ? "+" : "-"}{euro(ev.type === "sale" ? ev.total : ev.amount)}
+                  <div className="flex flex-col items-end gap-1.5">
+                    <div
+                      className={`font-bold ${
+                        ev.type === "sale"
+                          ? "text-rose-400"
+                          : ev.type === "payment"
+                          ? "text-emerald-400"
+                          : "text-amber-300"
+                      }`}
+                    >
+                      {ev.type === "sale" ? "+" : "-"}{euro(ev.type === "sale" ? ev.total : ev.amount)}
+                    </div>
+                    {ev.type === "payment" && (
+                      <button
+                        data-testid={`socio-print-receipt-${ev.id}`}
+                        onClick={() => printReceipt(ev)}
+                        title="Ver / imprimir recibo"
+                        className="text-[10px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
+                      >
+                        <Printer size={11} weight="duotone" /> Recibo
+                      </button>
+                    )}
                   </div>
                 </li>
               ))}
@@ -431,6 +610,113 @@ export default function SocioPortal() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showPointsHist && pointsHist && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+          onClick={() => setShowPointsHist(false)}
+          data-testid="socio-points-hist-modal"
+        >
+          <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-6 max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 mb-3">
+              <Star size={22} weight="fill" className="text-green-400" />
+              <h3 className="font-outfit text-xl font-semibold">Extrato de pontos</h3>
+            </div>
+            <div className="grid grid-cols-3 gap-2 mb-4">
+              <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 text-center">
+                <div className="text-[10px] text-slate-500 uppercase tracking-wider">Ganhos</div>
+                <div className="font-outfit text-xl font-bold text-green-300">+{pointsHist.earned}</div>
+              </div>
+              <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 text-center">
+                <div className="text-[10px] text-slate-500 uppercase tracking-wider">Gastos</div>
+                <div className="font-outfit text-xl font-bold text-rose-300">−{pointsHist.spent}</div>
+              </div>
+              <div className="bg-slate-950 border border-amber-500/30 rounded-lg p-3 text-center">
+                <div className="text-[10px] text-amber-400/80 uppercase tracking-wider">Saldo</div>
+                <div className="font-outfit text-xl font-bold text-amber-300">{c.points || 0}</div>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-1 pr-1">
+              {pointsHist.items.length === 0 ? (
+                <div className="text-center text-slate-500 py-8 text-sm">Sem movimentos.</div>
+              ) : pointsHist.items.map((it) => (
+                <div key={it.id} className="flex items-center justify-between text-sm px-3 py-2 rounded bg-slate-950/50 border border-slate-800/50">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[10px] text-slate-500">{new Date(it.created_at).toLocaleString("pt-PT")}</div>
+                    <div className="text-xs text-slate-300 truncate">{it.note}</div>
+                  </div>
+                  <span className={`font-bold ${it.delta > 0 ? "text-green-300" : "text-rose-300"}`}>
+                    {it.delta > 0 ? "+" : ""}{it.delta} pts
+                  </span>
+                </div>
+              ))}
+            </div>
+            <button onClick={() => setShowPointsHist(false)} className="mt-4 w-full px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Fechar</button>
+          </div>
+        </div>
+      )}
+
+      {showQuotas && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+          onClick={() => setShowQuotas(false)}
+          data-testid="socio-quotas-modal"
+        >
+          <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 mb-3">
+              <CalendarBlank size={22} weight="duotone" className="text-amber-400" />
+              <h3 className="font-outfit text-xl font-semibold">Cotas {quotas.year}</h3>
+            </div>
+            <p className="text-xs text-slate-400 mb-4">
+              Seleciona os meses em aberto que pretendes pagar. O pedido é enviado por MBWay para o número da ARD.
+            </p>
+            <div className="bg-slate-950 border border-amber-500/20 rounded-lg p-3 mb-4 text-center">
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80">Envia MBWay para</div>
+              <div data-testid="socio-quotas-mbway" className="font-outfit text-xl font-bold text-amber-300">{club.mbway_phone || "—"}</div>
+            </div>
+            <div className="grid grid-cols-3 gap-2 mb-4">
+              {quotas.quotas.map((q) => {
+                const isPaid = q.status === "paid";
+                const isSel = selectedMonths.includes(q.month);
+                return (
+                  <button
+                    key={q.month}
+                    type="button"
+                    disabled={isPaid}
+                    data-testid={`quota-${q.month}`}
+                    onClick={() => setSelectedMonths(isSel ? selectedMonths.filter((m) => m !== q.month) : [...selectedMonths, q.month])}
+                    className={`text-xs px-2 py-2 rounded border ${
+                      isPaid
+                        ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30 cursor-default"
+                        : isSel
+                        ? "bg-amber-500 text-slate-950 border-amber-500"
+                        : "bg-slate-950 text-slate-300 border-slate-800 hover:border-amber-500/40"
+                    }`}
+                  >
+                    <div className="font-bold">{q.label.split("/")[0]}</div>
+                    <div className="text-[9px] mt-0.5">{isPaid ? "✓ Paga" : euro(q.amount)}</div>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="bg-slate-950 border border-amber-500/20 rounded-lg p-3 mb-4 flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-wider text-amber-400/80 font-bold">Total a pagar</span>
+              <span data-testid="socio-quotas-total" className="font-outfit text-2xl font-bold text-amber-300">{euro(selectedMonths.length * (club.quota_monthly_value || 5))}</span>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setShowQuotas(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Cancelar</button>
+              <button
+                data-testid="socio-quotas-submit"
+                onClick={submitQuotas}
+                disabled={selectedMonths.length === 0}
+                className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold"
+              >
+                Enviar pedido
+              </button>
+            </div>
           </div>
         </div>
       )}

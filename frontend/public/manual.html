@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Manual do Sócio · ARD Nespereira</title>
+  <style>
+    *{box-sizing:border-box}
+    body{font-family:'Helvetica Neue',Arial,sans-serif;max-width:780px;margin:0 auto;padding:32px 20px;color:#0f172a;line-height:1.55;font-size:15px}
+    header{border-bottom:4px solid #15803d;padding-bottom:16px;margin-bottom:24px;display:flex;align-items:center;gap:14px}
+    header .logo{width:54px;height:54px;border-radius:10px;background:linear-gradient(135deg,#16a34a,#15803d);border:2px solid #f59e0b;display:flex;align-items:center;justify-content:center;color:#f59e0b;font-size:24px;font-weight:bold}
+    header h1{margin:0;font-size:22px;letter-spacing:.15em;color:#15803d}
+    header .sub{font-size:11px;letter-spacing:.3em;color:#666;text-transform:uppercase}
+    h2{font-size:18px;color:#15803d;margin-top:32px;margin-bottom:8px;border-bottom:1px solid #e5e7eb;padding-bottom:6px}
+    h3{font-size:14px;margin-top:18px;color:#334155}
+    .step{display:flex;gap:12px;margin:10px 0;padding:12px;background:#f9fafb;border-left:3px solid #f59e0b;border-radius:4px}
+    .step .n{background:#f59e0b;color:#0f172a;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:bold;flex-shrink:0}
+    .info{background:#fef3c7;border:1px solid #fbbf24;border-radius:6px;padding:10px 14px;margin:14px 0;font-size:13px}
+    .tip{background:#dbeafe;border:1px solid #60a5fa;border-radius:6px;padding:10px 14px;margin:14px 0;font-size:13px}
+    code{background:#f1f5f9;padding:2px 6px;border-radius:3px;font-family:monospace;font-size:13px;color:#15803d;font-weight:bold}
+    table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+    th,td{padding:8px 10px;border-bottom:1px solid #e5e7eb;text-align:left}
+    th{background:#f3f4f6;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#475569}
+    footer{margin-top:36px;padding-top:20px;border-top:1px solid #e5e7eb;font-size:12px;color:#666;text-align:center}
+    .btnbar{position:fixed;top:14px;right:14px;display:flex;gap:8px}
+    .btnbar button{background:#15803d;color:#fff;border:0;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:bold}
+    @media print { .btnbar{display:none} body{padding:14mm;font-size:12px} header{margin-bottom:14px} }
+  </style>
+</head>
+<body>
+  <div class="btnbar">
+    <button onclick="window.print()">Imprimir / Guardar PDF</button>
+  </div>
+  <header>
+    <div class="logo">⚽</div>
+    <div>
+      <div class="sub">ARD Nespereira · Bar</div>
+      <h1>Manual do Sócio</h1>
+    </div>
+  </header>
+
+  <p>Bem-vindo ao portal de auto-serviço da ARD Nespereira. Este manual explica como aceder à tua conta, ver consumos, pagar dívidas e cotas, e usar pontos de fidelidade.</p>
+
+  <h2>1. Entrar no portal</h2>
+  <div class="step"><div class="n">1</div><div>Vai a <code>/socio/login</code> no telemóvel ou computador.</div></div>
+  <div class="step"><div class="n">2</div><div>Introduz o teu <strong>número de sócio</strong> (ex: 88).</div></div>
+  <div class="step"><div class="n">3</div><div>O teu <strong>PIN</strong> é o nº de sócio com zeros à esquerda até completar 5 dígitos.<br/>Exemplo: sócio nº 88 → PIN <code>00088</code>. Sócio nº 101 → PIN <code>00101</code>.</div></div>
+  <div class="info">Se for a primeira vez e o PIN não funcionar, contacta o clube para verificar.</div>
+
+  <h2>2. Ver a tua conta corrente</h2>
+  <p>No portal vês 3 cartões em destaque:</p>
+  <table>
+    <thead><tr><th>Cartão</th><th>O que mostra</th></tr></thead>
+    <tbody>
+      <tr><td><strong>A pagar</strong></td><td>Quanto deves ao bar. Se zero, está tudo regularizado.</td></tr>
+      <tr><td><strong>Pontos</strong></td><td>Pontos de fidelidade acumulados. 5 pts = 1€.</td></tr>
+      <tr><td><strong>Total consumido</strong></td><td>Soma histórica de tudo o que consumiste.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>3. Filtrar o histórico</h2>
+  <p>Na secção <strong>Histórico</strong> podes filtrar por <strong>Hoje · Semana · Mês · Ano · Sempre</strong>. Permite ver despesas dentro de um período específico.</p>
+  <p>Para cada pagamento, podes clicar em <strong>Recibo</strong> para abrir o talão (imprimir ou guardar como PDF).</p>
+
+  <h2>4. Pagar dívida por MBWay</h2>
+  <div class="step"><div class="n">1</div><div>Clica em <strong>Pagar por MBWay</strong> no cartão "A pagar".</div></div>
+  <div class="step"><div class="n">2</div><div>Envia o valor pelo MBWay para o número do clube indicado no modal.</div></div>
+  <div class="step"><div class="n">3</div><div>Preenche valor + nº MBWay usado + nota opcional, e <strong>Enviar pedido</strong>.</div></div>
+  <div class="step"><div class="n">4</div><div>O clube confirma manualmente — verás o estado mudar para "confirmado" e o saldo é atualizado.</div></div>
+
+  <h2>5. Pagar com pontos</h2>
+  <p>Se tens 5 ou mais pontos podes descontar diretamente no saldo a pagar. <code>5 pts = 1 €</code>. Os pontos têm de ser múltiplos de 5.</p>
+
+  <h2>6. Acumulação de pontos</h2>
+  <p>Como sócio com cotas pagas: <strong>1 ponto por cada 5 € consumidos</strong>. Os cêntimos restantes <strong>acumulam para a próxima compra</strong> (rollover) — não perdes valor.</p>
+  <p>No <strong>Extrato de pontos</strong> vês todas as entradas e saídas, com data, motivo e saldo.</p>
+
+  <h2>7. Pagar cotas mensais</h2>
+  <p>Como sócio pagas <strong>12 cotas anuais</strong>. No botão <strong>Pagar cotas</strong> vês um grid de Jan a Dez:</p>
+  <table>
+    <thead><tr><th>Cor</th><th>Significado</th></tr></thead>
+    <tbody>
+      <tr><td>🟢 Verde</td><td>Cota já paga</td></tr>
+      <tr><td>🟡 Âmbar</td><td>Selecionada para pagar</td></tr>
+      <tr><td>⚪ Cinza</td><td>Em aberto</td></tr>
+    </tbody>
+  </table>
+  <p>Seleciona os meses, envia por MBWay para o número da ARD, e o clube confirma o pagamento.</p>
+
+  <h2>8. Atualizar os teus dados</h2>
+  <p>Na secção <strong>Os meus dados</strong> podes editar telemóvel, email e morada. Não podes alterar o teu nome ou nº de sócio — pede ao clube.</p>
+
+  <h2>9. Funciona no telemóvel?</h2>
+  <p>Sim! O portal está optimizado para telemóveis. Recomendamos <strong>adicionar ao ecrã principal</strong>:</p>
+  <ul>
+    <li><strong>iPhone / Safari</strong>: botão Partilhar → "Adicionar ao Ecrã Principal".</li>
+    <li><strong>Android / Chrome</strong>: menu (⋮) → "Adicionar ao ecrã principal".</li>
+  </ul>
+
+  <h2>10. Dúvidas?</h2>
+  <p>Contacta o bar do clube ou um membro da direção. Em caso de problemas com o PIN, o administrador pode redefini-lo.</p>
+
+  <footer>
+    ARD Nespereira · Bar · Portal do sócio<br/>
+    Manual gerado automaticamente — versão Fev 2026
+  </footer>
+
+  <script>
+    // Permitir Ctrl+P limpo
+    window.addEventListener('beforeprint',()=>document.title='Manual_Socio_ARD_Nespereira');
+  </script>
+</body>
+</html>
