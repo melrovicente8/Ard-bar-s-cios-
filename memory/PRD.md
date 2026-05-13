@@ -103,19 +103,32 @@ App de gestão completa de bar/clube ARD Nespereira (POS + stock + sócios + tes
 - Página `/equipa` para admin renomear funcionários.
 - Page audit log: `audit_log` collection regista `sale_cancel` e `sale_edit`.
 
-## Backlog (P1/P2 — Fase B/C)
+### Iter 9 — Fase B + C (Maio 2026)
+- **Pagamentos**: novo `keep_change_as_credit` (default False). Troco é devolvido em dinheiro, **nunca** transita para crédito sem decisão explícita.
+- **Cotas mensais (12 anuais)**: produtos virtuais por mês/ano. Endpoints `/api/quotas/pay` (staff) e `/api/socio/quotas/pay` (sócio via MBWay). Confirmação MBWay cria sale + payment de receita.
+- **MBWay nº do clube fixado**: `968265272` (configurável via `CLUB_MBWAY_PHONE`).
+- **Histórico de pontos** (`points_history` collection): cada atribuição/desconto é registado com origem, ref e utilizador.
+- **Rollover de pontos**: sócios acumulam o resto (cêntimos) de vendas que não cobrem 5€ para a próxima.
+- **Relatório global de vendas** (`/api/reports/sales`): filtros por data, vendedor, cliente e estado pago/aberto.
+- **Audit log queryable** (`/api/audit-log`): filtros por data, utilizador e tipo. Detalhes estruturados `changes: {field: {before, after}}`.
+- **Página `/historico`**: dois separadores (Vendas + Audit log) com filtros + impressão A4. Filtro por cliente.
+- **Página `/pedidos`**: staff valida pedidos de consumo dos sócios.
+- **Portal Sócio**:
+  - Histórico com filtros Hoje/Semana/Mês/Ano/Sempre.
+  - Botão "Recibo" por pagamento (abre talão imprimível).
+  - Modal "Extrato de pontos" com saldo, ganhos e gastos.
+  - Modal "Pagar cotas" com grid de 12 meses.
+  - Botão "Pedir consumo" (consumption-request).
+  - Link "Manual" para `/manual.html`.
+- **Mobile**: sidebar drawer com hamburger em <768px. App agora responsiva.
+- **Manual do sócio**: HTML imprimível em `/manual.html` (público, com botão imprimir/PDF).
+- **Renomear staff**: página `/equipa` (admin) — implementada na iter 8.
 
-### P1 — Fase B
-- **Histórico/Extracto de pontos** por cliente (atribuídos e descontados).
-- **Acumulação de pontos a partir de soma de transações anteriores** (rollover de cêntimos restantes).
-- **Relatório global de vendas** com filtros (quem vendeu, datas, cliente, pago/em aberto).
-- **Endpoint /api/audit-log** com filtros (utilizador, tipo, datas) + página para consulta.
-- **Presets de data dia/mês/ano** nos relatórios de fornecedor.
+## Backlog (P2+)
 
-### P2 — Fase C
-- **Portal sócio request-validate workflow**: sócio pede consumo via login, qualquer staff valida para transitar à conta-corrente. Editável/transferível dentro de 24h pelos funcionários.
-- **WhatsApp/SMS** automatizados via Twilio.
-- **Refatoração**: `server.py` em rotas modulares (`/app/backend/routes/`), `ClienteFicha.jsx` e `Fornecedores.jsx` em sub-componentes.
+### Backlog
+- **Twilio/WhatsApp/SMS automatizados**: requer chaves do utilizador. Já há deep links (wa.me/sms:) funcionais.
+- **Refatoração**: `server.py` em routes/, `ClienteFicha.jsx` em sub-componentes.
 
 ## API Endpoints (atualizado)
 

@@ -12,11 +12,15 @@
 
 ## Sócio Portal (login em `/socio/login`)
 
+PIN automático = nº de sócio com zeros à esquerda até 5 dígitos.
+
 | Nº Sócio | PIN | Cliente |
 |----------|-----|---------|
-| `1982` | `1234` | Ana Ferreira (já com dados, vendas, pagamentos e MBWay) |
+| `88` | `00088` | David Vicente |
+| `99` | `00099` | Rui Amaral |
+| `1` | `00001` | Antero |
 
-O admin/tesoureiro pode definir/alterar o PIN de qualquer cliente via lápis "Editar ficha".
+Outros sócios podem ter o PIN definido manualmente. Para criar uma conta de teste rapidamente, o admin pode usar o lápis "Editar ficha" e definir um PIN.
 
 ## Endpoints principais
 - Staff auth: `POST /api/auth/login` (cookie `access_token`)
