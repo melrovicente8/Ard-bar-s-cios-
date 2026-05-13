@@ -16,6 +16,7 @@ import Socios from "./pages/Socios";
 import MBWay from "./pages/MBWay";
 import Fornecedores from "./pages/Fornecedores";
 import DividasHoje from "./pages/DividasHoje";
+import Equipa from "./pages/Equipa";
 import SocioLogin from "./pages/SocioLogin";
 import SocioPortal from "./pages/SocioPortal";
 
@@ -94,6 +95,10 @@ function App() {
                 <Route
                   path="socios"
                   element={<AdminOnly><Socios /></AdminOnly>}
+                />
+                <Route
+                  path="equipa"
+                  element={<AdminOnly><Equipa /></AdminOnly>}
                 />
               </Route>
               <Route path="*" element={<Navigate to="/" replace />} />

@@ -1,0 +1,35 @@
+{
+  "summary": "Iter 8 (Phase A) PASSED. Backend: 14/14 new pytest cases in test_iter8_phase_a.py all green — sale edit/transfer/delete (admin/tesoureiro always; funcionario only <24h, 403 after; audit_log written on cancel), users routes (GET admin-only, PUT rename funcionario/tesoureiro OK, admin 403, non-admin 403, empty name 400), auto-PIN from member_number on POST/PUT clients (padded to 5 digits, sócio login works with mn.zfill(5); explicit pin NOT overwritten). Frontend (Playwright, admin+func1): Dashboard renders all 8 expected KPIs (kpi-today-sales/week/month/outstanding/debtors/suppliers-debt/stock-value/clients); all four hyperlinks verified (today-sales→/vender, debtors→/dividas, stock-value→/stock, clients→/clientes); Clientes page shows clientes-filter pill group with filter-all/filter-socios/filter-clientes; /equipa shows 4 user-edit-* buttons (5 seeded users minus admin), clicking shows user-name-input-* + user-save-*; ClienteFicha renders ficha-debt, sale-status-{id} ('Parcial'), sale-by-{id} ('Registado por admin@ard.pt'), edit-sale-{id} buttons, edit-sale-modal with client-select/total/submit selectors; funcionario correctly DOES NOT see kpi-stock-value nor nav-equipa, /equipa redirects to /.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Sidebar (funcionario)", "issues": ["Funcionário ainda vê a secção 'STOCK > Stock' na navegação. O backend já bloqueia mutações, mas a página é navegável; considerar esconder o link Stock para funcionario (apenas leitura faz sentido se for desejado). Não foi pedido nesta iteração — flag opcional."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter8_phase_a.py",
+    "/app/test_reports/pytest/iter8_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py update_sale (linhas 634-736): correta gestão de stock — restock dos itens antigos seguido de decrement dos novos, com validação 'available = stock_atual + qty_antiga' por produto. Funcionario gate <24h consistente com delete. Recomendo, no futuro, usar transação multi-doc Mongo para tornar atómico (stock + sale doc + client balance).",
+    "server.py rename_user (linha 324-335): bloqueia explicitamente role admin com 403, exige nome não-vazio, retorna doc sem _id/password_hash — robusto.",
+    "server.py auto_pin_from_member_number (linha 312-319): extrai dígitos e faz zfill(5). Bom para PT-PT (nº de sócio é numérico). Edge case: se member_number tiver letras tipo 'A88', extrai só '88' e faz '00088' — pode surpreender o utilizador (login com PIN '00088' mas mn original 'A88'). Improvável no contexto, mas vale documentar.",
+    "server.py update_client (linha 483-491): só gera auto-PIN se o cliente *ainda não tem* pin_hash — previne overwrite indesejado quando admin já definiu PIN custom. Lógica perfeita.",
+    "ClienteFicha.jsx continua a passar 700 linhas (de iter 6 já estava em 876). Recomendo split em sub-componentes (EditSaleModal, PaymentModal, EditClientModal) para manutenção — não bloqueante.",
+    "Frontend não cobre fluxo de credito (balance<0): testes não puderam validar ficha-credit-badge porque nenhum cliente da DB tinha saldo negativo. O código existe (revisado); recomendo criar seed cliente com pagamento>vendas para QA visual futuro.",
+    "Audit log: sale_cancel e sale_edit são escritos; mas não há endpoint /api/audit-log/list ainda (Phase B). OK conforme planeado."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter8_phase_a.py (new, 14 tests, 100% passing)"
+  ],
+  "success_rate": {"backend": "100% (14/14 iter8)", "frontend": "100% nas verificações Phase A (8 KPIs, 4 navegações, filtros clientes, /equipa CRUD, ficha de cliente com sale-status/sale-by/edit-sale-modal, role gating funcionario)"},
+  "test_credentials": "admin@ard.pt/admin123, tesoureiro@ard.pt/tesoureiro123, func1@ard.pt/func123 — todas funcionais.",
+  "seed_data_creation": "Testes criam clientes 'TEST_iter8_cli_*', produtos 'TEST_iter8_prod_*' e usam member_numbers >90000 para evitar colisões. Audit_log entries permanecem (não limpos — comportamento desejado).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Phase A está totalmente verde. Para Phase B (a chegar): criar testes para reports globais de vendas (presets dia/mês/ano), histórico de pontos por cliente, GET /api/audit-log com filtros, fluxo sócio request→validate. Pode reutilizar fixtures admin/tesoureiro/funcionario deste test_iter8_phase_a.py (DB_NAME default já 'bar_stock_db'). ficha-credit-badge no UI existe mas não foi possível validar visualmente (precisa de cliente com pagamentos>vendas). Backend audit_log collection cresce sem cap — adicionar TTL ou paginação quando Phase B introduzir o endpoint queryable.",
+  "rca of the issue": "N/A — nenhum bug encontrado nesta iteração."
+}

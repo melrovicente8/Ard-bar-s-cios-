@@ -12,6 +12,7 @@ export default function Clientes() {
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [search, setSearch] = useState("");
+  const [filterType, setFilterType] = useState("all"); // all | socios | clientes
   const [form, setForm] = useState({ name: "", contact: "", email: "", note: "", member_number: "", is_member: false, morada: "", pin: "" });
 
   const load = async () => {
@@ -62,14 +63,21 @@ export default function Clientes() {
   };
 
   const q = search.trim().toLowerCase();
-  const filtered = q
-    ? clients.filter(
-        (c) =>
-          c.name.toLowerCase().includes(q) ||
+  const byType = (c) => {
+    if (filterType === "socios") return !!(c.is_member || c.member_number);
+    if (filterType === "clientes") return !c.is_member && !c.member_number;
+    return true;
+  };
+  const filtered = clients
+    .filter(byType)
+    .filter((c) =>
+      !q
+        ? true
+        : c.name.toLowerCase().includes(q) ||
           (c.contact || "").toLowerCase().includes(q) ||
-          (c.email || "").toLowerCase().includes(q)
-      )
-    : clients;
+          (c.email || "").toLowerCase().includes(q) ||
+          (c.member_number || "").toLowerCase().includes(q)
+    );
 
   return (
     <div className="p-6 md:p-10 animate-in" data-testid="clientes-page">
@@ -91,15 +99,40 @@ export default function Clientes() {
         </button>
       </div>
 
-      <div className="relative mb-5 max-w-md">
-        <MagnifyingGlass size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
-        <input
-          data-testid="clientes-search"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Procurar cliente..."
-          className="w-full bg-slate-900/80 border border-slate-800 rounded-lg pl-11 pr-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500"
-        />
+      <div className="flex flex-col md:flex-row md:items-center gap-3 mb-5">
+        <div className="relative flex-1 max-w-md">
+          <MagnifyingGlass size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
+          <input
+            data-testid="clientes-search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Procurar nome, contacto, email ou nº sócio..."
+            className="w-full bg-slate-900/80 border border-slate-800 rounded-lg pl-11 pr-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500"
+          />
+        </div>
+        <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900/60 p-1" data-testid="clientes-filter">
+          {[
+            { v: "all", label: "Todos" },
+            { v: "socios", label: "Sócios" },
+            { v: "clientes", label: "Clientes" },
+          ].map((opt) => (
+            <button
+              key={opt.v}
+              data-testid={`filter-${opt.v}`}
+              onClick={() => setFilterType(opt.v)}
+              className={`px-3 py-1.5 rounded-md text-xs font-bold uppercase tracking-wider transition-colors ${
+                filterType === opt.v
+                  ? "bg-amber-500 text-slate-950"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <div className="text-xs text-slate-500 ml-auto">
+          {filtered.length} {filtered.length === 1 ? "registo" : "registos"}
+        </div>
       </div>
 
       {loading ? (

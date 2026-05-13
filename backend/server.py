@@ -111,6 +111,10 @@ class SaleIn(BaseModel):
     client_id: str
     items: List[SaleItemIn]
 
+class SaleEditIn(BaseModel):
+    client_id: Optional[str] = None  # se fornecido, transfere a venda para este cliente
+    items: Optional[List[SaleItemIn]] = None  # se fornecido, substitui todos os itens
+
 class PaymentIn(BaseModel):
     client_id: str
     amount: float
@@ -305,6 +309,36 @@ async def logout(response: Response):
 async def me(user: dict = Depends(get_current_user)):
     return UserOut(id=user["id"], email=user["email"], name=user["name"], role=user.get("role", "user"))
 
+def auto_pin_from_member_number(member_number: Optional[str]) -> Optional[str]:
+    """PIN automático = nº de sócio com zeros à esquerda até 5 dígitos."""
+    if not member_number:
+        return None
+    digits = "".join(ch for ch in str(member_number) if ch.isdigit())
+    if not digits:
+        return None
+    return digits.zfill(5)
+
+class UserRenameIn(BaseModel):
+    name: str
+
+@api_router.put("/users/{user_id}")
+async def rename_user(user_id: str, body: UserRenameIn, user: dict = Depends(require_role("admin"))):
+    if not body.name or not body.name.strip():
+        raise HTTPException(status_code=400, detail="Nome inválido")
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="Utilizador não encontrado")
+    if target.get("role") not in ("funcionario", "tesoureiro"):
+        raise HTTPException(status_code=403, detail="Só funcionários e tesoureiros podem ser renomeados")
+    await db.users.update_one({"id": user_id}, {"$set": {"name": body.name.strip()}})
+    doc = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    return doc
+
+@api_router.get("/users")
+async def list_users(user: dict = Depends(require_role("admin"))):
+    items = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(200)
+    return items
+
 # ---------- Products ----------
 @api_router.get("/products")
 async def list_products(user: dict = Depends(get_current_user)):
@@ -388,7 +422,15 @@ async def create_client(body: ClientIn, user: dict = Depends(get_current_user)):
     # Funcionário não pode definir is_member, member_number ou pin
     is_member = bool(body.is_member) if role in ("admin", "tesoureiro") else False
     member_number = body.member_number if role in ("admin", "tesoureiro") else None
-    pin_hash = hash_password(body.pin) if (body.pin and role in ("admin", "tesoureiro")) else None
+    # PIN: explícito (admin/tesoureiro) ou auto a partir do nº sócio
+    pin_hash = None
+    if role in ("admin", "tesoureiro"):
+        if body.pin:
+            pin_hash = hash_password(body.pin)
+        elif member_number:
+            auto = auto_pin_from_member_number(member_number)
+            if auto:
+                pin_hash = hash_password(auto)
     doc = {
         "id": cid,
         "name": body.name,
@@ -438,6 +480,15 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
             update["pin_hash"] = hash_password(str(pin_value))
         else:
             update["pin_hash"] = None
+    # Se nº sócio é definido/alterado e não há PIN explícito, gerar automaticamente
+    if "member_number" in update and "pin_hash" not in update:
+        target_mn = update.get("member_number")
+        if target_mn:
+            target_client = await db.clients.find_one({"id": client_id}, {"_id": 0})
+            if not (target_client and target_client.get("pin_hash")):
+                auto = auto_pin_from_member_number(target_mn)
+                if auto:
+                    update["pin_hash"] = hash_password(auto)
     res = await db.clients.update_one({"id": client_id}, {"$set": update})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
@@ -547,10 +598,18 @@ async def list_sales(user: dict = Depends(get_current_user)):
     return items
 
 @api_router.delete("/sales/{sale_id}")
-async def cancel_sale(sale_id: str, user: dict = Depends(require_role("admin", "tesoureiro"))):
+async def cancel_sale(sale_id: str, user: dict = Depends(get_current_user)):
     sale = await db.sales.find_one({"id": sale_id}, {"_id": 0})
     if not sale:
         raise HTTPException(status_code=404, detail="Venda não encontrada")
+    # Funcionário só pode cancelar dentro de 24h da venda
+    if user.get("role") == "funcionario":
+        try:
+            created = datetime.fromisoformat(sale["created_at"].replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) - created > timedelta(hours=24):
+                raise HTTPException(status_code=403, detail="Funcionários só podem cancelar vendas até 24h após o registo")
+        except (ValueError, KeyError):
+            raise HTTPException(status_code=403, detail="Sem permissão para cancelar esta venda")
     # restock products
     for it in sale["items"]:
         await db.products.update_one({"id": it["product_id"]}, {"$inc": {"quantity": int(it["quantity"])}})
@@ -561,8 +620,120 @@ async def cancel_sale(sale_id: str, user: dict = Depends(require_role("admin", "
     if pts:
         inc["points"] = -pts
     await db.clients.update_one({"id": sale["client_id"]}, {"$inc": inc})
+    # audit log
+    await db.audit_log.insert_one({
+        "id": str(uuid.uuid4()),
+        "type": "sale_cancel",
+        "sale": sale,
+        "by": user["email"],
+        "at": datetime.now(timezone.utc).isoformat(),
+    })
     await db.sales.delete_one({"id": sale_id})
     return {"ok": True, "restored_total": total, "restored_points": pts}
+
+@api_router.put("/sales/{sale_id}")
+async def update_sale(sale_id: str, body: SaleEditIn, user: dict = Depends(get_current_user)):
+    sale = await db.sales.find_one({"id": sale_id}, {"_id": 0})
+    if not sale:
+        raise HTTPException(status_code=404, detail="Venda não encontrada")
+    # Funcionário só pode editar dentro de 24h
+    if user.get("role") == "funcionario":
+        try:
+            created = datetime.fromisoformat(sale["created_at"].replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) - created > timedelta(hours=24):
+                raise HTTPException(status_code=403, detail="Funcionários só podem editar vendas até 24h após o registo")
+        except (ValueError, KeyError):
+            raise HTTPException(status_code=403, detail="Sem permissão para editar esta venda")
+    new_client_id = body.client_id or sale["client_id"]
+    new_client = await db.clients.find_one({"id": new_client_id})
+    if not new_client:
+        raise HTTPException(status_code=404, detail="Cliente destino não encontrado")
+
+    # Build new items if provided
+    if body.items is not None:
+        if not body.items:
+            raise HTTPException(status_code=400, detail="A venda tem de ter pelo menos 1 item")
+        # validate stock considering current stock + items being returned from old sale
+        old_qty_by_pid = {it["product_id"]: int(it["quantity"]) for it in sale["items"]}
+        new_line_items = []
+        new_total = 0.0
+        for it in body.items:
+            prod = await db.products.find_one({"id": it.product_id})
+            if not prod:
+                raise HTTPException(status_code=404, detail=f"Produto {it.product_id} não encontrado")
+            if it.quantity <= 0:
+                raise HTTPException(status_code=400, detail="Quantidade inválida")
+            available = int(prod["quantity"]) + old_qty_by_pid.get(it.product_id, 0)
+            if available < int(it.quantity):
+                raise HTTPException(status_code=400, detail=f"Stock insuficiente para {prod['name']}")
+            sub = float(prod["price"]) * int(it.quantity)
+            new_total += sub
+            new_line_items.append({
+                "product_id": prod["id"],
+                "product_name": prod["name"],
+                "unit_price": float(prod["price"]),
+                "quantity": int(it.quantity),
+                "subtotal": sub,
+            })
+        # Apply stock adjustments: restock old, then decrement new
+        for it in sale["items"]:
+            await db.products.update_one({"id": it["product_id"]}, {"$inc": {"quantity": int(it["quantity"])}})
+        for it in body.items:
+            await db.products.update_one({"id": it.product_id}, {"$inc": {"quantity": -int(it.quantity)}})
+    else:
+        new_line_items = sale["items"]
+        new_total = float(sale.get("total", 0))
+
+    old_total = float(sale.get("total", 0))
+    old_points = int(sale.get("points_earned", 0))
+    points_step = 5.0 if new_client.get("is_member") else 10.0
+    new_points = int(new_total // points_step)
+
+    if new_client_id != sale["client_id"]:
+        # Reverter cliente antigo
+        await db.clients.update_one(
+            {"id": sale["client_id"]},
+            {"$inc": {"balance": -old_total, "total_spent": -old_total, "points": -old_points}},
+        )
+        # Aplicar ao novo
+        await db.clients.update_one(
+            {"id": new_client_id},
+            {"$inc": {"balance": new_total, "total_spent": new_total, "points": new_points}},
+        )
+    else:
+        diff_total = new_total - old_total
+        diff_points = new_points - old_points
+        inc = {}
+        if abs(diff_total) > 1e-9:
+            inc["balance"] = diff_total
+            inc["total_spent"] = diff_total
+        if diff_points != 0:
+            inc["points"] = diff_points
+        if inc:
+            await db.clients.update_one({"id": new_client_id}, {"$inc": inc})
+
+    # audit
+    await db.audit_log.insert_one({
+        "id": str(uuid.uuid4()),
+        "type": "sale_edit",
+        "before": sale,
+        "by": user["email"],
+        "at": datetime.now(timezone.utc).isoformat(),
+    })
+    await db.sales.update_one(
+        {"id": sale_id},
+        {"$set": {
+            "client_id": new_client_id,
+            "client_name": new_client["name"],
+            "items": new_line_items,
+            "total": new_total,
+            "points_earned": new_points,
+            "is_member_at_sale": bool(new_client.get("is_member", False)),
+            "edited_at": datetime.now(timezone.utc).isoformat(),
+            "edited_by": user["email"],
+        }},
+    )
+    return await db.sales.find_one({"id": sale_id}, {"_id": 0})
 
 # ---------- Payments ----------
 @api_router.post("/payments")

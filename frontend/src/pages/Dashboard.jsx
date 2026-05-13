@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api, { euro } from "../lib/api";
+import { useAuth } from "../context/AuthContext";
 import {
   CurrencyEur,
   Package,
@@ -22,11 +23,8 @@ import {
   CartesianGrid,
 } from "recharts";
 
-const StatCard = ({ icon: Icon, label, value, accent, testid }) => (
-  <div
-    data-testid={testid}
-    className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-5 hover:border-slate-700 transition-colors"
-  >
+const StatCard = ({ icon: Icon, label, value, accent, testid, to }) => {
+  const inner = (
     <div className="flex items-start justify-between">
       <div>
         <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
@@ -40,10 +38,15 @@ const StatCard = ({ icon: Icon, label, value, accent, testid }) => (
         <Icon size={22} weight="duotone" />
       </div>
     </div>
-  </div>
-);
+  );
+  const cls = "block bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-5 hover:border-amber-500/40 transition-colors";
+  if (to) return <Link to={to} data-testid={testid} className={cls}>{inner}</Link>;
+  return <div data-testid={testid} className={cls}>{inner}</div>;
+};
 
 export default function Dashboard() {
+  const { user } = useAuth();
+  const canSeeStockValue = user?.role === "admin" || user?.role === "tesoureiro";
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -85,6 +88,7 @@ export default function Dashboard() {
           label="Vendas hoje"
           value={euro(data.today_sales_total)}
           accent="bg-amber-500/10 text-amber-500"
+          to="/vender"
         />
         <StatCard
           testid="kpi-week-sales"
@@ -92,6 +96,7 @@ export default function Dashboard() {
           label="Vendas semana"
           value={euro(data.week_sales_total || 0)}
           accent="bg-amber-500/10 text-amber-400"
+          to="/vender"
         />
         <StatCard
           testid="kpi-month-sales"
@@ -99,6 +104,7 @@ export default function Dashboard() {
           label="Vendas mês"
           value={euro(data.month_sales_total || 0)}
           accent="bg-amber-500/10 text-amber-300"
+          to="/vender"
         />
         <StatCard
           testid="kpi-outstanding"
@@ -106,6 +112,7 @@ export default function Dashboard() {
           label="A receber clientes"
           value={euro(data.outstanding_debt)}
           accent="bg-rose-500/10 text-rose-400"
+          to="/dividas"
         />
         <StatCard
           testid="kpi-suppliers-debt"
@@ -113,20 +120,25 @@ export default function Dashboard() {
           label="A pagar fornecedores"
           value={euro(data.suppliers_debt || 0)}
           accent="bg-fuchsia-500/10 text-fuchsia-300"
+          to="/fornecedores"
         />
-        <StatCard
-          testid="kpi-stock-value"
-          icon={Package}
-          label="Valor stock"
-          value={euro(data.total_stock_value)}
-          accent="bg-emerald-500/10 text-emerald-400"
-        />
+        {canSeeStockValue && (
+          <StatCard
+            testid="kpi-stock-value"
+            icon={Package}
+            label="Valor stock"
+            value={euro(data.total_stock_value)}
+            accent="bg-emerald-500/10 text-emerald-400"
+            to="/stock"
+          />
+        )}
         <StatCard
           testid="kpi-clients"
           icon={Users}
           label="Clientes"
           value={data.clients_count}
           accent="bg-sky-500/10 text-sky-400"
+          to="/clientes"
         />
         <StatCard
           testid="kpi-debtors"
@@ -134,6 +146,7 @@ export default function Dashboard() {
           label="Pessoas em dívida"
           value={data.today_debtors_count || 0}
           accent="bg-orange-500/10 text-orange-300"
+          to="/dividas"
         />
       </div>
 

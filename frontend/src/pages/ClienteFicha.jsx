@@ -35,7 +35,8 @@ export default function ClienteFicha() {
   const navigate = useNavigate();
   const canEditAll = user?.role === "admin" || user?.role === "tesoureiro";
   const canEditAny = !!user;
-  const canCancelSale = canEditAll;
+  const canCancelSale = !!user; // funcionários até 24h (backend faz cumprir)
+  const canEditSale = !!user;
   const canDeleteClient = user?.role === "admin";
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -64,13 +65,19 @@ export default function ClienteFicha() {
   // Report modal
   const [showReport, setShowReport] = useState(false);
   const [reportRange, setReportRange] = useState({ from: "", to: "" });
+  // Edit sale modal (alter itens + transferir cliente)
+  const [editSale, setEditSale] = useState(null);
+  const [editSaleItems, setEditSaleItems] = useState({}); // {product_id: qty}
+  const [editSaleClient, setEditSaleClient] = useState("");
+  const [allClients, setAllClients] = useState([]);
+  const [editSaleSearch, setEditSaleSearch] = useState("");
 
   const load = async () => {
     setLoading(true);
     try {
       const { data } = await api.get(`/clients/${id}`);
       setData(data);
-      setPayForm({ amount: String(Math.max(data.client.balance || 0, 0).toFixed(2)), points_used: 0, note: "" });
+      setPayForm({ amount: "", points_used: 0, note: "" });
     } finally {
       setLoading(false);
     }
@@ -175,6 +182,46 @@ export default function ClienteFicha() {
     }
   };
 
+  const openEditSale = async (sale) => {
+    try {
+      const [pRes, cRes] = await Promise.all([api.get("/products"), api.get("/clients")]);
+      setProducts(pRes.data);
+      setAllClients(cRes.data);
+      const items = {};
+      sale.items.forEach((it) => { items[it.product_id] = it.quantity; });
+      setEditSaleItems(items);
+      setEditSaleClient(sale.client_id);
+      setEditSale(sale);
+      setEditSaleSearch("");
+    } catch (e) {
+      toast.error("Erro a carregar produtos/clientes");
+    }
+  };
+
+  const submitEditSale = async () => {
+    const items = Object.entries(editSaleItems)
+      .filter(([, qty]) => qty > 0)
+      .map(([product_id, quantity]) => ({ product_id, quantity }));
+    if (!items.length) return toast.error("Tem de existir pelo menos 1 item");
+    const body = { items };
+    if (editSaleClient && editSaleClient !== editSale.client_id) body.client_id = editSaleClient;
+    try {
+      await api.put(`/sales/${editSale.id}`, body);
+      const transferred = body.client_id && body.client_id !== id;
+      toast.success(transferred ? "Venda transferida para outro cliente" : "Venda atualizada");
+      setEditSale(null);
+      if (transferred) {
+        // saiu desta ficha
+        navigate(`/clientes/${id}`); // recarrega
+        await load();
+      } else {
+        await load();
+      }
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
   const openEditPay = (p) => {
     setEditPay(p);
     setEditPayForm({ amount: String(Number(p.amount || 0).toFixed(2)), note: p.note || "" });
@@ -212,6 +259,26 @@ export default function ClienteFicha() {
     const w = window.open("", "_blank", "width=420,height=640");
     if (!w) return toast.error("Permite popups para imprimir");
     const dateStr = new Date(notifyPayment.created_at || Date.now()).toLocaleString("pt-PT");
+    // Vendas que estavam em aberto antes deste pagamento (snapshot atual de unpaid + vendas pagas recentemente)
+    const totalRecv = Number(notifyPayment.total_credited || notifyPayment.amount || 0);
+    let cover = totalRecv;
+    const saleRows = [];
+    salesAsc.slice().reverse().forEach((s) => {
+      // mostra vendas que este pagamento cobriu (parcial ou totalmente)
+      if (cover <= 0) return;
+      const applied = Math.min(cover, s.total);
+      cover -= applied;
+      saleRows.unshift({ sale: s, applied });
+    });
+    const itemsHtml = saleRows.length === 0 ? "" : `<hr/>
+    <div class="muted">Itens abatidos por este pagamento:</div>
+    ${saleRows.map(({sale, applied}) => `
+      <div style="margin-top:6px">
+        <div class="row"><span class="muted">${new Date(sale.created_at).toLocaleDateString("pt-PT")}</span><span>${euro(sale.total)}</span></div>
+        ${sale.items.map((it) => `<div class="row" style="font-size:11px"><span>· ${it.quantity}× ${it.product_name}</span><span>${euro(it.subtotal)}</span></div>`).join("")}
+        ${applied < sale.total ? `<div class="row" style="font-size:10px;color:#888"><span>aplicado:</span><span>${euro(applied)}</span></div>` : ""}
+      </div>
+    `).join("")}`;
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Recibo</title>
 <style>
   body{font-family:'Courier New',monospace;color:#000;max-width:320px;margin:14px auto;padding:0 12px;font-size:13px}
@@ -224,12 +291,14 @@ export default function ClienteFicha() {
   .muted{color:#555;font-size:11px}
   @media print{ body{margin:0} button{display:none} }
 </style></head><body>
-  <h1>${(c.is_member ? "ARD · NESPEREIRA" : "ARD · NESPEREIRA")}</h1>
+  <h1>ARD · NESPEREIRA</h1>
   <h2>RECIBO DE PAGAMENTO</h2>
   <div class="muted">${dateStr}</div>
+  <div class="muted">Registado por: ${notifyPayment.user_email || "—"}</div>
   <hr/>
   <div class="row"><span>Cliente</span><strong>${c.name}</strong></div>
   ${c.member_number ? `<div class="row"><span>Nº Sócio</span><strong>${c.member_number}</strong></div>` : ""}
+  ${itemsHtml}
   <hr/>
   <div class="row"><span>Em numerário</span><span>${euro(notifyPayment.amount || 0)}</span></div>
   ${notifyPayment.points_used ? `<div class="row"><span>Pontos descontados</span><span>${notifyPayment.points_used} pts (${euro((notifyPayment.points_value)||(notifyPayment.points_used/5))})</span></div>` : ""}
@@ -239,7 +308,7 @@ export default function ClienteFicha() {
   <div class="row"><span>Dívida actual</span><strong>${euro(Math.max(c.balance || 0, 0))}</strong></div>
   <div class="row"><span>Pontos actuais</span><strong>${c.points || 0}</strong></div>
   <hr/>
-  <div class="center muted">Obrigado pela preferência<br/>${(window.location.host || "ARD Nespereira")}</div>
+  <div class="center muted">Obrigado pela preferência</div>
   <div class="center" style="margin-top:14px"><button onclick="window.print()">Imprimir</button></div>
   <script>setTimeout(()=>window.print(),300);</script>
 </body></html>`);
@@ -375,7 +444,28 @@ export default function ClienteFicha() {
     return <div className="p-12 text-slate-500">A carregar...</div>;
 
   const { client: c, sales, payments } = data;
-  const debt = Math.max(c.balance || 0, 0);
+  const balance = c.balance || 0;
+  const debt = Math.max(balance, 0);
+  const credit = Math.max(-balance, 0);
+
+  // Marcar cada venda como paga/em dívida com base em pagamentos abatidos cronologicamente
+  const totalPaid = payments.reduce((s, p) => s + (p.total_credited || p.amount || 0), 0);
+  let remainingCredit = totalPaid;
+  const salesAsc = [...sales].sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+  const paidStatus = {}; // sale_id → 'paid' | 'partial' | 'open'
+  salesAsc.forEach((s) => {
+    if (remainingCredit >= s.total - 1e-9) {
+      paidStatus[s.id] = "paid";
+      remainingCredit -= s.total;
+    } else if (remainingCredit > 1e-9) {
+      paidStatus[s.id] = "partial";
+      remainingCredit = 0;
+    } else {
+      paidStatus[s.id] = "open";
+    }
+  });
+  // Subset of unpaid sales (open or partial) for payment modal breakdown
+  const unpaidSales = sales.filter((s) => paidStatus[s.id] !== "paid");
 
   // Build a timeline of sales + payments
   const events = [
@@ -523,16 +613,19 @@ export default function ClienteFicha() {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-        <div className="bg-gradient-to-br from-amber-500/10 to-amber-500/5 border border-amber-500/20 rounded-xl p-5">
-          <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-500/80">
-            A pagar
+        <div className={`bg-gradient-to-br ${credit > 0 ? "from-emerald-500/10 to-emerald-500/5 border-emerald-500/20" : "from-amber-500/10 to-amber-500/5 border-amber-500/20"} border rounded-xl p-5`}>
+          <div className={`text-[10px] font-bold uppercase tracking-[0.2em] ${credit > 0 ? "text-emerald-400/80" : "text-amber-500/80"}`}>
+            {credit > 0 ? "Crédito a favor" : "A pagar"}
           </div>
           <div
             data-testid="ficha-debt"
-            className="mt-2 font-outfit text-3xl font-bold text-amber-300"
+            className={`mt-2 font-outfit text-3xl font-bold ${credit > 0 ? "text-emerald-300" : "text-amber-300"}`}
           >
-            {euro(debt)}
+            {euro(credit > 0 ? credit : debt)}
           </div>
+          {credit > 0 && (
+            <div data-testid="ficha-credit-badge" className="mt-1 text-[10px] text-emerald-400/80">Cliente tem saldo positivo</div>
+          )}
         </div>
         <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5">
           <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
@@ -582,16 +675,32 @@ export default function ClienteFicha() {
             <div className="text-sm text-slate-500 py-8 text-center">Sem consumos.</div>
           ) : (
             <ul className="space-y-3" data-testid="sales-list">
-              {sales.map((s) => (
+              {sales.map((s) => {
+                const status = paidStatus[s.id] || "open";
+                const statusBadge = status === "paid"
+                  ? { cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30", text: "Pago" }
+                  : status === "partial"
+                  ? { cls: "bg-amber-500/15 text-amber-300 border-amber-500/30", text: "Parcial" }
+                  : { cls: "bg-rose-500/15 text-rose-300 border-rose-500/30", text: "Em dívida" };
+                return (
                 <li
                   key={s.id}
                   data-testid={`sale-${s.id}`}
+                  data-status={status}
                   className="bg-slate-950/60 border border-slate-800 rounded-lg p-4"
                 >
                   <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
-                    <span className="text-xs text-slate-500">
-                      {new Date(s.created_at).toLocaleString("pt-PT")}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-500">
+                        {new Date(s.created_at).toLocaleString("pt-PT")}
+                      </span>
+                      <span
+                        data-testid={`sale-status-${s.id}`}
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${statusBadge.cls}`}
+                      >
+                        {statusBadge.text}
+                      </span>
+                    </div>
                     <div className="flex items-center gap-2">
                       {s.points_earned > 0 && (
                         <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-500/15 text-green-300 border border-green-500/30 flex items-center gap-1">
@@ -601,6 +710,16 @@ export default function ClienteFicha() {
                       <span className="font-outfit text-lg font-bold text-amber-400">
                         {euro(s.total)}
                       </span>
+                      {canEditSale && (
+                        <button
+                          data-testid={`edit-sale-${s.id}`}
+                          onClick={() => openEditSale(s)}
+                          title="Editar itens / transferir cliente"
+                          className="p-1.5 rounded-md bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"
+                        >
+                          <PencilSimple size={12} weight="bold" />
+                        </button>
+                      )}
                       {canCancelSale && (
                         <button
                           data-testid={`cancel-sale-${s.id}`}
@@ -623,8 +742,17 @@ export default function ClienteFicha() {
                       </li>
                     ))}
                   </ul>
+                  <div className="mt-2 pt-2 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-500">
+                    <span data-testid={`sale-by-${s.id}`}>Registado por <strong className="text-slate-400">{s.user_email || "—"}</strong></span>
+                    {s.edited_at && (
+                      <span title={`Editado em ${new Date(s.edited_at).toLocaleString("pt-PT")} por ${s.edited_by}`}>
+                        ✎ editado {new Date(s.edited_at).toLocaleDateString("pt-PT")}
+                      </span>
+                    )}
+                  </div>
                 </li>
-              ))}
+                );
+              })}
             </ul>
           )}
         </div>
@@ -660,6 +788,9 @@ export default function ClienteFicha() {
                         <span className="text-xs text-slate-500 ml-2">· {ev.note}</span>
                       ) : null}
                     </div>
+                    {ev.user_email && (
+                      <div className="text-[10px] text-slate-500 mt-0.5">por {ev.user_email}</div>
+                    )}
                   </div>
                   <div
                     className={`font-bold flex items-center gap-2 ${
@@ -700,18 +831,42 @@ export default function ClienteFicha() {
             </div>
 
             {/* Itens consumidos em aberto (descrição) */}
-            {sales.length > 0 && (
-              <details className="mb-4 bg-slate-950 border border-slate-800 rounded-lg" data-testid="payment-items-breakdown">
+            {unpaidSales.length > 0 && (
+              <details className="mb-4 bg-slate-950 border border-slate-800 rounded-lg" data-testid="payment-items-breakdown" open>
                 <summary className="cursor-pointer px-3 py-2 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400 hover:text-amber-400 list-none flex items-center justify-between">
                   <span>O que está em dívida</span>
-                  <span className="text-slate-500 normal-case tracking-normal">{sales.length} venda(s)</span>
+                  <span className="text-slate-500 normal-case tracking-normal">{unpaidSales.length} venda(s) por pagar</span>
                 </summary>
                 <div className="max-h-44 overflow-y-auto px-3 pb-3 space-y-2 text-xs">
-                  {sales.slice(0, 12).map((s) => (
+                  {unpaidSales.slice(0, 20).map((s) => (
                     <div key={s.id} className="border-t border-slate-800/60 pt-2">
                       <div className="flex items-center justify-between text-slate-400 text-[10px]">
                         <span>{new Date(s.created_at).toLocaleString("pt-PT")}</span>
-                        <strong className="text-amber-400">{euro(s.total)}</strong>
+                        <div className="flex items-center gap-1.5">
+                          <strong className="text-amber-400">{euro(s.total)}</strong>
+                          {canEditSale && (
+                            <button
+                              type="button"
+                              data-testid={`payment-edit-sale-${s.id}`}
+                              onClick={(ev) => { ev.preventDefault(); setShowPay(false); openEditSale(s); }}
+                              title="Editar itens / transferir"
+                              className="p-1 rounded-md bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
+                            >
+                              <PencilSimple size={10} weight="bold" />
+                            </button>
+                          )}
+                          {canCancelSale && (
+                            <button
+                              type="button"
+                              data-testid={`payment-cancel-sale-${s.id}`}
+                              onClick={(ev) => { ev.preventDefault(); cancelSale(s); }}
+                              title="Eliminar venda"
+                              className="p-1 rounded-md bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
+                            >
+                              <Trash size={10} weight="bold" />
+                            </button>
+                          )}
+                        </div>
                       </div>
                       <ul className="text-slate-300 mt-0.5">
                         {s.items.map((it, i) => (
@@ -738,6 +893,8 @@ export default function ClienteFicha() {
                   step="0.01"
                   required
                   min="0"
+                  autoFocus
+                  placeholder="0,00 (valor que o cliente entrega)"
                   value={payForm.amount}
                   onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })}
                   className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white text-lg font-bold focus:outline-none focus:ring-2 focus:ring-amber-500/50"
@@ -1247,6 +1404,113 @@ export default function ClienteFicha() {
               <button data-testid="report-print-btn" onClick={printReport} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold flex items-center justify-center gap-2">
                 <Printer size={16} weight="bold" /> Imprimir
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {editSale && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+          onClick={() => setEditSale(null)}
+          data-testid="edit-sale-modal"
+        >
+          <div
+            className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-3xl p-6 max-h-[90vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-amber-400/80">Editar venda</div>
+            <h3 className="font-outfit text-xl font-semibold mb-1 mt-1">Itens / transferir cliente</h3>
+            <p className="text-[11px] text-slate-500 mb-4">
+              Registo original: {new Date(editSale.created_at).toLocaleString("pt-PT")} · por {editSale.user_email || "—"}
+              {user?.role === "funcionario" && (
+                <span className="text-amber-400 ml-2">⚠ funcionários só podem editar até 24h após o registo</span>
+              )}
+            </p>
+
+            {/* Selector de cliente */}
+            <div className="mb-4">
+              <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Cliente</label>
+              <input
+                value={editSaleSearch}
+                onChange={(e) => setEditSaleSearch(e.target.value)}
+                placeholder="Procurar para transferir..."
+                className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+              />
+              <select
+                data-testid="edit-sale-client-select"
+                value={editSaleClient}
+                onChange={(e) => setEditSaleClient(e.target.value)}
+                className="mt-2 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                size={4}
+              >
+                {allClients
+                  .filter((cl) => !editSaleSearch || cl.name.toLowerCase().includes(editSaleSearch.toLowerCase()) || (cl.member_number || "").includes(editSaleSearch))
+                  .slice(0, 80)
+                  .map((cl) => (
+                    <option key={cl.id} value={cl.id}>
+                      {cl.name}{cl.member_number ? ` · nº ${cl.member_number}` : ""}{cl.is_member ? " · Sócio" : ""}
+                    </option>
+                  ))}
+              </select>
+              {editSaleClient !== editSale.client_id && (
+                <p className="text-[11px] text-amber-300 mt-1">
+                  ⚠ Esta venda será transferida para outro cliente. A dívida e os pontos serão movidos.
+                </p>
+              )}
+            </div>
+
+            {/* Itens */}
+            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-2">Itens</div>
+            <div className="overflow-y-auto flex-1 space-y-1.5 pr-1 border-t border-b border-slate-800/50 py-3">
+              {Object.entries(editSaleItems).filter(([,q]) => q > 0).length === 0 && (
+                <div className="text-xs text-slate-500 text-center py-3">Sem itens. Adicione pelo menos um abaixo.</div>
+              )}
+              {Object.entries(editSaleItems).filter(([,q]) => q > 0).map(([pid, qty]) => {
+                const p = products.find((x) => x.id === pid) || { name: "(produto removido)", price: 0 };
+                return (
+                  <div key={pid} data-testid={`edit-sale-item-${pid}`} className="flex items-center gap-2 text-sm bg-slate-950 border border-slate-800 rounded px-3 py-2">
+                    <span className="flex-1 truncate">{p.name}</span>
+                    <button onClick={() => setEditSaleItems({ ...editSaleItems, [pid]: Math.max(0, qty - 1) })} className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700 flex items-center justify-center"><Minus size={11} /></button>
+                    <span className="w-8 text-center text-sm font-bold">{qty}</span>
+                    <button onClick={() => setEditSaleItems({ ...editSaleItems, [pid]: qty + 1 })} className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700 flex items-center justify-center"><Plus size={11} /></button>
+                    <span className="w-20 text-right text-xs text-slate-400">{euro((p.price || 0) * qty)}</span>
+                    <button onClick={() => { const c = { ...editSaleItems }; delete c[pid]; setEditSaleItems(c); }} data-testid={`edit-sale-remove-${pid}`} className="text-rose-400 hover:text-rose-300"><Trash size={13} /></button>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Adicionar item */}
+            <details className="mt-3 bg-slate-950 border border-slate-800 rounded-lg">
+              <summary className="cursor-pointer px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-slate-400 hover:text-amber-400 list-none">+ Adicionar item</summary>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5 p-2 max-h-40 overflow-y-auto">
+                {products.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setEditSaleItems({ ...editSaleItems, [p.id]: (editSaleItems[p.id] || 0) + 1 })}
+                    className="text-left px-2 py-1.5 rounded bg-slate-900 border border-slate-800 hover:border-amber-500/40 text-xs"
+                  >
+                    <div className="truncate">{p.name}</div>
+                    <div className="text-amber-400 font-bold text-[11px]">{euro(p.price)}</div>
+                  </button>
+                ))}
+              </div>
+            </details>
+
+            <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-800">
+              <span className="text-xs uppercase tracking-widest text-slate-500 font-bold">Total</span>
+              <span data-testid="edit-sale-total" className="font-outfit text-2xl font-bold text-amber-300">
+                {euro(Object.entries(editSaleItems).reduce((s, [pid, q]) => {
+                  const p = products.find((x) => x.id === pid);
+                  return s + (p ? p.price * q : 0);
+                }, 0))}
+              </span>
+            </div>
+
+            <div className="flex gap-2 mt-4">
+              <button type="button" onClick={() => setEditSale(null)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Cancelar</button>
+              <button data-testid="edit-sale-submit-btn" onClick={submitEditSale} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold">Guardar alterações</button>
             </div>
           </div>
         </div>

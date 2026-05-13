@@ -14,6 +14,7 @@ import {
   House,
   Truck,
   Wallet,
+  UsersThree,
 } from "@phosphor-icons/react";
 
 const ROLE_LABEL = {
@@ -44,6 +45,12 @@ const navGroups = [
       { to: "/clientes", label: "Clientes", icon: Users, testid: "nav-clients", roles: ["admin", "tesoureiro", "funcionario"] },
       { to: "/socios", label: "Sócios", icon: IdentificationCard, testid: "nav-socios", roles: ["admin"] },
       { to: "/mbway", label: "MBWay", icon: DeviceMobile, testid: "nav-mbway", roles: ["admin", "tesoureiro", "funcionario"] },
+    ],
+  },
+  {
+    section: "Administração",
+    items: [
+      { to: "/equipa", label: "Equipa", icon: UsersThree, testid: "nav-equipa", roles: ["admin"] },
     ],
   },
 ];
