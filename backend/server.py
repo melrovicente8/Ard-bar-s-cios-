@@ -542,11 +542,14 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
     if not client_doc:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
 
-    # validate stock and build line items
+    # validate stock and build line items (batch-fetch products to avoid N+1)
+    product_ids = [it.product_id for it in body.items]
+    products_list = await db.products.find({"id": {"$in": product_ids}}, {"_id": 0}).to_list(len(product_ids))
+    products_map = {p["id"]: p for p in products_list}
     line_items = []
     total = 0.0
     for it in body.items:
-        prod = await db.products.find_one({"id": it.product_id})
+        prod = products_map.get(it.product_id)
         if not prod:
             raise HTTPException(status_code=404, detail=f"Produto {it.product_id} não encontrado")
         if it.quantity <= 0:
@@ -655,10 +658,14 @@ async def update_sale(sale_id: str, body: SaleEditIn, user: dict = Depends(get_c
             raise HTTPException(status_code=400, detail="A venda tem de ter pelo menos 1 item")
         # validate stock considering current stock + items being returned from old sale
         old_qty_by_pid = {it["product_id"]: int(it["quantity"]) for it in sale["items"]}
+        # batch-fetch all products
+        product_ids = [it.product_id for it in body.items]
+        prods_list = await db.products.find({"id": {"$in": product_ids}}, {"_id": 0}).to_list(len(product_ids))
+        prods_map = {p["id"]: p for p in prods_list}
         new_line_items = []
         new_total = 0.0
         for it in body.items:
-            prod = await db.products.find_one({"id": it.product_id})
+            prod = prods_map.get(it.product_id)
             if not prod:
                 raise HTTPException(status_code=404, detail=f"Produto {it.product_id} não encontrado")
             if it.quantity <= 0:
@@ -1221,11 +1228,23 @@ async def reject_mbway_payment(mb_id: str, user: dict = Depends(get_current_user
 @api_router.get("/suppliers")
 async def list_suppliers(user: dict = Depends(get_current_user)):
     items = await db.suppliers.find({}, {"_id": 0}).sort("name", 1).to_list(1000)
-    # add debt summary by aggregating supplier orders unpaid balance
+    if not items:
+        return items
+    # Batch aggregate counts and outstanding debts in 2 queries instead of 2*N
+    sids = [s["id"] for s in items]
+    count_pipeline = [
+        {"$match": {"supplier_id": {"$in": sids}}},
+        {"$group": {"_id": "$supplier_id", "n": {"$sum": 1}}},
+    ]
+    debt_pipeline = [
+        {"$match": {"supplier_id": {"$in": sids}, "paid": False}},
+        {"$group": {"_id": "$supplier_id", "outstanding": {"$sum": "$balance_due"}}},
+    ]
+    counts = {r["_id"]: r["n"] async for r in db.supplier_orders.aggregate(count_pipeline)}
+    debts = {r["_id"]: r["outstanding"] async for r in db.supplier_orders.aggregate(debt_pipeline)}
     for s in items:
-        orders = await db.supplier_orders.find({"supplier_id": s["id"], "paid": False}, {"_id": 0}).to_list(500)
-        s["outstanding"] = sum(o.get("balance_due", 0) for o in orders)
-        s["orders_count"] = await db.supplier_orders.count_documents({"supplier_id": s["id"]})
+        s["outstanding"] = float(debts.get(s["id"], 0))
+        s["orders_count"] = int(counts.get(s["id"], 0))
     return items
 
 @api_router.post("/suppliers")
@@ -1279,10 +1298,14 @@ async def create_supplier_order(body: SupplierOrderIn, user: dict = Depends(requ
         raise HTTPException(status_code=404, detail="Fornecedor não encontrado")
     if not body.items:
         raise HTTPException(status_code=400, detail="Sem itens")
+    # batch-fetch products
+    product_ids = [it.product_id for it in body.items]
+    prods_list = await db.products.find({"id": {"$in": product_ids}}, {"_id": 0}).to_list(len(product_ids))
+    prods_map = {p["id"]: p for p in prods_list}
     line_items = []
     total = 0.0
     for it in body.items:
-        prod = await db.products.find_one({"id": it.product_id})
+        prod = prods_map.get(it.product_id)
         if not prod:
             raise HTTPException(status_code=404, detail=f"Produto {it.product_id} não encontrado")
         if it.quantity <= 0:
