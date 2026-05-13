@@ -930,17 +930,24 @@ async def dashboard(user: dict = Depends(get_current_user)):
     sup_debt_expenses = sum(e.get("amount", 0) for e in sup_expenses)
     suppliers_debt = sup_debt_orders + sup_debt_expenses
 
-    # last 7 days sales by day
+    # last 7 days sales by day (single aggregated query)
+    days_back_start = (datetime.now(timezone.utc) - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+    daily_pipeline = [
+        {"$match": {"created_at": {"$gte": days_back_start.isoformat()}}},
+        {"$group": {
+            "_id": {"$substr": ["$created_at", 0, 10]},  # YYYY-MM-DD prefix
+            "total": {"$sum": "$total"},
+        }},
+    ]
+    daily_totals = {r["_id"]: float(r["total"]) async for r in db.sales.aggregate(daily_pipeline)}
     last_7 = []
     for i in range(6, -1, -1):
         day = (datetime.now(timezone.utc) - timedelta(days=i)).replace(hour=0, minute=0, second=0, microsecond=0)
-        next_day = day + timedelta(days=1)
-        cur = db.sales.find({"created_at": {"$gte": day.isoformat(), "$lt": next_day.isoformat()}}, {"_id": 0})
-        sales_day = await cur.to_list(2000)
+        key = day.strftime("%Y-%m-%d")
         last_7.append({
             "day": day.strftime("%a"),
-            "date": day.strftime("%Y-%m-%d"),
-            "total": sum(s.get("total", 0) for s in sales_day),
+            "date": key,
+            "total": daily_totals.get(key, 0.0),
         })
 
     recent_sales = await db.sales.find({}, {"_id": 0}).sort("created_at", -1).to_list(8)
