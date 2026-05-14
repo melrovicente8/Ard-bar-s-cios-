@@ -103,6 +103,11 @@ App de gestão completa de bar/clube ARD Nespereira (POS + stock + sócios + tes
 - Página `/equipa` para admin renomear funcionários.
 - Page audit log: `audit_log` collection regista `sale_cancel` e `sale_edit`.
 
+### Iter 10 — Bug fixes (14 Mai 2026)
+- **Backfill tx_number**: startup percorre `sales`/`payments`/`supplier_orders`/`supplier_expenses`, ordena por `created_at` e atribui `tx_number` incremental (counter atómico) a docs sem nº. Aplicado a 207 transações existentes. Idempotente — só apanha docs sem o campo.
+- **Endpoint novo**: `GET /api/socio/products` devolve produtos não-cota com stock>0 (auth via `socio_token`). Antes o frontend chamava `/api/products` que dava 401 ao sócio → modal "Pedir consumo" aparecia vazio.
+- **Modal "Pedir consumo" (SocioPortal)**: nova secção "No carrinho" com controlos −/quantidade/+/× (remover) por linha. Botão `+` desactivado quando atinge o stock disponível. Total actualiza em tempo real.
+
 ### Iter 9 — Fase B + C (Maio 2026)
 - **Pagamentos**: novo `keep_change_as_credit` (default False). Troco é devolvido em dinheiro, **nunca** transita para crédito sem decisão explícita.
 - **Cotas mensais (12 anuais)**: produtos virtuais por mês/ano. Endpoints `/api/quotas/pay` (staff) e `/api/socio/quotas/pay` (sócio via MBWay). Confirmação MBWay cria sale + payment de receita.
