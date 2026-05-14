@@ -18,6 +18,7 @@ export default function Socios() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all"); // all | member | nonmember | debt
+  const [sort, setSort] = useState("number"); // name | number | points | total_points | spent | debt
   const [bulkMsg, setBulkMsg] = useState(null); // { client, defaultText }
 
   const load = async () => {
@@ -38,7 +39,7 @@ export default function Socios() {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return clients.filter((c) => {
+    const arr = clients.filter((c) => {
       if (filter === "paid" && !c.is_member) return false;
       if (filter === "debt" && (c.balance || 0) <= 0) return false;
       if (!q) return true;
@@ -49,7 +50,17 @@ export default function Socios() {
         (c.member_number || "").toLowerCase().includes(q)
       );
     });
-  }, [clients, search, filter]);
+    const sortKey = sort;
+    const cmp = {
+      name: (a, b) => a.name.localeCompare(b.name, "pt"),
+      number: (a, b) => (parseInt(a.member_number || "0", 10) || 0) - (parseInt(b.member_number || "0", 10) || 0),
+      points: (a, b) => (b.points || 0) - (a.points || 0),
+      total_points: (a, b) => ((b.total_points_earned || 0) - (a.total_points_earned || 0)) || ((b.points || 0) - (a.points || 0)),
+      spent: (a, b) => (b.total_spent || 0) - (a.total_spent || 0),
+      debt: (a, b) => (b.balance || 0) - (a.balance || 0),
+    };
+    return arr.sort(cmp[sortKey] || cmp.name);
+  }, [clients, search, filter, sort]);
 
   const stats = useMemo(() => {
     const total = clients.length;
@@ -114,6 +125,20 @@ export default function Socios() {
             className="w-full bg-slate-900/80 border border-slate-800 rounded-lg pl-11 pr-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
           />
         </div>
+        <select
+          data-testid="socios-sort"
+          value={sort}
+          onChange={(e) => setSort(e.target.value)}
+          className="bg-slate-900/80 border border-slate-800 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+          aria-label="Ordenar"
+        >
+          <option value="number">Por nº sócio</option>
+          <option value="name">Alfabética</option>
+          <option value="points">Pontos atuais (↓)</option>
+          <option value="total_points">Pontos totais (↓)</option>
+          <option value="spent">Consumo total (↓)</option>
+          <option value="debt">Dívida (↓)</option>
+        </select>
         <div className="flex gap-2">
           {[
             { v: "all", label: "Todos" },

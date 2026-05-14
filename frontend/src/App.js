@@ -18,6 +18,8 @@ import Fornecedores from "./pages/Fornecedores";
 import DividasHoje from "./pages/DividasHoje";
 import Equipa from "./pages/Equipa";
 import Historico from "./pages/Historico";
+import Contas from "./pages/Contas";
+import Mensagens from "./pages/Mensagens";
 import Pedidos from "./pages/Pedidos";
 import SocioLogin from "./pages/SocioLogin";
 import SocioPortal from "./pages/SocioPortal";
@@ -106,6 +108,11 @@ function App() {
                   path="historico"
                   element={<StaffOnly><Historico /></StaffOnly>}
                 />
+                <Route
+                  path="contas"
+                  element={<StaffOnly><Contas /></StaffOnly>}
+                />
+                <Route path="mensagens" element={<Mensagens />} />
                 <Route path="pedidos" element={<Pedidos />} />
               </Route>
               <Route path="*" element={<Navigate to="/" replace />} />

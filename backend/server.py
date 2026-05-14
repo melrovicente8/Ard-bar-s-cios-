@@ -173,6 +173,8 @@ class SupplierOrderIn(BaseModel):
     paid: bool = False  # se já está pago, não vai para "em dívida"
     invoice_ref: Optional[str] = None
     note: Optional[str] = None
+    attachment_name: Optional[str] = None  # ex: "fatura-jan.pdf"
+    attachment_data: Optional[str] = None  # data URL base64 (image/* | application/pdf), max ~2MB
 
 class SupplierOrderPay(BaseModel):
     amount: float
@@ -187,6 +189,8 @@ class SupplierExpenseIn(BaseModel):
     paid_at: Optional[str] = None
     recurring: Optional[str] = None  # "monthly" | "yearly" | None
     note: Optional[str] = None
+    attachment_name: Optional[str] = None
+    attachment_data: Optional[str] = None
 
 class SupplierExpenseUpdate(BaseModel):
     supplier_id: Optional[str] = None
@@ -197,6 +201,8 @@ class SupplierExpenseUpdate(BaseModel):
     paid_at: Optional[str] = None
     recurring: Optional[str] = None
     note: Optional[str] = None
+    attachment_name: Optional[str] = None
+    attachment_data: Optional[str] = None
 
 # ---------- Auth helpers ----------
 def hash_password(pw: str) -> str:
@@ -322,6 +328,46 @@ def auto_pin_from_member_number(member_number: Optional[str]) -> Optional[str]:
 
 class UserRenameIn(BaseModel):
     name: str
+
+class UserCreateIn(BaseModel):
+    email: EmailStr
+    password: str
+    name: str
+    role: str  # admin | tesoureiro | funcionario
+
+@api_router.post("/users")
+async def create_user(body: UserCreateIn, user: dict = Depends(require_role("admin"))):
+    if body.role not in ("admin", "tesoureiro", "funcionario"):
+        raise HTTPException(status_code=400, detail="Papel inválido")
+    if await db.users.find_one({"email": body.email.lower()}):
+        raise HTTPException(status_code=400, detail="Email já existe")
+    uid = str(uuid.uuid4())
+    doc = {
+        "id": uid,
+        "email": body.email.lower(),
+        "password_hash": hash_password(body.password),
+        "name": body.name.strip()[:80],
+        "role": body.role,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.users.insert_one(doc)
+    await _audit("user_create", user["email"], entity="user", entity_id=uid, summary=f"Criou {body.role} {doc['email']}")
+    doc.pop("_id", None)
+    doc.pop("password_hash", None)
+    return doc
+
+@api_router.delete("/users/{user_id}")
+async def delete_user(user_id: str, user: dict = Depends(require_role("admin"))):
+    target = await db.users.find_one({"id": user_id})
+    if not target:
+        raise HTTPException(status_code=404, detail="Utilizador não encontrado")
+    if target.get("role") == "admin":
+        raise HTTPException(status_code=403, detail="Administradores não podem ser eliminados")
+    if target.get("email") == user.get("email"):
+        raise HTTPException(status_code=403, detail="Não te podes eliminar a ti próprio")
+    await db.users.delete_one({"id": user_id})
+    await _audit("user_delete", user["email"], entity="user", entity_id=user_id, summary=f"Eliminou {target.get('email')}")
+    return {"ok": True}
 
 @api_router.put("/users/{user_id}")
 async def rename_user(user_id: str, body: UserRenameIn, user: dict = Depends(require_role("admin"))):
@@ -449,6 +495,10 @@ async def create_client(body: ClientIn, user: dict = Depends(get_current_user)):
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.clients.insert_one(doc)
+    audit_after = dict(doc)
+    audit_after.pop("_id", None)
+    audit_after.pop("pin_hash", None)
+    await _audit("client_create", user["email"], entity="client", entity_id=doc["id"], after=audit_after, summary=f"Cliente criado: {doc['name']}" + (f" (sócio nº {doc.get('member_number')})" if doc.get('member_number') else ""))
     doc.pop("_id", None)
     doc.pop("pin_hash", None)
     return doc
@@ -491,17 +541,36 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
                 auto = auto_pin_from_member_number(target_mn)
                 if auto:
                     update["pin_hash"] = hash_password(auto)
+    # Audit: ler o estado antes
+    before_doc = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
+    if not before_doc:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
     res = await db.clients.update_one({"id": client_id}, {"$set": update})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
     doc = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
+    # Calcular diff
+    changes = {}
+    for k, new_v in update.items():
+        if k == "pin_hash":
+            changes["pin"] = {"before": "***", "after": "(alterado)" if new_v else "(removido)"}
+            continue
+        old_v = before_doc.get(k)
+        if old_v != new_v:
+            changes[k] = {"before": old_v, "after": new_v}
+    if changes:
+        await _audit("client_edit", user["email"], entity="client", entity_id=client_id, changes=changes, summary=f"Cliente editado: {doc.get('name')}")
     return doc
 
 @api_router.delete("/clients/{client_id}")
 async def delete_client(client_id: str, user: dict = Depends(require_role("admin"))):
+    before = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
+    if not before:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
     res = await db.clients.delete_one({"id": client_id})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    await _audit("client_delete", user["email"], entity="client", entity_id=client_id, before=before, summary=f"Cliente eliminado: {before.get('name')}")
     return {"ok": True}
 
 @api_router.get("/clients/{client_id}")
@@ -534,6 +603,35 @@ async def list_debtors(user: dict = Depends(get_current_user)):
     debtors = [c for c in clients if (c.get("balance", 0) > 0)]
     debtors.sort(key=lambda x: x.get("balance", 0), reverse=True)
     return debtors
+
+async def _audit(action_type: str, by: str, *, entity: Optional[str] = None, entity_id: Optional[str] = None, before: Optional[dict] = None, after: Optional[dict] = None, summary: Optional[str] = None, changes: Optional[dict] = None):
+    """Regista uma entrada genérica no audit log."""
+    rec = {
+        "id": str(uuid.uuid4()),
+        "type": action_type,
+        "entity": entity,
+        "entity_id": entity_id,
+        "before": before,
+        "after": after,
+        "summary": summary,
+        "changes": changes or {},
+        "by": by,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.audit_log.insert_one(rec)
+
+
+async def _next_tx_number() -> int:
+    """Counter atómico de nº de transação."""
+    from pymongo import ReturnDocument
+    res = await db.counters.find_one_and_update(
+        {"_id": "tx"},
+        {"$inc": {"seq": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    return int(res["seq"]) if res else 1
+
 
 async def _log_points(client_id: str, delta: int, source: str, ref_id: Optional[str], note: str, user_email: str):
     """Regista uma entrada no histórico de pontos."""
@@ -606,8 +704,10 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
     is_member = bool(client_doc.get("is_member"))
     old_pending = float(client_doc.get("points_pending_value", 0)) if is_member else 0.0
     points_earned, new_pending = _compute_points_with_rollover(client_doc, total)
+    tx_no = await _next_tx_number()
     sale_doc = {
         "id": sale_id,
+        "tx_number": tx_no,
         "client_id": body.client_id,
         "client_name": client_doc["name"],
         "items": line_items,
@@ -645,12 +745,14 @@ async def cancel_sale(sale_id: str, user: dict = Depends(get_current_user)):
     sale = await db.sales.find_one({"id": sale_id}, {"_id": 0})
     if not sale:
         raise HTTPException(status_code=404, detail="Venda não encontrada")
-    # Funcionário só pode cancelar dentro de 24h da venda
+    # Funcionário só pode cancelar até 12h após o registo E só vendas registadas por si próprio
     if user.get("role") == "funcionario":
+        if sale.get("user_email") != user["email"]:
+            raise HTTPException(status_code=403, detail="Funcionários só podem cancelar vendas que registaram pessoalmente")
         try:
             created = datetime.fromisoformat(sale["created_at"].replace("Z", "+00:00"))
-            if datetime.now(timezone.utc) - created > timedelta(hours=24):
-                raise HTTPException(status_code=403, detail="Funcionários só podem cancelar vendas até 24h após o registo")
+            if datetime.now(timezone.utc) - created > timedelta(hours=12):
+                raise HTTPException(status_code=403, detail="Funcionários só podem cancelar vendas até 12h após o registo")
         except (ValueError, KeyError):
             raise HTTPException(status_code=403, detail="Sem permissão para cancelar esta venda")
     # restock products
@@ -688,12 +790,14 @@ async def update_sale(sale_id: str, body: SaleEditIn, user: dict = Depends(get_c
     sale = await db.sales.find_one({"id": sale_id}, {"_id": 0})
     if not sale:
         raise HTTPException(status_code=404, detail="Venda não encontrada")
-    # Funcionário só pode editar dentro de 24h
+    # Funcionário só pode editar até 12h após o registo E só vendas registadas por si
     if user.get("role") == "funcionario":
+        if sale.get("user_email") != user["email"]:
+            raise HTTPException(status_code=403, detail="Funcionários só podem editar vendas que registaram pessoalmente")
         try:
             created = datetime.fromisoformat(sale["created_at"].replace("Z", "+00:00"))
-            if datetime.now(timezone.utc) - created > timedelta(hours=24):
-                raise HTTPException(status_code=403, detail="Funcionários só podem editar vendas até 24h após o registo")
+            if datetime.now(timezone.utc) - created > timedelta(hours=12):
+                raise HTTPException(status_code=403, detail="Funcionários só podem editar vendas até 12h após o registo")
         except (ValueError, KeyError):
             raise HTTPException(status_code=403, detail="Sem permissão para editar esta venda")
     new_client_id = body.client_id or sale["client_id"]
@@ -1037,15 +1141,11 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
         total_paid = total_paid_raw
         change_returned = 0.0
     pid = str(uuid.uuid4())
+    tx_no = await _next_tx_number()
     pay = {
         "id": pid,
+        "tx_number": tx_no,
         "client_id": body.client_id,
-        "client_name": c["name"],
-        "amount": float(body.amount),
-        "points_used": int(body.points_used),
-        "points_value": float(points_euros),
-        "total_credited": total_paid,
-        "tendered": total_paid_raw,  # valor total entregue (numerário + pontos)
         "change_returned": change_returned,  # troco devolvido em dinheiro
         "keep_change_as_credit": bool(body.keep_change_as_credit),
         "note": body.note,
@@ -1531,6 +1631,93 @@ async def socio_mbway_request(body: MBWayRequestIn, socio: dict = Depends(get_cu
     rec.pop("_id", None)
     return rec
 
+@api_router.get("/transactions/{tx_number}")
+async def get_transaction(tx_number: int, user: dict = Depends(get_current_user)):
+    """Procura uma transação por nº em todas as collections (sale, payment, order, expense)."""
+    for coll, kind in [("sales", "sale"), ("payments", "payment"), ("supplier_orders", "order"), ("supplier_expenses", "expense")]:
+        doc = await db[coll].find_one({"tx_number": int(tx_number)}, {"_id": 0})
+        if doc:
+            doc["_kind"] = kind
+            return doc
+    raise HTTPException(status_code=404, detail="Transação não encontrada")
+
+# ---------- Sócio profile-extra (foto + birthday + bónus 2 pts) ----------
+class SocioProfileIn(BaseModel):
+    birthday: Optional[str] = None
+    photo_data: Optional[str] = None
+
+@api_router.put("/socio/profile-extra")
+async def socio_profile_extra(body: SocioProfileIn, socio: dict = Depends(get_current_socio)):
+    update = {}
+    if body.birthday is not None:
+        update["birthday"] = body.birthday
+    if body.photo_data is not None:
+        if len(body.photo_data) > 1_500_000:
+            raise HTTPException(status_code=400, detail="Imagem demasiado grande (máx ~1 MB)")
+        update["photo_data"] = body.photo_data
+    if not update:
+        raise HTTPException(status_code=400, detail="Sem alterações")
+    current = await db.clients.find_one({"id": socio["id"]}, {"_id": 0})
+    will_bday = bool(update.get("birthday") or current.get("birthday"))
+    will_photo = bool(update.get("photo_data") or current.get("photo_data"))
+    already = bool(current.get("profile_bonus_given"))
+    bonus = 0
+    if will_bday and will_photo and not already:
+        bonus = 2
+        update["profile_bonus_given"] = True
+    await db.clients.update_one({"id": socio["id"]}, {"$set": update})
+    if bonus:
+        await db.clients.update_one({"id": socio["id"]}, {"$inc": {"points": bonus}})
+        await _log_points(socio["id"], bonus, "profile_bonus", None, "Perfil completo (data nascimento + foto)", socio.get("email") or "socio-self")
+    doc = await db.clients.find_one({"id": socio["id"]}, {"_id": 0, "pin_hash": 0})
+    return {"client": doc, "bonus_points": bonus}
+
+# ---------- Staff broadcast para sócio ----------
+class StaffToSocioMessageIn(BaseModel):
+    client_id: str
+    subject: str
+    message: str
+
+@api_router.post("/socio-messages/send-to-socio")
+async def staff_send_to_socio(body: StaffToSocioMessageIn, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    c = await db.clients.find_one({"id": body.client_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(status_code=404, detail="Sócio não encontrado")
+    if not (body.subject.strip() and body.message.strip()):
+        raise HTTPException(status_code=400, detail="Assunto e mensagem obrigatórios")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "client_id": body.client_id,
+        "client_name": c["name"],
+        "member_number": c.get("member_number"),
+        "subject": body.subject.strip()[:200],
+        "message": body.message.strip()[:5000],
+        "status": "from_staff",
+        "from_staff": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "sent_by": user["email"],
+        "reply": None,
+    }
+    await db.socio_messages.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+# ---------- Sócios com cotas em dia (motivacional) ----------
+@api_router.get("/socio/members-paid-up")
+async def socio_members_paid_up(socio: dict = Depends(get_current_socio)):
+    """Lista sócios com cotas em dia — só visível para sócios em DÍVIDA."""
+    year = datetime.now(timezone.utc).year
+    if not await _socio_has_open_quotas(socio["id"], year):
+        # Sócios já em dia não vêem esta lista (não é incentivo para eles)
+        return []
+    members = await db.clients.find({"is_member": True, "member_number": {"$exists": True, "$ne": None}}, {"_id": 0, "name": 1, "member_number": 1, "id": 1}).to_list(2000)
+    out = []
+    for m in members:
+        qs = await _quotas_status(m["id"], year)
+        if all(q["status"] == "paid" for q in qs):
+            out.append({"name": m["name"], "member_number": m.get("member_number")})
+    return sorted(out, key=lambda x: (x["member_number"] or ""))
+
 @api_router.post("/socio/consumption-request")
 async def socio_consumption_request(body: SocioConsumptionReqIn, socio: dict = Depends(get_current_socio)):
     if not body.items:
@@ -1590,6 +1777,150 @@ async def socio_quotas(year: Optional[int] = None, socio: dict = Depends(get_cur
     if year is None:
         year = datetime.now(timezone.utc).year
     return {"year": year, "quotas": await _quotas_status(socio["id"], year)}
+
+async def _socio_has_open_quotas(client_id: str, year: int) -> bool:
+    qs = await _quotas_status(client_id, year)
+    return any(q["status"] != "paid" for q in qs)
+
+# ---------- Sócio messages ----------
+class SocioMessageIn(BaseModel):
+    subject: str
+    message: str
+
+@api_router.post("/socio/messages")
+async def socio_send_message(body: SocioMessageIn, socio: dict = Depends(get_current_socio)):
+    if not body.subject.strip() or not body.message.strip():
+        raise HTTPException(status_code=400, detail="Assunto e mensagem obrigatórios")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "client_id": socio["id"],
+        "client_name": socio["name"],
+        "member_number": socio.get("member_number"),
+        "subject": body.subject.strip()[:200],
+        "message": body.message.strip()[:5000],
+        "status": "open",  # open | replied | archived
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "replied_at": None,
+        "replied_by": None,
+        "reply": None,
+    }
+    await db.socio_messages.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+@api_router.get("/socio/messages")
+async def socio_my_messages(socio: dict = Depends(get_current_socio)):
+    items = await db.socio_messages.find({"client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return items
+
+@api_router.get("/socio-messages")
+async def staff_list_messages(status_filter: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q: dict = {}
+    if status_filter:
+        q["status"] = status_filter
+    items = await db.socio_messages.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return items
+
+class SocioMessageReplyIn(BaseModel):
+    reply: str
+
+@api_router.post("/socio-messages/{msg_id}/reply")
+async def staff_reply_message(msg_id: str, body: SocioMessageReplyIn, user: dict = Depends(get_current_user)):
+    msg = await db.socio_messages.find_one({"id": msg_id})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Mensagem não encontrada")
+    await db.socio_messages.update_one(
+        {"id": msg_id},
+        {"$set": {
+            "status": "replied",
+            "reply": body.reply.strip()[:5000],
+            "replied_at": datetime.now(timezone.utc).isoformat(),
+            "replied_by": user["email"],
+        }},
+    )
+    return await db.socio_messages.find_one({"id": msg_id}, {"_id": 0})
+
+# ---------- Relatório de contas (Deve / Haver) ----------
+async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> dict:
+    dfrom = date_from + "T00:00:00" if (date_from and "T" not in date_from) else date_from
+    dto = date_to + "T23:59:59" if (date_to and "T" not in date_to) else date_to
+    rng = {}
+    if dfrom:
+        rng["$gte"] = dfrom
+    if dto:
+        rng["$lte"] = dto
+    sale_q = {"created_at": rng} if rng else {}
+    exp_q = {"created_at": rng} if rng else {}
+    sales = await db.sales.find(sale_q, {"_id": 0}).sort("created_at", -1).to_list(10000)
+    orders = await db.supplier_orders.find(exp_q, {"_id": 0}).sort("created_at", -1).to_list(5000)
+    expenses = await db.supplier_expenses.find(exp_q, {"_id": 0}).sort("created_at", -1).to_list(5000)
+
+    sales_consumo = [s for s in sales if s.get("source") != "quota"]
+    sales_cotas = [s for s in sales if s.get("source") == "quota"]
+    rev_consumo = sum(s.get("total", 0) for s in sales_consumo)
+    rev_cotas = sum(s.get("total", 0) for s in sales_cotas)
+    rev_total = rev_consumo + rev_cotas
+
+    exp_orders = sum(o.get("total", 0) for o in orders)
+    exp_expenses = sum(e.get("amount", 0) for e in expenses)
+    exp_total = exp_orders + exp_expenses
+
+    return {
+        "period": {"from": date_from, "to": date_to},
+        "income": {
+            "consumption": rev_consumo,
+            "quotas": rev_cotas,
+            "total": rev_total,
+        },
+        "expenses": {
+            "supplier_orders": exp_orders,
+            "supplier_expenses": exp_expenses,
+            "total": exp_total,
+        },
+        "balance": rev_total - exp_total,
+        "counts": {
+            "sales": len(sales_consumo),
+            "quotas": len(sales_cotas),
+            "orders": len(orders),
+            "expenses": len(expenses),
+        },
+        "details": {
+            "sales": sales_consumo,
+            "quotas": sales_cotas,
+            "orders": orders,
+            "expenses": expenses,
+        },
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "club_name": CLUB_NAME,
+    }
+
+@api_router.get("/reports/finance")
+async def report_finance(date_from: Optional[str] = None, date_to: Optional[str] = None, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    return await _finance_summary(date_from, date_to)
+
+@api_router.get("/socio/finance")
+async def socio_finance_summary(date_from: Optional[str] = None, date_to: Optional[str] = None, socio: dict = Depends(get_current_socio)):
+    """Resumo para sócios — só visível se cotas do ano em dia."""
+    year = datetime.now(timezone.utc).year
+    if await _socio_has_open_quotas(socio["id"], year):
+        raise HTTPException(status_code=403, detail="Disponível apenas para sócios com cotas em dia")
+    data = await _finance_summary(date_from, date_to)
+    # Sócio vê apenas totalizadores (sem detalhes nominais)
+    return {
+        "period": data["period"],
+        "income": data["income"],
+        "expenses": data["expenses"],
+        "balance": data["balance"],
+        "counts": data["counts"],
+        "generated_at": data["generated_at"],
+        "club_name": data["club_name"],
+    }
+
+@api_router.get("/socio/can-see-finance")
+async def socio_can_see_finance(socio: dict = Depends(get_current_socio)):
+    year = datetime.now(timezone.utc).year
+    can = not await _socio_has_open_quotas(socio["id"], year)
+    return {"can_see": can, "year": year}
 
 class SocioQuotaPayIn(BaseModel):
     year: int
@@ -1862,8 +2193,10 @@ async def create_supplier_order(body: SupplierOrderIn, user: dict = Depends(requ
 
     oid = str(uuid.uuid4())
     paid = bool(body.paid)
+    tx_no = await _next_tx_number()
     doc = {
         "id": oid,
+        "tx_number": tx_no,
         "supplier_id": body.supplier_id,
         "supplier_name": sup["name"],
         "items": line_items,
@@ -1873,6 +2206,8 @@ async def create_supplier_order(body: SupplierOrderIn, user: dict = Depends(requ
         "amount_paid": total if paid else 0.0,
         "invoice_ref": body.invoice_ref,
         "note": body.note,
+        "attachment_name": body.attachment_name,
+        "attachment_data": body.attachment_data,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "user_email": user["email"],
     }
@@ -1933,8 +2268,10 @@ async def create_supplier_expense(body: SupplierExpenseIn, user: dict = Depends(
             raise HTTPException(status_code=404, detail="Fornecedor não encontrado")
         sup_name = sup["name"]
     eid = str(uuid.uuid4())
+    tx_no = await _next_tx_number()
     doc = {
         "id": eid,
+        "tx_number": tx_no,
         "supplier_id": body.supplier_id,
         "supplier_name": sup_name,
         "description": body.description,
@@ -1944,6 +2281,8 @@ async def create_supplier_expense(body: SupplierExpenseIn, user: dict = Depends(
         "paid_at": body.paid_at if body.paid else None,
         "recurring": body.recurring,
         "note": body.note,
+        "attachment_name": body.attachment_name,
+        "attachment_data": body.attachment_data,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.supplier_expenses.insert_one(doc)
@@ -2018,6 +2357,17 @@ async def on_startup():
                 updates["password_hash"] = hash_password(u["password"])
             if updates:
                 await db.users.update_one({"email": u["email"]}, {"$set": updates})
+
+    # Auto-PIN para todos os sócios com nº de sócio que ainda não têm PIN
+    cursor = db.clients.find({"member_number": {"$exists": True, "$ne": None}, "$or": [{"pin_hash": None}, {"pin_hash": {"$exists": False}}]})
+    count = 0
+    async for c in cursor:
+        auto = auto_pin_from_member_number(c.get("member_number"))
+        if auto:
+            await db.clients.update_one({"id": c["id"]}, {"$set": {"pin_hash": hash_password(auto)}})
+            count += 1
+    if count:
+        logging.getLogger(__name__).info(f"Auto-PIN atribuído a {count} sócios")
 
 @app.on_event("shutdown")
 async def on_shutdown():

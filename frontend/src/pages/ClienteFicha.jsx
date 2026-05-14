@@ -71,6 +71,8 @@ export default function ClienteFicha() {
   const [editSaleClient, setEditSaleClient] = useState("");
   const [allClients, setAllClients] = useState([]);
   const [editSaleSearch, setEditSaleSearch] = useState("");
+  // Filtro temporal (Hoje por defeito) — afecta o cartão Consumo e o Histórico
+  const [timeFilter, setTimeFilter] = useState("today");
 
   const load = async () => {
     setLoading(true);
@@ -255,6 +257,53 @@ export default function ClienteFicha() {
     }
   };
 
+  const printTransaction = (tx) => {
+    if (!tx || !tx.tx_number) {
+      return toast.error("Transação sem nº — não pode ser impressa individualmente");
+    }
+    const w = window.open("", "_blank", "width=420,height=720");
+    if (!w) return toast.error("Permite popups");
+    const isSale = !!tx.items;
+    const dateStr = new Date(tx.created_at).toLocaleString("pt-PT");
+    const itemsHtml = isSale ? tx.items.map((it) => `<div class="row"><span>${it.quantity}× ${it.product_name}</span><span>${euro(it.subtotal)}</span></div>`).join("") : "";
+    const isPaid = !isSale;
+    const tendered = tx.tendered || tx.amount;
+    const credited = tx.total_credited || tx.amount;
+    const change = tx.change_returned || 0;
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Transação ${tx.tx_number}</title>
+<style>body{font-family:'Courier New',monospace;max-width:320px;margin:14px auto;padding:0 12px;font-size:13px;color:#000}
+h1{font-size:16px;text-align:center;margin:4px 0 0;letter-spacing:.18em}
+h2{font-size:11px;text-align:center;margin:0 0 14px;color:#444;letter-spacing:.25em}
+hr{border:0;border-top:1px dashed #000;margin:10px 0}
+.row{display:flex;justify-content:space-between;margin:4px 0}
+.big{font-size:20px;font-weight:bold}
+.muted{color:#555;font-size:11px}
+.txn{font-size:14px;font-weight:bold;background:#000;color:#fff;text-align:center;padding:4px;border-radius:3px;margin:8px 0}
+@media print{ body{margin:0} button{display:none} }
+</style></head><body>
+<h1>ARD · NESPEREIRA</h1>
+<h2>${isSale ? "VENDA" : "RECIBO DE PAGAMENTO"} · 2ª VIA</h2>
+<div class="txn">TRANSAÇÃO Nº ${tx.tx_number}</div>
+<div class="muted">${dateStr}</div>
+<div class="muted">Registado por: ${tx.user_email || "—"}</div>
+<hr/>
+<div class="row"><span>Cliente</span><strong>${tx.client_name}</strong></div>
+${isSale ? `<hr/>${itemsHtml}<hr/><div class="row big"><span>TOTAL</span><span>${euro(tx.total)}</span></div>${tx.points_earned ? `<div class="row"><span>Pontos ganhos</span><span>+${tx.points_earned}</span></div>` : ""}` : `<hr/>
+<div class="row"><span>Numerário entregue</span><span>${euro(tendered)}</span></div>
+${tx.points_used ? `<div class="row"><span>Pontos usados</span><span>${tx.points_used} pts</span></div>` : ""}
+<div class="row"><span>Valor da despesa</span><span>${euro(credited)}</span></div>
+${change > 0 ? `<div class="row"><span>Troco devolvido</span><span>${euro(change)}</span></div>` : ""}
+${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : ""}
+<hr/>
+<div class="row big"><span>${change > 0 ? "ABATIDO" : "TOTAL ABATIDO"}</span><span>${euro(credited)}</span></div>`}
+<hr/>
+<div style="text-align:center" class="muted">Obrigado pela preferência</div>
+<div style="text-align:center;margin-top:14px"><button onclick="window.print()">Imprimir</button></div>
+<script>setTimeout(()=>window.print(),300);</script>
+</body></html>`);
+    w.document.close();
+  };
+
   const printReceipt = () => {
     if (!notifyPayment) return;
     const w = window.open("", "_blank", "width=420,height=640");
@@ -294,6 +343,7 @@ export default function ClienteFicha() {
 </style></head><body>
   <h1>ARD · NESPEREIRA</h1>
   <h2>RECIBO DE PAGAMENTO</h2>
+  ${notifyPayment.tx_number ? `<div style="font-size:14px;font-weight:bold;background:#000;color:#fff;text-align:center;padding:4px;border-radius:3px;margin:8px 0">TRANSAÇÃO Nº ${notifyPayment.tx_number}</div>` : ""}
   <div class="muted">${dateStr}</div>
   <div class="muted">Registado por: ${notifyPayment.user_email || "—"}</div>
   <hr/>
@@ -301,8 +351,10 @@ export default function ClienteFicha() {
   ${c.member_number ? `<div class="row"><span>Nº Sócio</span><strong>${c.member_number}</strong></div>` : ""}
   ${itemsHtml}
   <hr/>
-  <div class="row"><span>Em numerário</span><span>${euro(notifyPayment.amount || 0)}</span></div>
+  <div class="row"><span>Numerário entregue</span><span>${euro(notifyPayment.tendered || notifyPayment.amount || 0)}</span></div>
   ${notifyPayment.points_used ? `<div class="row"><span>Pontos descontados</span><span>${notifyPayment.points_used} pts (${euro((notifyPayment.points_value)||(notifyPayment.points_used/5))})</span></div>` : ""}
+  <div class="row"><span>Valor da despesa</span><span>${euro(notifyPayment.total_credited || notifyPayment.amount || 0)}</span></div>
+  ${(notifyPayment.change_returned || 0) > 0 ? `<div class="row"><span>Troco devolvido</span><span>${euro(notifyPayment.change_returned)}</span></div>` : ""}
   ${notifyPayment.note ? `<div class="row"><span>Nota</span><span>${notifyPayment.note}</span></div>` : ""}
   <hr/>
   <div class="row big"><span>TOTAL ABATIDO</span><span>${euro(notifyPayment.total_credited || notifyPayment.amount || 0)}</span></div>
@@ -468,10 +520,25 @@ export default function ClienteFicha() {
   // Subset of unpaid sales (open or partial) for payment modal breakdown
   const unpaidSales = sales.filter((s) => paidStatus[s.id] !== "paid");
 
+  // Filtro temporal (Hoje por defeito) para Consumo e Histórico
+  const inRange = (iso) => {
+    if (timeFilter === "all") return true;
+    const d = new Date(iso);
+    const now = new Date();
+    if (timeFilter === "today") return d.toDateString() === now.toDateString();
+    if (timeFilter === "week") {
+      const ago = new Date(now); ago.setDate(now.getDate() - 7);
+      return d >= ago;
+    }
+    if (timeFilter === "month") return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+    if (timeFilter === "year") return d.getFullYear() === now.getFullYear();
+    return true;
+  };
+  const filteredSales = sales.filter((s) => inRange(s.created_at));
   // Build a timeline of sales + payments
   const events = [
-    ...sales.map((s) => ({ type: "sale", date: s.created_at, ...s })),
-    ...payments.map((p) => ({ type: "payment", date: p.created_at, ...p })),
+    ...sales.filter((s) => inRange(s.created_at)).map((s) => ({ type: "sale", date: s.created_at, ...s })),
+    ...payments.filter((p) => inRange(p.created_at)).map((p) => ({ type: "payment", date: p.created_at, ...p })),
   ].sort((a, b) => (a.date < b.date ? 1 : -1));
 
   return (
@@ -672,11 +739,27 @@ export default function ClienteFicha() {
             <ShoppingBag size={20} weight="duotone" className="text-amber-500" />
             <h3 className="font-outfit text-xl font-semibold">Consumo</h3>
           </div>
-          {sales.length === 0 ? (
+          <div className="inline-flex rounded-lg border border-slate-800 bg-slate-950/60 p-1 mb-3 flex-wrap" data-testid="ficha-time-filter">
+            {[
+              { v: "today", l: "Hoje" },
+              { v: "week", l: "Semana" },
+              { v: "month", l: "Mês" },
+              { v: "year", l: "Ano" },
+              { v: "all", l: "Sempre" },
+            ].map((opt) => (
+              <button
+                key={opt.v}
+                data-testid={`ficha-filter-${opt.v}`}
+                onClick={() => setTimeFilter(opt.v)}
+                className={`px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${timeFilter === opt.v ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"}`}
+              >{opt.l}</button>
+            ))}
+          </div>
+          {filteredSales.length === 0 ? (
             <div className="text-sm text-slate-500 py-8 text-center">Sem consumos.</div>
           ) : (
             <ul className="space-y-3" data-testid="sales-list">
-              {sales.map((s) => {
+              {filteredSales.map((s) => {
                 const status = paidStatus[s.id] || "open";
                 const statusBadge = status === "paid"
                   ? { cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30", text: "Pago" }
@@ -711,6 +794,14 @@ export default function ClienteFicha() {
                       <span className="font-outfit text-lg font-bold text-amber-400">
                         {euro(s.total)}
                       </span>
+                      <button
+                        data-testid={`print-sale-${s.id}`}
+                        onClick={() => printTransaction(s)}
+                        title={`Imprimir transação Nº ${s.tx_number || "?"}`}
+                        className="p-1.5 rounded-md bg-slate-800 text-slate-300 hover:text-amber-400"
+                      >
+                        <Printer size={12} weight="duotone" />
+                      </button>
                       {canEditSale && (
                         <button
                           data-testid={`edit-sale-${s.id}`}
@@ -793,15 +884,20 @@ export default function ClienteFicha() {
                       <div className="text-[10px] text-slate-500 mt-0.5">por {ev.user_email}</div>
                     )}
                   </div>
-                  <div
-                    className={`font-bold flex items-center gap-2 ${
-                      ev.type === "sale" ? "text-rose-400" : "text-emerald-400"
-                    }`}
-                  >
+                  <div className={`font-bold flex items-center gap-2 ${ev.type === "sale" ? "text-rose-400" : "text-emerald-400"}`}>
                     <span>
                       {ev.type === "sale" ? "+" : "-"}
                       {euro(ev.type === "sale" ? ev.total : (ev.total_credited || ev.amount))}
                     </span>
+                    {ev.tx_number && <span className="text-[9px] text-slate-500 font-mono">#{ev.tx_number}</span>}
+                    <button
+                      data-testid={`print-event-${ev.id}`}
+                      onClick={(e) => { e.stopPropagation(); printTransaction(ev); }}
+                      title="Imprimir transação"
+                      className="text-slate-500 hover:text-amber-400"
+                    >
+                      <Printer size={12} weight="duotone" />
+                    </button>
                     {ev.type === "payment" && canEditAll && (
                       <PencilSimple size={12} weight="bold" className="text-emerald-400/60" />
                     )}

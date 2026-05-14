@@ -18,6 +18,9 @@ import {
   Printer,
   CalendarBlank,
   BookOpen,
+  ChatCircle,
+  Camera,
+  Plus,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -31,12 +34,23 @@ export default function SocioPortal() {
   const [mbForm, setMbForm] = useState({ amount: "", mbway_phone: "", note: "" });
   const [showPoints, setShowPoints] = useState(false);
   const [pointsToUse, setPointsToUse] = useState(5);
-  const [historyFilter, setHistoryFilter] = useState("all"); // today | week | month | year | all
+  const [historyFilter, setHistoryFilter] = useState("today"); // default Hoje
   const [showPointsHist, setShowPointsHist] = useState(false);
   const [pointsHist, setPointsHist] = useState(null);
   const [showQuotas, setShowQuotas] = useState(false);
   const [quotas, setQuotas] = useState({ year: new Date().getFullYear(), quotas: [] });
   const [selectedMonths, setSelectedMonths] = useState([]);
+  // Foto + aniversário
+  const [showProfileExtra, setShowProfileExtra] = useState(false);
+  const [profileForm, setProfileForm] = useState({ birthday: "", photo_data: "" });
+  // Mensagens
+  const [showMessages, setShowMessages] = useState(false);
+  const [myMessages, setMyMessages] = useState([]);
+  const [newMsg, setNewMsg] = useState({ subject: "", message: "" });
+  // Pedido de consumo
+  const [showRequest, setShowRequest] = useState(false);
+  const [products, setProducts] = useState([]);
+  const [reqCart, setReqCart] = useState({});
 
   useEffect(() => {
     api.get("/club/info").then((r) => setClub(r.data)).catch(() => {});
@@ -162,6 +176,85 @@ export default function SocioPortal() {
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
+  };
+
+  const loadMessages = async () => {
+    try {
+      const { data } = await api.get("/socio/messages");
+      setMyMessages(data);
+      setShowMessages(true);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const sendMessage = async (e) => {
+    e.preventDefault();
+    if (!newMsg.subject.trim() || !newMsg.message.trim()) return toast.error("Preenche assunto e mensagem");
+    try {
+      await api.post("/socio/messages", newMsg);
+      toast.success("Mensagem enviada à associação");
+      setNewMsg({ subject: "", message: "" });
+      await loadMessages();
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    }
+  };
+
+  const loadRequest = async () => {
+    try {
+      const { data } = await api.get("/socio/products");
+      setProducts(data);
+    } catch {
+      // Fallback: use full products list if available; else show empty
+      try {
+        const { data } = await api.get("/products");
+        setProducts(data);
+      } catch { setProducts([]); }
+    }
+    setReqCart({});
+    setShowRequest(true);
+  };
+
+  const submitRequest = async () => {
+    const items = Object.entries(reqCart).filter(([, q]) => q > 0).map(([product_id, quantity]) => ({ product_id, quantity }));
+    if (!items.length) return toast.error("Adiciona pelo menos um item");
+    try {
+      await api.post("/socio/consumption-request", { items });
+      toast.success("Pedido enviado · aguarda validação do staff");
+      setShowRequest(false);
+      await refresh();
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    }
+  };
+
+  const submitProfileExtra = async (e) => {
+    e.preventDefault();
+    try {
+      const body = {};
+      if (profileForm.birthday) body.birthday = profileForm.birthday;
+      if (profileForm.photo_data) body.photo_data = profileForm.photo_data;
+      if (!Object.keys(body).length) return toast.error("Adiciona uma data ou foto");
+      const { data } = await api.put("/socio/profile-extra", body);
+      if (data.bonus_points) {
+        toast.success(`+${data.bonus_points} pontos por completar o perfil!`);
+      } else {
+        toast.success("Perfil atualizado");
+      }
+      setShowProfileExtra(false);
+      await refresh();
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    }
+  };
+
+  const onPhotoSelect = (file) => {
+    if (!file) return;
+    if (file.size > 1_200_000) return toast.error("Imagem demasiado grande (máx 1 MB)");
+    const reader = new FileReader();
+    reader.onload = () => setProfileForm((f) => ({ ...f, photo_data: reader.result }));
+    reader.readAsDataURL(file);
   };
 
   const submitQuotas = async () => {
@@ -441,6 +534,27 @@ export default function SocioPortal() {
             </div>
             <div className="flex flex-wrap gap-2">
               <button
+                data-testid="socio-request-btn"
+                onClick={loadRequest}
+                className="text-xs px-3 py-1.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 flex items-center gap-1.5"
+              >
+                <Plus size={13} weight="bold" /> Pedir consumo
+              </button>
+              <button
+                data-testid="socio-messages-btn"
+                onClick={loadMessages}
+                className="text-xs px-3 py-1.5 rounded-md bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30 hover:bg-fuchsia-500/25 flex items-center gap-1.5"
+              >
+                <ChatCircle size={13} weight="duotone" /> Mensagens
+              </button>
+              <button
+                data-testid="socio-profile-extra-btn"
+                onClick={() => setShowProfileExtra(true)}
+                className="text-xs px-3 py-1.5 rounded-md bg-pink-500/15 text-pink-300 border border-pink-500/30 hover:bg-pink-500/25 flex items-center gap-1.5"
+              >
+                <Camera size={13} weight="duotone" /> Foto + Aniversário
+              </button>
+              <button
                 data-testid="socio-quotas-btn"
                 onClick={loadQuotas}
                 className="text-xs px-3 py-1.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1.5"
@@ -655,6 +769,133 @@ export default function SocioPortal() {
               ))}
             </div>
             <button onClick={() => setShowPointsHist(false)} className="mt-4 w-full px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Fechar</button>
+          </div>
+        </div>
+      )}
+
+      {showProfileExtra && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setShowProfileExtra(false)} data-testid="socio-profile-extra-modal">
+          <form onSubmit={submitProfileExtra} onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-6 space-y-3">
+            <div className="flex items-center gap-2">
+              <Camera size={22} weight="duotone" className="text-pink-400" />
+              <h3 className="font-outfit text-xl font-semibold">Perfil + Bónus 2 pts</h3>
+            </div>
+            <p className="text-xs text-slate-400">Adiciona a tua foto e data de nascimento. Quando ambos estiverem preenchidos pela primeira vez ganhas <strong>+2 pontos</strong>.</p>
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Data de nascimento</label>
+              <input
+                data-testid="socio-bday-input"
+                type="date"
+                value={profileForm.birthday || c.birthday || ""}
+                onChange={(e) => setProfileForm({ ...profileForm, birthday: e.target.value })}
+                className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Foto (jpg/png, máx 1 MB)</label>
+              <input
+                data-testid="socio-photo-input"
+                type="file"
+                accept="image/*"
+                onChange={(e) => onPhotoSelect(e.target.files?.[0])}
+                className="mt-1 w-full text-xs text-slate-300"
+              />
+              {(profileForm.photo_data || c.photo_data) && (
+                <img src={profileForm.photo_data || c.photo_data} alt="foto" className="mt-2 w-24 h-24 rounded-full object-cover border-2 border-amber-400" />
+              )}
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button type="button" onClick={() => setShowProfileExtra(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700">Cancelar</button>
+              <button data-testid="socio-profile-extra-submit" type="submit" className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold">Guardar</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {showMessages && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setShowMessages(false)} data-testid="socio-messages-modal">
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg p-6 max-h-[90vh] flex flex-col">
+            <div className="flex items-center gap-2 mb-3">
+              <ChatCircle size={22} weight="duotone" className="text-fuchsia-400" />
+              <h3 className="font-outfit text-xl font-semibold">Mensagens</h3>
+            </div>
+            <form onSubmit={sendMessage} className="space-y-2 mb-4 bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80">Enviar mensagem à associação</div>
+              <input
+                data-testid="socio-new-subject"
+                value={newMsg.subject}
+                onChange={(e) => setNewMsg({ ...newMsg, subject: e.target.value })}
+                placeholder="Assunto"
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm"
+              />
+              <textarea
+                data-testid="socio-new-message"
+                value={newMsg.message}
+                onChange={(e) => setNewMsg({ ...newMsg, message: e.target.value })}
+                rows={3}
+                placeholder="Mensagem..."
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm"
+              />
+              <button data-testid="socio-send-message" type="submit" className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg py-2 text-sm">Enviar</button>
+            </form>
+            <div className="flex-1 overflow-y-auto space-y-2">
+              {myMessages.length === 0 ? (
+                <div className="text-center text-slate-500 py-6 text-sm">Sem mensagens.</div>
+              ) : myMessages.map((m) => (
+                <div key={m.id} data-testid={`socio-msg-${m.id}`} className={`rounded-lg px-3 py-2 border ${m.from_staff ? "bg-fuchsia-500/5 border-fuchsia-500/20" : "bg-slate-950/50 border-slate-800"}`}>
+                  <div className="flex items-center justify-between text-[10px] text-slate-500">
+                    <span>{m.from_staff ? "Da associação" : "Tua mensagem"} · {new Date(m.created_at).toLocaleString("pt-PT")}</span>
+                    {m.reply && <span className="text-emerald-400">✓ respondida</span>}
+                  </div>
+                  <div className="font-semibold text-slate-200 text-sm mt-0.5">{m.subject}</div>
+                  <p className="text-xs text-slate-400 whitespace-pre-wrap">{m.message}</p>
+                  {m.reply && (
+                    <div className="mt-2 bg-emerald-500/5 border-l-2 border-emerald-500/40 pl-2 py-1">
+                      <div className="text-[10px] uppercase tracking-wider text-emerald-400/80 font-bold">Resposta</div>
+                      <p className="text-xs text-slate-300 whitespace-pre-wrap">{m.reply}</p>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            <button onClick={() => setShowMessages(false)} className="mt-3 w-full px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700">Fechar</button>
+          </div>
+        </div>
+      )}
+
+      {showRequest && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setShowRequest(false)} data-testid="socio-request-modal">
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg p-6 max-h-[90vh] flex flex-col">
+            <div className="flex items-center gap-2 mb-2">
+              <Plus size={22} weight="bold" className="text-emerald-400" />
+              <h3 className="font-outfit text-xl font-semibold">Pedir consumo</h3>
+            </div>
+            <p className="text-xs text-slate-400 mb-3">O pedido vai para o staff validar. Quando aprovado, é lançado na tua conta.</p>
+            <div className="flex-1 overflow-y-auto grid grid-cols-2 md:grid-cols-3 gap-2 mb-3">
+              {products.filter((p) => !p.is_quota && p.quantity > 0).map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  data-testid={`req-prod-${p.id}`}
+                  onClick={() => setReqCart({ ...reqCart, [p.id]: (reqCart[p.id] || 0) + 1 })}
+                  className="text-left px-2 py-2 rounded bg-slate-950 border border-slate-800 hover:border-amber-500/40 text-xs"
+                >
+                  <div className="truncate font-medium">{p.name}</div>
+                  <div className="text-amber-400 font-bold text-[11px]">{euro(p.price)}</div>
+                  {reqCart[p.id] && <div className="text-emerald-400 text-[10px] mt-0.5">× {reqCart[p.id]} no carrinho</div>}
+                </button>
+              ))}
+            </div>
+            <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 mb-3 flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Total</span>
+              <span data-testid="req-total" className="font-outfit text-xl font-bold text-amber-300">
+                {euro(Object.entries(reqCart).reduce((s, [pid, q]) => { const p = products.find((x) => x.id === pid); return s + (p ? p.price * q : 0); }, 0))}
+              </span>
+            </div>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setShowRequest(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700">Cancelar</button>
+              <button data-testid="req-submit" onClick={submitRequest} disabled={!Object.keys(reqCart).length} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold">Enviar pedido</button>
+            </div>
           </div>
         </div>
       )}

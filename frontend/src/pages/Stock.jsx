@@ -196,10 +196,25 @@ export default function Stock() {
                 </tr>
               </thead>
               <tbody>
-                {products.map((p) => {
-                  const out = p.quantity <= 0;
-                  const low = p.quantity <= p.low_stock_threshold;
-                  return (
+                {(() => {
+                  // Agrupar por categoria, ordenar categorias alfabeticamente
+                  const groups = {};
+                  for (const p of products) {
+                    const cat = p.category || "Sem categoria";
+                    if (!groups[cat]) groups[cat] = [];
+                    groups[cat].push(p);
+                  }
+                  const cats = Object.keys(groups).sort((a, b) => a.localeCompare(b, "pt"));
+                  return cats.flatMap((cat) => [
+                    <tr key={`hd-${cat}`} className="bg-slate-950/60 border-t border-slate-800">
+                      <td colSpan={6} className="px-5 py-2 text-[11px] font-bold uppercase tracking-[0.2em] text-amber-400/80">
+                        {cat} · {groups[cat].length} {groups[cat].length === 1 ? "produto" : "produtos"}
+                      </td>
+                    </tr>,
+                    ...groups[cat].sort((a, b) => a.name.localeCompare(b.name, "pt")).map((p) => {
+                      const out = p.quantity <= 0;
+                      const low = p.quantity <= p.low_stock_threshold;
+                      return (
                     <tr
                       key={p.id}
                       data-testid={`product-row-${p.id}`}
@@ -275,7 +290,9 @@ export default function Stock() {
                       </td>
                     </tr>
                   );
-                })}
+                    }),
+                  ]);
+                })()}
               </tbody>
             </table>
           </div>

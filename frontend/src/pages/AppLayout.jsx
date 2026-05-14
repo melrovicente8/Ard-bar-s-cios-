@@ -17,6 +17,8 @@ import {
   UsersThree,
   ClockCounterClockwise,
   ShoppingCart,
+  Bank,
+  ChatCircle,
   List,
   X as XIcon,
 } from "@phosphor-icons/react";
@@ -50,12 +52,14 @@ const navGroups = [
       { to: "/socios", label: "Sócios", icon: IdentificationCard, testid: "nav-socios", roles: ["admin"] },
       { to: "/mbway", label: "MBWay", icon: DeviceMobile, testid: "nav-mbway", roles: ["admin", "tesoureiro", "funcionario"] },
       { to: "/pedidos", label: "Pedidos sócio", icon: ShoppingCart, testid: "nav-pedidos", roles: ["admin", "tesoureiro", "funcionario"] },
+      { to: "/mensagens", label: "Mensagens", icon: ChatCircle, testid: "nav-mensagens", roles: ["admin", "tesoureiro", "funcionario"] },
     ],
   },
   {
     section: "Administração",
     items: [
       { to: "/equipa", label: "Equipa", icon: UsersThree, testid: "nav-equipa", roles: ["admin"] },
+      { to: "/contas", label: "Contas", icon: Bank, testid: "nav-contas", roles: ["admin", "tesoureiro"] },
       { to: "/historico", label: "Histórico", icon: ClockCounterClockwise, testid: "nav-historico", roles: ["admin", "tesoureiro"] },
     ],
   },
