@@ -41,6 +41,8 @@ export default function Socios() {
     const q = search.trim().toLowerCase();
     const arr = clients.filter((c) => {
       if (filter === "paid" && !c.is_member) return false;
+      if (filter === "uptodate" && !c.quotas_up_to_date) return false;
+      if (filter === "notuptodate" && c.quotas_up_to_date) return false;
       if (filter === "debt" && (c.balance || 0) <= 0) return false;
       if (!q) return true;
       return (
@@ -64,8 +66,8 @@ export default function Socios() {
 
   const stats = useMemo(() => {
     const total = clients.length;
-    const paid = clients.filter((c) => c.is_member).length;
-    const unpaid = total - paid; // member_number assigned but cotas not paid; shouldn't happen since backend only returns is_member=true; kept for completeness
+    const paid = clients.filter((c) => c.quotas_up_to_date).length;
+    const unpaid = total - paid;
     const totalDebt = clients.reduce((s, c) => s + Math.max(c.balance || 0, 0), 0);
     const totalPoints = clients.reduce((s, c) => s + (c.points || 0), 0);
     return { total, paid, unpaid, totalDebt, totalPoints };
@@ -108,8 +110,9 @@ export default function Socios() {
         </p>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-        <StatBox label="Sócios c/ cotas pagas" value={stats.paid} accent="bg-green-500/10 text-green-300" />
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <StatBox label={`Sócios c/ cotas ${new Date().getFullYear()} em dia`} value={stats.paid} accent="bg-green-500/10 text-green-300" />
+        <StatBox label="Sócios em atraso" value={stats.unpaid} accent="bg-amber-500/10 text-amber-300" />
         <StatBox label="A receber" value={euro(stats.totalDebt)} accent="bg-rose-500/10 text-rose-300" />
         <StatBox label="Pontos atribuídos" value={stats.totalPoints} accent="bg-amber-500/10 text-amber-300" />
       </div>
@@ -139,9 +142,11 @@ export default function Socios() {
           <option value="spent">Consumo total (↓)</option>
           <option value="debt">Dívida (↓)</option>
         </select>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           {[
             { v: "all", label: "Todos" },
+            { v: "uptodate", label: "Cotas em dia" },
+            { v: "notuptodate", label: "Cotas em atraso" },
             { v: "debt", label: "Com dívida" },
           ].map((f) => (
             <button
@@ -173,6 +178,7 @@ export default function Socios() {
                 <tr className="text-slate-500 text-xs uppercase tracking-wider bg-slate-950/40">
                   <th className="px-4 py-3 font-medium">Nome</th>
                   <th className="px-4 py-3 font-medium">Estatuto</th>
+                  <th className="px-4 py-3 font-medium">Cotas {new Date().getFullYear()}</th>
                   <th className="px-4 py-3 font-medium">Contacto</th>
                   <th className="px-4 py-3 font-medium">Email</th>
                   <th className="px-4 py-3 font-medium text-right">A pagar</th>
@@ -196,6 +202,17 @@ export default function Socios() {
                         </span>
                       ) : (
                         <span className="text-xs text-slate-400">Não-sócio</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3" data-testid={`quotas-cell-${c.id}`}>
+                      {c.quotas_up_to_date ? (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 inline-flex items-center gap-1">
+                          ✓ {c.quotas_paid || 0}/12
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-200 border border-amber-500/30">
+                          {c.quotas_paid || 0}/12
+                        </span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-slate-400">{c.contact || "—"}</td>

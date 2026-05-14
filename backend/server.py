@@ -1142,11 +1142,18 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
         change_returned = 0.0
     pid = str(uuid.uuid4())
     tx_no = await _next_tx_number()
+    points_value = round(points_euros, 2)
     pay = {
         "id": pid,
         "tx_number": tx_no,
         "client_id": body.client_id,
-        "change_returned": change_returned,  # troco devolvido em dinheiro
+        "client_name": c["name"],
+        "amount": float(body.amount),              # numerário entregue (cash)
+        "tendered": round(total_paid_raw, 2),      # total entregue (cash + valor pontos)
+        "points_used": int(body.points_used or 0),
+        "points_value": points_value,              # valor dos pontos em €
+        "total_credited": round(total_paid, 2),    # valor abatido à dívida
+        "change_returned": change_returned,        # troco devolvido em dinheiro
         "keep_change_as_credit": bool(body.keep_change_as_credit),
         "note": body.note,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -1356,6 +1363,21 @@ async def dashboard(user: dict = Depends(get_current_user)):
 async def admin_clients_directory(user: dict = Depends(require_role("admin"))):
     # Sócios directory: only registered members
     socios = await db.clients.find({"is_member": True}, {"_id": 0, "pin_hash": 0}).sort("name", 1).to_list(5000)
+    # Enriquecer com resumo de cotas do ano corrente (X/12 pagas)
+    year = datetime.now(timezone.utc).year
+    socio_ids = [s["id"] for s in socios]
+    quotas = await db.quotas.find(
+        {"client_id": {"$in": socio_ids}, "year": year, "status": "paid"},
+        {"_id": 0, "client_id": 1, "month": 1},
+    ).to_list(50000)
+    paid_count = {}
+    for q in quotas:
+        paid_count[q["client_id"]] = paid_count.get(q["client_id"], 0) + 1
+    for s in socios:
+        s["quotas_paid"] = paid_count.get(s["id"], 0)
+        s["quotas_total"] = 12
+        s["quotas_year"] = year
+        s["quotas_up_to_date"] = paid_count.get(s["id"], 0) >= 12
     return socios
 
 # ---------- Notifications ----------
@@ -1648,16 +1670,22 @@ class SocioProfileIn(BaseModel):
 
 @api_router.put("/socio/profile-extra")
 async def socio_profile_extra(body: SocioProfileIn, socio: dict = Depends(get_current_socio)):
+    """Sócio pode preencher foto + data de nascimento UMA ÚNICA VEZ (auto-serviço).
+    Depois disso, só o admin pode alterar via PUT /api/clients/{id} ou /api/clients/{id}/photo."""
+    current = await db.clients.find_one({"id": socio["id"]}, {"_id": 0})
     update = {}
     if body.birthday is not None:
+        if current.get("birthday"):
+            raise HTTPException(status_code=403, detail="Data de nascimento já definida. Pede ao administrador para alterar.")
         update["birthday"] = body.birthday
     if body.photo_data is not None:
+        if current.get("photo_data"):
+            raise HTTPException(status_code=403, detail="Foto já definida. Pede ao administrador para alterar.")
         if len(body.photo_data) > 1_500_000:
             raise HTTPException(status_code=400, detail="Imagem demasiado grande (máx ~1 MB)")
         update["photo_data"] = body.photo_data
     if not update:
         raise HTTPException(status_code=400, detail="Sem alterações")
-    current = await db.clients.find_one({"id": socio["id"]}, {"_id": 0})
     will_bday = bool(update.get("birthday") or current.get("birthday"))
     will_photo = bool(update.get("photo_data") or current.get("photo_data"))
     already = bool(current.get("profile_bonus_given"))
@@ -1671,6 +1699,34 @@ async def socio_profile_extra(body: SocioProfileIn, socio: dict = Depends(get_cu
         await _log_points(socio["id"], bonus, "profile_bonus", None, "Perfil completo (data nascimento + foto)", socio.get("email") or "socio-self")
     doc = await db.clients.find_one({"id": socio["id"]}, {"_id": 0, "pin_hash": 0})
     return {"client": doc, "bonus_points": bonus}
+
+
+# Admin/tesoureiro pode actualizar foto/data nascimento a qualquer momento
+class AdminClientProfileIn(BaseModel):
+    birthday: Optional[str] = None
+    photo_data: Optional[str] = None
+    clear_photo: bool = False
+
+@api_router.put("/clients/{client_id}/profile-extra")
+async def admin_client_profile_extra(client_id: str, body: AdminClientProfileIn, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    c = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    update = {}
+    if body.birthday is not None:
+        update["birthday"] = body.birthday or None
+    if body.clear_photo:
+        update["photo_data"] = None
+    elif body.photo_data is not None:
+        if len(body.photo_data) > 1_500_000:
+            raise HTTPException(status_code=400, detail="Imagem demasiado grande (máx ~1 MB)")
+        update["photo_data"] = body.photo_data
+    if not update:
+        raise HTTPException(status_code=400, detail="Sem alterações")
+    await db.clients.update_one({"id": client_id}, {"$set": update})
+    await _audit(user["email"], "client_profile_extra_edit", "client", client_id, before={k: c.get(k) for k in update}, after=update, summary=f"Perfil de {c['name']} actualizado")
+    doc = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
+    return doc
 
 # ---------- Staff broadcast para sócio ----------
 class StaffToSocioMessageIn(BaseModel):
@@ -2401,6 +2457,32 @@ async def on_startup():
             backfill_total += 1
     if backfill_total:
         logging.getLogger(__name__).info(f"Backfill tx_number: {backfill_total} transações actualizadas")
+
+    # Backfill campos em pagamentos antigos (amount, tendered, total_credited, points_used)
+    pay_fix = 0
+    async for p in db.payments.find({"$or": [{"amount": {"$exists": False}}, {"total_credited": {"$exists": False}}, {"tendered": {"$exists": False}}]}, {"_id": 0}):
+        upd = {}
+        existing_amount = p.get("amount")
+        existing_total = p.get("total_credited")
+        existing_tendered = p.get("tendered")
+        # Resolver amount: usa total_credited se existir, ou 0 como último recurso
+        base = existing_amount if existing_amount is not None else (existing_total if existing_total is not None else 0.0)
+        change = float(p.get("change_returned") or 0)
+        if existing_amount is None:
+            upd["amount"] = float(base)
+        if existing_total is None:
+            upd["total_credited"] = float(base)
+        if existing_tendered is None:
+            upd["tendered"] = float(base) + change
+        if "points_used" not in p:
+            upd["points_used"] = 0
+        if "points_value" not in p:
+            upd["points_value"] = 0.0
+        if upd:
+            await db.payments.update_one({"id": p["id"]}, {"$set": upd})
+            pay_fix += 1
+    if pay_fix:
+        logging.getLogger(__name__).info(f"Backfill pagamentos: {pay_fix} docs preenchidos com amount/total_credited/tendered/points")
 
 @app.on_event("shutdown")
 async def on_shutdown():

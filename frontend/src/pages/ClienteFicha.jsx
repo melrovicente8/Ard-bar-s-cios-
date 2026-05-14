@@ -24,6 +24,8 @@ import {
   Printer,
   Phone,
   MapPin,
+  Camera,
+  CalendarBlank,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
@@ -73,6 +75,83 @@ export default function ClienteFicha() {
   const [editSaleSearch, setEditSaleSearch] = useState("");
   // Filtro temporal (Hoje por defeito) — afecta o cartão Consumo e o Histórico
   const [timeFilter, setTimeFilter] = useState("today");
+  // Cotas mensais (só sócios)
+  const [quotas, setQuotas] = useState(null); // {year, quotas:[12]}
+  const [quotaYear, setQuotaYear] = useState(new Date().getFullYear());
+  const [quotaSelection, setQuotaSelection] = useState({}); // {month: true}
+  // Foto / data nascimento (admin/tesoureiro)
+  const [showProfileExtra, setShowProfileExtra] = useState(false);
+  const [profileForm, setProfileForm] = useState({ birthday: "", photo_data: "" });
+
+  const loadQuotas = async (year = quotaYear) => {
+    try {
+      const { data } = await api.get(`/clients/${id}/quotas`, { params: { year } });
+      setQuotas(data);
+      setQuotaSelection({});
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const submitQuotaPayment = async () => {
+    const months = Object.entries(quotaSelection).filter(([, v]) => v).map(([m]) => Number(m));
+    if (!months.length) return toast.error("Seleciona pelo menos um mês");
+    try {
+      await api.post("/quotas/pay", { client_id: id, year: quotaYear, months });
+      toast.success(`${months.length} cota(s) pagas`);
+      await loadQuotas(quotaYear);
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const openProfileExtra = () => {
+    const c = data.client;
+    setProfileForm({ birthday: c.birthday || "", photo_data: "" });
+    setShowProfileExtra(true);
+  };
+
+  const onProfilePhoto = (file) => {
+    if (!file) return;
+    if (file.size > 1_200_000) return toast.error("Imagem demasiado grande (máx 1 MB)");
+    const reader = new FileReader();
+    reader.onload = () => setProfileForm((f) => ({ ...f, photo_data: reader.result }));
+    reader.readAsDataURL(file);
+  };
+
+  const submitProfileExtra = async (e) => {
+    e.preventDefault();
+    try {
+      const body = {};
+      if (profileForm.birthday !== (data.client.birthday || "")) body.birthday = profileForm.birthday;
+      if (profileForm.photo_data) body.photo_data = profileForm.photo_data;
+      if (!Object.keys(body).length) return toast.error("Sem alterações");
+      await api.put(`/clients/${id}/profile-extra`, body);
+      toast.success("Perfil atualizado");
+      setShowProfileExtra(false);
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const clearProfilePhoto = async () => {
+    if (!window.confirm("Remover a foto deste sócio?")) return;
+    try {
+      await api.put(`/clients/${id}/profile-extra`, { clear_photo: true });
+      toast.success("Foto removida");
+      setShowProfileExtra(false);
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  useEffect(() => {
+    if (data?.client?.is_member) loadQuotas(quotaYear);
+    // eslint-disable-next-line
+  }, [data?.client?.id, quotaYear]);
 
   const load = async () => {
     setLoading(true);
@@ -553,9 +632,13 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
 
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-8">
         <div className="flex items-center gap-4">
-          <div className="w-16 h-16 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold text-2xl">
-            {c.name[0]?.toUpperCase()}
-          </div>
+          {c.photo_data ? (
+            <img src={c.photo_data} alt={c.name} data-testid="ficha-client-photo" className="w-16 h-16 rounded-full object-cover border-2 border-amber-400" />
+          ) : (
+            <div className="w-16 h-16 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold text-2xl">
+              {c.name[0]?.toUpperCase()}
+            </div>
+          )}
           <div>
             <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">
               Ficha do cliente
@@ -574,6 +657,16 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
                   <PencilSimple size={16} weight="bold" />
                 </button>
               )}
+              {canEditAll && c.member_number && (
+                <button
+                  data-testid="ficha-photo-btn"
+                  onClick={openProfileExtra}
+                  title="Foto / Data nascimento"
+                  className="p-2 rounded-md bg-pink-500/10 text-pink-300 hover:bg-pink-500/20 transition-colors"
+                >
+                  <Camera size={16} weight="duotone" />
+                </button>
+              )}
               {c.is_member ? (
                 <span className="px-3 py-1 rounded-full text-xs font-bold bg-green-500/15 text-green-300 border border-green-500/30 flex items-center gap-1.5">
                   <Medal size={14} weight="fill" />
@@ -590,6 +683,11 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
                 </span>
               )}
             </div>
+            {c.birthday && (
+              <div className="text-xs text-slate-400 mt-1" data-testid="ficha-bday">
+                Data de nascimento: <span className="text-slate-300 font-medium">{new Date(c.birthday).toLocaleDateString("pt-PT")}</span>
+              </div>
+            )}
             {(c.contact || c.email || c.morada) && (
               <div className="text-sm text-slate-400 mt-1 space-y-0.5" data-testid="client-links">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -731,6 +829,92 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
         <BreakdownCard label="Este mês" value={euro((data.consumption || {}).month || 0)} />
         <BreakdownCard label="Este ano" value={euro((data.consumption || {}).year || 0)} highlight />
       </div>
+
+      {/* Cotas mensais — apenas sócios */}
+      {c.member_number && quotas && (
+        <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-6 mb-8" data-testid="quotas-section">
+          <div className="flex items-center gap-2 mb-4">
+            <CalendarBlank size={20} weight="duotone" className="text-amber-400" />
+            <h3 className="font-outfit text-xl font-semibold">Cotas mensais</h3>
+            <select
+              data-testid="quotas-year"
+              value={quotaYear}
+              onChange={(e) => setQuotaYear(Number(e.target.value))}
+              className="ml-auto bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-sm"
+            >
+              {[0, -1, -2].map((delta) => {
+                const y = new Date().getFullYear() + delta;
+                return <option key={y} value={y}>{y}</option>;
+              })}
+            </select>
+          </div>
+          {(() => {
+            const paid = quotas.quotas.filter((q) => q.status === "paid").length;
+            const total = quotas.quotas.length;
+            const pct = Math.round((paid / total) * 100);
+            return (
+              <div className="mb-4">
+                <div className="flex items-center justify-between text-xs mb-1.5">
+                  <span className="text-slate-400">{paid}/{total} meses pagos em {quotaYear}</span>
+                  <span className={paid === total ? "text-emerald-400 font-bold" : "text-amber-300 font-bold"} data-testid="quotas-pct">{pct}%</span>
+                </div>
+                <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
+                  <div className={`h-full ${paid === total ? "bg-emerald-500" : "bg-amber-500"}`} style={{ width: `${pct}%` }} />
+                </div>
+                {paid === total && (
+                  <div data-testid="quotas-up-to-date" className="mt-2 inline-flex items-center gap-1.5 text-xs text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 rounded-full px-3 py-1">
+                    <Check size={12} weight="bold" /> Cotas {quotaYear} em dia
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+          <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-4">
+            {quotas.quotas.map((q) => {
+              const paid = q.status === "paid";
+              const selected = !!quotaSelection[q.month];
+              return (
+                <button
+                  key={q.month}
+                  type="button"
+                  disabled={paid || !canEditAll}
+                  data-testid={`quota-${q.month}`}
+                  onClick={() => setQuotaSelection({ ...quotaSelection, [q.month]: !selected })}
+                  className={`px-2 py-2 rounded-lg text-xs font-medium border transition-colors text-left ${
+                    paid
+                      ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30 cursor-default"
+                      : selected
+                      ? "bg-amber-500/25 text-amber-200 border-amber-500/60"
+                      : "bg-slate-950 text-slate-300 border-slate-800 hover:border-amber-500/40"
+                  } ${!canEditAll && !paid ? "opacity-60" : ""}`}
+                >
+                  <div className="text-[10px] uppercase font-bold tracking-wider opacity-70">{q.label}</div>
+                  <div className="mt-0.5 flex items-center justify-between">
+                    <span className="text-[11px]">{euro(q.amount)}</span>
+                    {paid ? <Check size={12} weight="bold" /> : null}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          {canEditAll && (
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-slate-400">
+                {Object.values(quotaSelection).filter(Boolean).length > 0
+                  ? `${Object.values(quotaSelection).filter(Boolean).length} mês(es) selecionados · ${euro(Object.entries(quotaSelection).filter(([, v]) => v).length * (quotas.quotas[0]?.amount || 0))}`
+                  : "Seleciona meses por pagar"}
+              </span>
+              <button
+                type="button"
+                data-testid="quotas-pay-btn"
+                onClick={submitQuotaPayment}
+                disabled={Object.values(quotaSelection).filter(Boolean).length === 0}
+                className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold text-sm"
+              >Pagar selecionadas</button>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
         {/* Sales history */}
@@ -1632,6 +1816,48 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
               <button data-testid="edit-sale-submit-btn" onClick={submitEditSale} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold">Guardar alterações</button>
             </div>
           </div>
+        </div>
+      )}
+
+      {showProfileExtra && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setShowProfileExtra(false)} data-testid="ficha-profile-extra-modal">
+          <form onSubmit={submitProfileExtra} onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-6 space-y-3">
+            <div className="flex items-center gap-2">
+              <Camera size={22} weight="duotone" className="text-pink-400" />
+              <h3 className="font-outfit text-xl font-semibold">Foto / Data nascimento</h3>
+            </div>
+            <p className="text-xs text-slate-400">Como administrador, podes actualizar a foto e a data sempre que o sócio entender.</p>
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Data de nascimento</label>
+              <input
+                data-testid="ficha-bday-input"
+                type="date"
+                value={profileForm.birthday || ""}
+                onChange={(e) => setProfileForm({ ...profileForm, birthday: e.target.value })}
+                className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Foto (jpg/png, máx 1 MB)</label>
+              <input
+                data-testid="ficha-photo-input"
+                type="file"
+                accept="image/*"
+                onChange={(e) => onProfilePhoto(e.target.files?.[0])}
+                className="mt-1 w-full text-xs text-slate-300"
+              />
+              {(profileForm.photo_data || data.client.photo_data) && (
+                <img src={profileForm.photo_data || data.client.photo_data} alt="foto" className="mt-2 w-24 h-24 rounded-full object-cover border-2 border-amber-400" />
+              )}
+            </div>
+            <div className="flex gap-2 pt-2 flex-wrap">
+              <button type="button" onClick={() => setShowProfileExtra(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700">Cancelar</button>
+              {data.client.photo_data && (
+                <button type="button" data-testid="ficha-photo-clear" onClick={clearProfilePhoto} className="px-4 py-2.5 rounded-lg bg-rose-950 hover:bg-rose-900 text-rose-300">Remover foto</button>
+              )}
+              <button data-testid="ficha-profile-submit" type="submit" className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold">Guardar</button>
+            </div>
+          </form>
         </div>
       )}
     </div>

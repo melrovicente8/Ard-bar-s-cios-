@@ -72,6 +72,8 @@ export default function SocioPortal() {
         amount: String(Math.max(data.client.balance || 0, 0).toFixed(2)),
         mbway_phone: data.client.contact || "",
       }));
+      // Pré-carrega resumo das cotas para mostrar X/12 no dashboard
+      api.get("/socio/quotas").then(({ data: qd }) => setQuotas(qd)).catch(() => {});
     }
   }, [data]);
 
@@ -427,6 +429,37 @@ export default function SocioPortal() {
               </div>
               <div className="text-[10px] text-slate-500 mt-2">{sales.length} vendas</div>
             </div>
+            {c.member_number && quotas && (
+              <div className="bg-slate-950/60 border border-amber-500/30 rounded-xl p-5" data-testid="socio-quotas-card">
+                {(() => {
+                  const paid = quotas.quotas.filter((q) => q.status === "paid").length;
+                  const total = quotas.quotas.length || 12;
+                  const pct = Math.round((paid / total) * 100);
+                  const upToDate = paid >= total;
+                  return (
+                    <>
+                      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80 flex items-center gap-1.5">
+                        <CalendarBlank size={11} weight="fill" /> Cotas {quotas.year}
+                      </div>
+                      <div className="mt-2 flex items-baseline gap-2">
+                        <span data-testid="socio-quotas-paid" className={`font-outfit text-4xl font-bold ${upToDate ? "text-emerald-300" : "text-amber-300"}`}>{paid}</span>
+                        <span className="text-slate-500 text-lg">/ {total}</span>
+                      </div>
+                      <div className="mt-2 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div className={`h-full ${upToDate ? "bg-emerald-500" : "bg-amber-500"}`} style={{ width: `${pct}%` }} />
+                      </div>
+                      <div className="text-[10px] mt-2">
+                        {upToDate ? (
+                          <span className="text-emerald-300 font-bold" data-testid="socio-quotas-up">✓ Cotas em dia</span>
+                        ) : (
+                          <span className="text-amber-300">{total - paid} mês(es) por pagar</span>
+                        )}
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            )}
           </div>
         </div>
 
@@ -550,9 +583,11 @@ export default function SocioPortal() {
               <button
                 data-testid="socio-profile-extra-btn"
                 onClick={() => setShowProfileExtra(true)}
-                className="text-xs px-3 py-1.5 rounded-md bg-pink-500/15 text-pink-300 border border-pink-500/30 hover:bg-pink-500/25 flex items-center gap-1.5"
+                disabled={!!(c.birthday && c.photo_data)}
+                title={c.birthday && c.photo_data ? "Já tens foto e data definidas. Pede ao administrador para alterar." : ""}
+                className="text-xs px-3 py-1.5 rounded-md bg-pink-500/15 text-pink-300 border border-pink-500/30 hover:bg-pink-500/25 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                <Camera size={13} weight="duotone" /> Foto + Aniversário
+                <Camera size={13} weight="duotone" /> {c.birthday && c.photo_data ? "Perfil completo" : "Foto + Aniversário"}
               </button>
               <button
                 data-testid="socio-quotas-btn"
@@ -780,7 +815,7 @@ export default function SocioPortal() {
               <Camera size={22} weight="duotone" className="text-pink-400" />
               <h3 className="font-outfit text-xl font-semibold">Perfil + Bónus 2 pts</h3>
             </div>
-            <p className="text-xs text-slate-400">Adiciona a tua foto e data de nascimento. Quando ambos estiverem preenchidos pela primeira vez ganhas <strong>+2 pontos</strong>.</p>
+            <p className="text-xs text-slate-400">Adiciona a tua foto e data de nascimento. Quando ambos estiverem preenchidos pela primeira vez ganhas <strong>+2 pontos</strong>. <span className="text-amber-300">Após guardar, só o administrador pode alterar.</span></p>
             <div>
               <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Data de nascimento</label>
               <input
@@ -788,8 +823,10 @@ export default function SocioPortal() {
                 type="date"
                 value={profileForm.birthday || c.birthday || ""}
                 onChange={(e) => setProfileForm({ ...profileForm, birthday: e.target.value })}
-                className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white"
+                disabled={!!c.birthday}
+                className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white disabled:opacity-60 disabled:cursor-not-allowed"
               />
+              {c.birthday && <p className="text-[10px] text-amber-400 mt-1">Já definida — pede ao admin para alterar.</p>}
             </div>
             <div>
               <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Foto (jpg/png, máx 1 MB)</label>
@@ -798,11 +835,13 @@ export default function SocioPortal() {
                 type="file"
                 accept="image/*"
                 onChange={(e) => onPhotoSelect(e.target.files?.[0])}
-                className="mt-1 w-full text-xs text-slate-300"
+                disabled={!!c.photo_data}
+                className="mt-1 w-full text-xs text-slate-300 disabled:opacity-60 disabled:cursor-not-allowed"
               />
               {(profileForm.photo_data || c.photo_data) && (
                 <img src={profileForm.photo_data || c.photo_data} alt="foto" className="mt-2 w-24 h-24 rounded-full object-cover border-2 border-amber-400" />
               )}
+              {c.photo_data && <p className="text-[10px] text-amber-400 mt-1">Já definida — pede ao admin para alterar.</p>}
             </div>
             <div className="flex gap-2 pt-2">
               <button type="button" onClick={() => setShowProfileExtra(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700">Cancelar</button>
