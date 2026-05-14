@@ -1,38 +1,20 @@
 {
-  "name": "ARD Nespereira · Bar",
-  "short_name": "ARD Bar",
-  "description": "POS e gestão do bar ARD Nespereira",
-  "icons": [
-  {
-    "src": "icon-192.png",
-    "sizes": "192x192",
-    "type": "image/png"
-  },
-  {
-    "src": "icon-512.png",
-    "sizes": "512x512",
-    "type": "image/png"
-  }
-  ]
-  
-  "start_url": "/",
-  "display": "standalone",
-  "background_color": "#020617",
-  "theme_color": "#15803d",
-  "orientation": "any",
-  "scope": "/",
+  "short_name": "ArdBar",
+  "name": "Ard Bar Sócios",
   "icons": [
     {
-      "src": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='32' fill='%23166534'/><text x='50%25' y='50%25' text-anchor='middle' dominant-baseline='central' font-size='100' font-family='Arial,sans-serif' font-weight='bold' fill='%23fbbf24'>⚽</text></svg>",
+      "src": "icon-192.png",
       "sizes": "192x192",
-      "type": "image/svg+xml",
-      "purpose": "any"
+      "type": "image/png"
     },
     {
-      "src": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='80' fill='%23166534'/><text x='50%25' y='50%25' text-anchor='middle' dominant-baseline='central' font-size='280' font-family='Arial,sans-serif' font-weight='bold' fill='%23fbbf24'>⚽</text></svg>",
+      "src": "icon-512.png",
       "sizes": "512x512",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "type": "image/png"
     }
-  ]
+  ],
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#000000",
+  "background_color": "#ffffff"
 }
