@@ -43,7 +43,8 @@ export default function ClienteFicha() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showPay, setShowPay] = useState(false);
-  const [payForm, setPayForm] = useState({ amount: "", points_used: 0, note: "", keep_change_as_credit: false });
+  const [payForm, setPayForm] = useState({ amount: "", points_used: 0, note: "", keep_change_as_credit: false, tip: 0, tip_change: false });
+  const [paySelectedSales, setPaySelectedSales] = useState({}); // {sale_id: true}
   const [notifyPayment, setNotifyPayment] = useState(null);
   const [showEdit, setShowEdit] = useState(false);
   const [editForm, setEditForm] = useState({
@@ -172,21 +173,49 @@ export default function ClienteFicha() {
   const submitPay = async (e) => {
     e.preventDefault();
     try {
+      const selectedIds = Object.entries(paySelectedSales).filter(([, v]) => v).map(([k]) => k);
+      const tipValue = payForm.tip_change
+        ? Math.max(Number(payForm.amount || 0) - (selectedIds.length
+            ? Object.entries(paySelectedSales).filter(([, v]) => v).reduce((s, [sid]) => s + (sales.find((x) => x.id === sid)?.total || 0), 0)
+            : Math.max(c.balance || 0, 0)) - (Number(payForm.points_used || 0) / 5), 0)
+        : Number(payForm.tip || 0);
       const { data: payment } = await api.post("/payments", {
         client_id: id,
         amount: parseFloat(payForm.amount || 0),
         points_used: Number(payForm.points_used || 0),
         note: payForm.note || null,
         keep_change_as_credit: !!payForm.keep_change_as_credit,
+        tip: tipValue || 0,
+        sale_ids: selectedIds.length ? selectedIds : null,
       });
       toast.success("Pagamento registado");
       setShowPay(false);
+      setPaySelectedSales({});
       await load();
       // Open notify modal
       setNotifyPayment(payment);
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
+  };
+
+  const reversePayment = async (p) => {
+    if (!window.confirm(`Estornar pagamento de ${euro(p.total_credited || p.amount)}?`)) return;
+    try {
+      await api.post(`/payments/${p.id}/reverse`);
+      toast.success("Pagamento estornado");
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const canReversePayment = (p) => {
+    if (!user) return false;
+    if (canEditAll) return true;
+    if (p.user_email !== user.email) return false;
+    const created = new Date(p.created_at).getTime();
+    return (Date.now() - created) < 5 * 60 * 1000;
   };
 
   const sendNotification = async (channel) => {
@@ -580,18 +609,31 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
   const debt = Math.max(balance, 0);
   const credit = Math.max(-balance, 0);
 
-  // Marcar cada venda como paga/em dívida com base em pagamentos abatidos cronologicamente
-  const totalPaid = payments.reduce((s, p) => s + (p.total_credited || p.amount || 0), 0);
-  let remainingCredit = totalPaid;
+  // Marcar cada venda como paga/em dívida.
+  // Step 1: pagamentos com sale_ids específicos marcam directamente
+  // Step 2: pagamentos sem sale_ids contribuem para um "pool" FIFO sobre as restantes vendas
+  const targetedPaid = new Set();
+  let pool = 0;
+  payments.forEach((p) => {
+    if (p.sale_ids && p.sale_ids.length) {
+      p.sale_ids.forEach((sid) => targetedPaid.add(sid));
+    } else {
+      pool += Number(p.total_credited || p.amount || 0);
+    }
+  });
   const salesAsc = [...sales].sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
   const paidStatus = {}; // sale_id → 'paid' | 'partial' | 'open'
   salesAsc.forEach((s) => {
-    if (remainingCredit >= s.total - 1e-9) {
+    if (targetedPaid.has(s.id)) {
       paidStatus[s.id] = "paid";
-      remainingCredit -= s.total;
-    } else if (remainingCredit > 1e-9) {
+      return;
+    }
+    if (pool >= s.total - 1e-9) {
+      paidStatus[s.id] = "paid";
+      pool -= s.total;
+    } else if (pool > 1e-9) {
       paidStatus[s.id] = "partial";
-      remainingCredit = 0;
+      pool = 0;
     } else {
       paidStatus[s.id] = "open";
     }
@@ -1073,15 +1115,35 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
                       {ev.type === "sale" ? "+" : "-"}
                       {euro(ev.type === "sale" ? ev.total : (ev.total_credited || ev.amount))}
                     </span>
-                    {ev.tx_number && <span className="text-[9px] text-slate-500 font-mono">#{ev.tx_number}</span>}
+                    {ev.tip > 0 && (
+                      <span className="text-[9px] text-fuchsia-400 font-mono" title="Gratificação">+{euro(ev.tip)} gorj.</span>
+                    )}
+                    {ev.tx_number && (
+                      <Link
+                        to={`/transacoes/${ev.tx_number}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="text-[9px] text-slate-500 hover:text-amber-400 font-mono underline-offset-2 hover:underline"
+                        title="Consultar transação"
+                      >#{ev.tx_number}</Link>
+                    )}
                     <button
                       data-testid={`print-event-${ev.id}`}
                       onClick={(e) => { e.stopPropagation(); printTransaction(ev); }}
-                      title="Imprimir transação"
+                      title="Imprimir 2ª via"
                       className="text-slate-500 hover:text-amber-400"
                     >
                       <Printer size={12} weight="duotone" />
                     </button>
+                    {ev.type === "payment" && canReversePayment(ev) && (
+                      <button
+                        data-testid={`reverse-event-${ev.id}`}
+                        onClick={(e) => { e.stopPropagation(); reversePayment(ev); }}
+                        title="Estornar pagamento"
+                        className="text-slate-500 hover:text-rose-400"
+                      >
+                        <Trash size={12} weight="duotone" />
+                      </button>
+                    )}
                     {ev.type === "payment" && canEditAll && (
                       <PencilSimple size={12} weight="bold" className="text-emerald-400/60" />
                     )}
@@ -1116,13 +1178,30 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
               <details className="mb-4 bg-slate-950 border border-slate-800 rounded-lg" data-testid="payment-items-breakdown" open>
                 <summary className="cursor-pointer px-3 py-2 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400 hover:text-amber-400 list-none flex items-center justify-between">
                   <span>O que está em dívida</span>
-                  <span className="text-slate-500 normal-case tracking-normal">{unpaidSales.length} venda(s) por pagar</span>
+                  <span className="text-slate-500 normal-case tracking-normal">{unpaidSales.length} venda(s) por pagar · marca as que vais cobrar</span>
                 </summary>
+                <div className="px-3 pb-3 flex items-center gap-2 text-[10px]">
+                  <button type="button" data-testid="pay-select-all" onClick={() => { const o = {}; unpaidSales.forEach((s) => { o[s.id] = true; }); setPaySelectedSales(o); }} className="px-2 py-1 rounded bg-amber-500/15 text-amber-300 hover:bg-amber-500/25">Selecionar tudo</button>
+                  <button type="button" data-testid="pay-select-none" onClick={() => setPaySelectedSales({})} className="px-2 py-1 rounded bg-slate-800 text-slate-300 hover:bg-slate-700">Limpar</button>
+                  <span className="ml-auto text-slate-500">{Object.values(paySelectedSales).filter(Boolean).length} selecionada(s)</span>
+                </div>
                 <div className="max-h-44 overflow-y-auto px-3 pb-3 space-y-2 text-xs">
-                  {unpaidSales.slice(0, 20).map((s) => (
-                    <div key={s.id} className="border-t border-slate-800/60 pt-2">
+                  {unpaidSales.slice(0, 20).map((s) => {
+                    const selected = !!paySelectedSales[s.id];
+                    return (
+                    <label key={s.id} data-testid={`pay-sale-${s.id}`} className={`block border-t border-slate-800/60 pt-2 cursor-pointer rounded ${selected ? "bg-amber-500/5" : ""}`}>
                       <div className="flex items-center justify-between text-slate-400 text-[10px]">
-                        <span>{new Date(s.created_at).toLocaleString("pt-PT")}</span>
+                        <span className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            data-testid={`pay-sale-check-${s.id}`}
+                            checked={selected}
+                            onChange={(e) => setPaySelectedSales({ ...paySelectedSales, [s.id]: e.target.checked })}
+                            className="w-3.5 h-3.5 accent-amber-400"
+                          />
+                          {new Date(s.created_at).toLocaleString("pt-PT")}
+                          {s.tx_number && <span className="font-mono text-slate-500">#{s.tx_number}</span>}
+                        </span>
                         <div className="flex items-center gap-1.5">
                           <strong className="text-amber-400">{euro(s.total)}</strong>
                           {canEditSale && (
@@ -1149,7 +1228,7 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
                           )}
                         </div>
                       </div>
-                      <ul className="text-slate-300 mt-0.5">
+                      <ul className="text-slate-300 mt-0.5 pl-6">
                         {s.items.map((it, i) => (
                           <li key={i} className="flex items-center justify-between">
                             <span><span className="text-slate-500">{it.quantity}×</span> {it.product_name}</span>
@@ -1157,8 +1236,9 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
                           </li>
                         ))}
                       </ul>
-                    </div>
-                  ))}
+                    </label>
+                    );
+                  })}
                 </div>
               </details>
             )}
@@ -1216,25 +1296,45 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
                 </div>
               )}
 
-              {/* Resumo: total recebido, abatido, troco */}
+              {/* Resumo: total recebido, abatido, troco, gratificação */}
               {(() => {
                 const cash = Number(payForm.amount) || 0;
                 const ptsValue = (Number(payForm.points_used) || 0) / 5;
                 const total = cash + ptsValue;
+                const selectedIds = Object.entries(paySelectedSales).filter(([, v]) => v).map(([k]) => k);
+                const target = selectedIds.length
+                  ? selectedIds.reduce((s, sid) => s + (sales.find((x) => x.id === sid)?.total || 0), 0)
+                  : debt;
                 const keepCredit = !!payForm.keep_change_as_credit;
-                const totalApplied = keepCredit ? total : Math.min(total, debt);
-                const change = keepCredit ? 0 : Math.max(total - debt, 0);
-                const newCredit = keepCredit && total > debt ? total - debt : 0;
+                const tipChange = !!payForm.tip_change;
+                const excess = Math.max(total - target, 0);
+                const tipExplicit = Number(payForm.tip) || 0;
+                const tipValue = tipChange ? excess : Math.min(tipExplicit, excess);
+                const totalApplied = keepCredit ? total - tipValue : Math.min(total - tipValue, target);
+                const change = (keepCredit || tipChange) ? 0 : Math.max(excess - tipValue, 0);
+                const newCredit = keepCredit && total - tipValue > target ? total - tipValue - target : 0;
                 return (
                   <div className="space-y-2">
                     <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 flex items-center justify-between">
                       <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Total recebido</span>
                       <span className="font-outfit text-xl font-bold text-slate-100">{euro(total)}</span>
                     </div>
+                    {selectedIds.length > 0 && (
+                      <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 flex items-center justify-between text-xs">
+                        <span className="text-slate-400">Total das vendas selecionadas</span>
+                        <span className="text-slate-200 font-bold">{euro(target)}</span>
+                      </div>
+                    )}
                     <div className="bg-slate-950 border border-amber-500/20 rounded-lg p-3 flex items-center justify-between">
                       <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80">Abate na dívida</span>
                       <span data-testid="payment-total-credit" className="font-outfit text-xl font-bold text-amber-300">{euro(totalApplied)}</span>
                     </div>
+                    {tipValue > 0 && (
+                      <div className="bg-fuchsia-500/10 border border-fuchsia-500/30 rounded-lg p-3 flex items-center justify-between">
+                        <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-fuchsia-300/80">Gratificação (caixa)</span>
+                        <span data-testid="payment-tip" className="font-outfit text-xl font-bold text-fuchsia-300">{euro(tipValue)}</span>
+                      </div>
+                    )}
                     {change > 0 && (
                       <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 flex items-center justify-between">
                         <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300/80">Troco a devolver (dinheiro)</span>
@@ -1256,13 +1356,41 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
                   data-testid="payment-keep-credit-toggle"
                   type="checkbox"
                   checked={!!payForm.keep_change_as_credit}
-                  onChange={(e) => setPayForm({ ...payForm, keep_change_as_credit: e.target.checked })}
+                  onChange={(e) => setPayForm({ ...payForm, keep_change_as_credit: e.target.checked, tip_change: e.target.checked ? false : payForm.tip_change })}
                   className="mt-0.5 w-4 h-4 accent-sky-400"
                 />
                 <span className="text-xs text-slate-200">
-                  <strong>Deixar troco como crédito</strong> a favor do cliente — por defeito o excedente é devolvido em dinheiro e não fica em conta.
+                  <strong>Deixar troco como crédito</strong> a favor do cliente — por defeito o excedente é devolvido em dinheiro.
                 </span>
               </label>
+
+              <label className="flex items-start gap-3 px-3 py-3 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-fuchsia-500/40">
+                <input
+                  data-testid="payment-tip-change-toggle"
+                  type="checkbox"
+                  checked={!!payForm.tip_change}
+                  onChange={(e) => setPayForm({ ...payForm, tip_change: e.target.checked, keep_change_as_credit: e.target.checked ? false : payForm.keep_change_as_credit })}
+                  className="mt-0.5 w-4 h-4 accent-fuchsia-400"
+                />
+                <span className="text-xs text-slate-200">
+                  <strong>Cliente deixa o troco como gratificação</strong> — vai para a caixa do bar (receita extra), não fica em conta.
+                </span>
+              </label>
+
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-fuchsia-300/80">Gratificação manual (€)</label>
+                <input
+                  data-testid="payment-tip-input"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  disabled={!!payForm.tip_change}
+                  placeholder="0,00"
+                  value={payForm.tip}
+                  onChange={(e) => setPayForm({ ...payForm, tip: e.target.value })}
+                  className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-500/50 disabled:opacity-50"
+                />
+              </div>
 
               <div>
                 <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Nota</label>
@@ -1864,9 +1992,29 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
   );
 }
 
-const BreakdownCard = ({ label, value, highlight }) => (
-  <div className={`rounded-xl p-4 border ${highlight ? "bg-amber-500/5 border-amber-500/20" : "bg-slate-900/40 border-slate-800"}`}>
-    <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">{label}</div>
-    <div className={`mt-2 font-outfit text-xl font-bold ${highlight ? "text-amber-300" : "text-slate-100"}`}>{value}</div>
-  </div>
-);
+const BreakdownCard = ({ label, value, highlight }) => {
+  const [revealed, setRevealed] = useState(false);
+  useEffect(() => {
+    if (revealed) {
+      const t = setTimeout(() => setRevealed(false), 8000);
+      return () => clearTimeout(t);
+    }
+  }, [revealed]);
+  return (
+    <div className={`rounded-xl p-4 border ${highlight ? "bg-amber-500/5 border-amber-500/20" : "bg-slate-900/40 border-slate-800"}`}>
+      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 flex items-center justify-between gap-1.5">
+        <span>{label}</span>
+        <button
+          type="button"
+          onClick={() => setRevealed((v) => !v)}
+          data-testid={`reveal-${label.replace(/\s+/g, "-").toLowerCase()}`}
+          className="text-slate-500 hover:text-amber-400"
+          title={revealed ? "Mascarar" : "Mostrar"}
+        >{revealed ? "🙈" : "👁"}</button>
+      </div>
+      <div className={`mt-2 font-outfit text-xl font-bold ${revealed ? (highlight ? "text-amber-300" : "text-slate-100") : "text-slate-500"}`}>
+        {revealed ? value : "••••"}
+      </div>
+    </div>
+  );
+};

@@ -13,6 +13,8 @@ export default function Clientes() {
   const [showAdd, setShowAdd] = useState(false);
   const [search, setSearch] = useState("");
   const [filterType, setFilterType] = useState("all"); // all | socios | clientes
+  const [sortKey, setSortKey] = useState("name"); // name | number | activity
+  const [viewMode, setViewMode] = useState("grid"); // grid | list
   const [form, setForm] = useState({ name: "", contact: "", email: "", note: "", member_number: "", is_member: false, morada: "", pin: "" });
 
   const load = async () => {
@@ -77,7 +79,18 @@ export default function Clientes() {
           (c.contact || "").toLowerCase().includes(q) ||
           (c.email || "").toLowerCase().includes(q) ||
           (c.member_number || "").toLowerCase().includes(q)
-    );
+    )
+    .sort((a, b) => {
+      if (sortKey === "number") {
+        const an = parseInt(a.member_number || "999999", 10);
+        const bn = parseInt(b.member_number || "999999", 10);
+        return an - bn;
+      }
+      if (sortKey === "activity") {
+        return (b.last_activity || "").localeCompare(a.last_activity || "");
+      }
+      return a.name.localeCompare(b.name, "pt");
+    });
 
   return (
     <div className="p-6 md:p-10 animate-in" data-testid="clientes-page">
@@ -130,6 +143,31 @@ export default function Clientes() {
             </button>
           ))}
         </div>
+        <select
+          data-testid="clientes-sort"
+          value={sortKey}
+          onChange={(e) => setSortKey(e.target.value)}
+          className="bg-slate-900/80 border border-slate-800 rounded-lg px-3 py-2 text-white text-xs"
+        >
+          <option value="name">Nome (A-Z)</option>
+          <option value="number">Nº sócio</option>
+          <option value="activity">Últimos movimentos</option>
+        </select>
+        <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900/60 p-1" data-testid="clientes-view-toggle">
+          {[
+            { v: "grid", label: "Grelha" },
+            { v: "list", label: "Lista" },
+          ].map((opt) => (
+            <button
+              key={opt.v}
+              data-testid={`view-${opt.v}`}
+              onClick={() => setViewMode(opt.v)}
+              className={`px-3 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider transition-colors ${
+                viewMode === opt.v ? "bg-slate-700 text-white" : "text-slate-400 hover:text-white"
+              }`}
+            >{opt.label}</button>
+          ))}
+        </div>
         <div className="text-xs text-slate-500 ml-auto">
           {filtered.length} {filtered.length === 1 ? "registo" : "registos"}
         </div>
@@ -141,6 +179,60 @@ export default function Clientes() {
         <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-12 text-center">
           <User size={40} className="mx-auto text-slate-700 mb-3" weight="duotone" />
           <p className="text-slate-400">Sem clientes ainda.</p>
+        </div>
+      ) : viewMode === "list" ? (
+        <div className="bg-slate-900/40 border border-slate-800 rounded-xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="text-slate-500 text-xs uppercase tracking-wider bg-slate-950/40">
+                  <th className="px-4 py-3 font-medium">Nome</th>
+                  <th className="px-4 py-3 font-medium">Estatuto</th>
+                  <th className="px-4 py-3 font-medium">Contacto</th>
+                  <th className="px-4 py-3 font-medium text-right">A pagar</th>
+                  <th className="px-4 py-3 font-medium text-right">Total</th>
+                  <th className="px-4 py-3 font-medium text-right">Pontos</th>
+                  <th className="px-4 py-3 font-medium text-right"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((c) => {
+                  const debt = (c.balance || 0) > 0;
+                  return (
+                    <tr key={c.id} data-testid={`client-row-${c.id}`} className="border-t border-slate-800/60 hover:bg-slate-900/60">
+                      <td className="px-4 py-2.5 font-medium text-slate-100">
+                        <Link to={`/clientes/${c.id}`} className="hover:text-amber-400 flex items-center gap-2">
+                          {c.name} <ArrowRight size={12} className="opacity-60" />
+                        </Link>
+                      </td>
+                      <td className="px-4 py-2.5">
+                        {c.is_member ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-500/15 text-green-300 border border-green-500/30 inline-flex items-center gap-1">
+                            <Medal size={10} weight="fill" /> Sócio {c.member_number ? `nº ${c.member_number}` : ""}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-slate-400">Não-sócio</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5 text-slate-400 truncate max-w-[160px]">{c.contact || "—"}</td>
+                      <td className="px-4 py-2.5 text-right">
+                        <span className={debt ? "text-rose-400 font-semibold" : "text-slate-500"}>{euro(Math.max(c.balance || 0, 0))}</span>
+                      </td>
+                      <td className="px-4 py-2.5 text-right text-slate-200">{euro(c.total_spent || 0)}</td>
+                      <td className="px-4 py-2.5 text-right text-amber-300 font-bold">{c.points || 0}</td>
+                      <td className="px-4 py-2.5 text-right">
+                        {canDelete && (
+                          <button onClick={() => remove(c)} data-testid={`client-delete-list-${c.id}`} className="p-1.5 rounded-md bg-rose-500/10 text-rose-400 hover:bg-rose-500/20">
+                            <Trash size={12} />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">

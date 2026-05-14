@@ -12,6 +12,12 @@ import {
   Truck,
   Calendar,
   CalendarBlank,
+  Eye,
+  EyeSlash,
+  Bell,
+  ChatCircle,
+  DeviceMobile,
+  Coffee,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -23,15 +29,36 @@ import {
   CartesianGrid,
 } from "recharts";
 
-const StatCard = ({ icon: Icon, label, value, accent, testid, to }) => {
+const MASK = "••••";
+
+const StatCard = ({ icon: Icon, label, value, accent, testid, to, masked = false, unmaskedDefault = false }) => {
+  const [revealed, setRevealed] = useState(unmaskedDefault);
+  useEffect(() => {
+    if (revealed && masked && !unmaskedDefault) {
+      const t = setTimeout(() => setRevealed(false), 8000);
+      return () => clearTimeout(t);
+    }
+  }, [revealed, masked, unmaskedDefault]);
+  const shownValue = masked && !revealed ? MASK : value;
   const inner = (
     <div className="flex items-start justify-between">
       <div>
-        <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
+        <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 flex items-center gap-1.5">
           {label}
+          {masked && (
+            <button
+              type="button"
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); setRevealed((v) => !v); }}
+              className="text-slate-500 hover:text-amber-400"
+              data-testid={`${testid}-toggle-mask`}
+              title={revealed ? "Mascarar" : "Mostrar"}
+            >
+              {revealed ? <EyeSlash size={11} weight="duotone" /> : <Eye size={11} weight="duotone" />}
+            </button>
+          )}
         </div>
-        <div className="mt-3 font-outfit text-3xl font-bold tracking-tight text-white">
-          {value}
+        <div className={`mt-3 font-outfit text-3xl font-bold tracking-tight ${masked && !revealed ? "text-slate-500" : "text-white"}`}>
+          {shownValue}
         </div>
       </div>
       <div className={`p-3 rounded-lg ${accent}`}>
@@ -44,11 +71,38 @@ const StatCard = ({ icon: Icon, label, value, accent, testid, to }) => {
   return <div data-testid={testid} className={cls}>{inner}</div>;
 };
 
+function useGreeting(userName) {
+  const now = new Date();
+  const h = now.getHours();
+  let greet = "Bom dia";
+  if (h >= 12 && h < 19) greet = "Boa tarde";
+  else if (h >= 19 || h < 5) greet = "Boa noite";
+  const closingWarning = h >= 2 && h < 5;
+  const hh = String(h).padStart(2, "0") + ":" + String(now.getMinutes()).padStart(2, "0");
+  return { greet, hh, name: userName, closingWarning };
+}
+
+const PRESIDENT_MESSAGES = [
+  "“O bar é a casa de todos os sócios — cuidemos dela como se fosse nossa.”",
+  "“Hoje é dia de servir bem e sorrir mais.”",
+  "“Cada cliente que entra leva consigo uma memória do ARD.”",
+  "“Disciplina e ambiente: a receita do nosso clube.”",
+  "“Pequenas tarefas bem feitas constroem grandes resultados.”",
+  "“Obrigado por estares aqui hoje — sem ti não há ARD.”",
+  "“Pagar as cotas é apoiar quem vem a seguir.”",
+];
+function getPresidentMessage() {
+  const day = new Date().getDay();
+  return PRESIDENT_MESSAGES[day % PRESIDENT_MESSAGES.length];
+}
+
 export default function Dashboard() {
   const { user } = useAuth();
   const canSeeStockValue = user?.role === "admin" || user?.role === "tesoureiro";
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [pending, setPending] = useState({ requests: 0, messages: 0, mbway: 0 });
+  const greeting = useGreeting(user?.name || user?.email || "");
 
   const load = async () => {
     try {
@@ -59,8 +113,25 @@ export default function Dashboard() {
     }
   };
 
+  const loadPending = async () => {
+    try {
+      const [r, m, mb] = await Promise.all([
+        api.get("/consumption-requests", { params: { status_filter: "pending" } }).catch(() => ({ data: [] })),
+        api.get("/socio-messages", { params: { status_filter: "open" } }).catch(() => ({ data: [] })),
+        api.get("/mbway-payments").catch(() => ({ data: [] })),
+      ]);
+      const pendingMb = (mb.data || []).filter((x) => x.status === "pending").length;
+      setPending({ requests: (r.data || []).length, messages: (m.data || []).length, mbway: pendingMb });
+    } catch {
+      // ignore
+    }
+  };
+
   useEffect(() => {
     load();
+    loadPending();
+    const t = setInterval(loadPending, 15000);
+    return () => clearInterval(t);
   }, []);
 
   if (loading)
@@ -71,14 +142,44 @@ export default function Dashboard() {
     );
 
   return (
-    <div className="p-6 md:p-10 space-y-8 animate-in" data-testid="dashboard-page">
-      <div>
-        <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">
-          Resumo
+    <div className="p-6 md:p-10 space-y-6 animate-in" data-testid="dashboard-page">
+      {/* Saudação + hora + mensagem do presidente */}
+      <div className="bg-gradient-to-r from-amber-500/10 via-slate-900/60 to-green-500/10 border border-amber-500/20 rounded-xl p-5 md:p-6">
+        <div className="flex items-start md:items-center justify-between gap-4 flex-wrap">
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-amber-400/80">
+              {greeting.hh} · ARD Nespereira
+            </div>
+            <h1 className="font-outfit text-2xl sm:text-3xl font-bold tracking-tight mt-1" data-testid="dashboard-greeting">
+              {greeting.greet}, <span className="text-amber-300">{greeting.name}</span>!
+            </h1>
+            <p className="text-sm text-slate-300 italic mt-2 max-w-2xl" data-testid="president-message">
+              {getPresidentMessage()}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {pending.requests > 0 && (
+              <Link to="/pedidos" data-testid="alert-requests" className="px-3 py-2 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs font-bold flex items-center gap-1.5 animate-pulse">
+                <Bell size={13} weight="fill" /> {pending.requests} pedido(s) por validar
+              </Link>
+            )}
+            {pending.mbway > 0 && (
+              <Link to="/mbway" data-testid="alert-mbway" className="px-3 py-2 rounded-full bg-sky-500/20 border border-sky-500/40 text-sky-200 text-xs font-bold flex items-center gap-1.5 animate-pulse">
+                <DeviceMobile size={13} weight="fill" /> {pending.mbway} MBWay
+              </Link>
+            )}
+            {pending.messages > 0 && (
+              <Link to="/mensagens" data-testid="alert-messages" className="px-3 py-2 rounded-full bg-fuchsia-500/20 border border-fuchsia-500/40 text-fuchsia-200 text-xs font-bold flex items-center gap-1.5 animate-pulse">
+                <ChatCircle size={13} weight="fill" /> {pending.messages} mensagem(s)
+              </Link>
+            )}
+          </div>
         </div>
-        <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">
-          Dashboard
-        </h1>
+        {greeting.closingWarning && (
+          <div className="mt-4 px-4 py-3 rounded-lg bg-rose-500/15 border border-rose-500/40 text-rose-200 text-sm font-bold flex items-center gap-2" data-testid="closing-warning">
+            <Coffee size={16} weight="fill" /> Atenção: já passou das 2h. Por favor, prepare o fecho do bar.
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-5">
@@ -89,6 +190,7 @@ export default function Dashboard() {
           value={euro(data.today_sales_total)}
           accent="bg-amber-500/10 text-amber-500"
           to="/vender"
+          unmaskedDefault
         />
         <StatCard
           testid="kpi-week-sales"
@@ -97,6 +199,7 @@ export default function Dashboard() {
           value={euro(data.week_sales_total || 0)}
           accent="bg-amber-500/10 text-amber-400"
           to="/vender"
+          masked
         />
         <StatCard
           testid="kpi-month-sales"
@@ -105,6 +208,7 @@ export default function Dashboard() {
           value={euro(data.month_sales_total || 0)}
           accent="bg-amber-500/10 text-amber-300"
           to="/vender"
+          masked
         />
         <StatCard
           testid="kpi-outstanding"
@@ -113,6 +217,7 @@ export default function Dashboard() {
           value={euro(data.outstanding_debt)}
           accent="bg-rose-500/10 text-rose-400"
           to="/dividas"
+          unmaskedDefault
         />
         <StatCard
           testid="kpi-suppliers-debt"
@@ -121,6 +226,7 @@ export default function Dashboard() {
           value={euro(data.suppliers_debt || 0)}
           accent="bg-fuchsia-500/10 text-fuchsia-300"
           to="/fornecedores"
+          masked
         />
         {canSeeStockValue && (
           <StatCard
@@ -130,6 +236,7 @@ export default function Dashboard() {
             value={euro(data.total_stock_value)}
             accent="bg-emerald-500/10 text-emerald-400"
             to="/stock"
+            masked
           />
         )}
         <StatCard
@@ -139,6 +246,7 @@ export default function Dashboard() {
           value={data.clients_count}
           accent="bg-sky-500/10 text-sky-400"
           to="/clientes"
+          masked
         />
         <StatCard
           testid="kpi-debtors"
@@ -147,6 +255,7 @@ export default function Dashboard() {
           value={data.today_debtors_count || 0}
           accent="bg-orange-500/10 text-orange-300"
           to="/dividas"
+          unmaskedDefault
         />
       </div>
 

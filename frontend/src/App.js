@@ -21,6 +21,8 @@ import Historico from "./pages/Historico";
 import Contas from "./pages/Contas";
 import Mensagens from "./pages/Mensagens";
 import Pedidos from "./pages/Pedidos";
+import Transacao from "./pages/Transacao";
+import Documentacao from "./pages/Documentacao";
 import SocioLogin from "./pages/SocioLogin";
 import SocioPortal from "./pages/SocioPortal";
 
@@ -114,6 +116,8 @@ function App() {
                 />
                 <Route path="mensagens" element={<Mensagens />} />
                 <Route path="pedidos" element={<Pedidos />} />
+                <Route path="transacoes/:tx_number" element={<Transacao />} />
+                <Route path="documentacao" element={<AdminOnly><Documentacao /></AdminOnly>} />
               </Route>
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

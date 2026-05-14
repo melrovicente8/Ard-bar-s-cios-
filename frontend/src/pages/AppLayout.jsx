@@ -19,6 +19,7 @@ import {
   ShoppingCart,
   Bank,
   ChatCircle,
+  Book,
   List,
   X as XIcon,
 } from "@phosphor-icons/react";
@@ -61,6 +62,7 @@ const navGroups = [
       { to: "/equipa", label: "Equipa", icon: UsersThree, testid: "nav-equipa", roles: ["admin"] },
       { to: "/contas", label: "Contas", icon: Bank, testid: "nav-contas", roles: ["admin", "tesoureiro"] },
       { to: "/historico", label: "Histórico", icon: ClockCounterClockwise, testid: "nav-historico", roles: ["admin", "tesoureiro"] },
+      { to: "/documentacao", label: "Documentação", icon: Book, testid: "nav-documentacao", roles: ["admin"] },
     ],
   },
 ];

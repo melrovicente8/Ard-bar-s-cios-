@@ -68,6 +68,9 @@ class ProductIn(BaseModel):
     category: Optional[str] = "Bebida"
     image_url: Optional[str] = None
     is_quota: bool = False  # Quotas/cotas — não contam para valor de stock
+    is_food: bool = False   # Comida — só disponível entre 16h e 20h
+    unavailable: bool = False  # Marcado como indisponível mesmo havendo stock
+    is_house_account: bool = False  # "Conta da casa" — venda gratuita, conta como despesa fornecedor
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -77,6 +80,9 @@ class ProductUpdate(BaseModel):
     category: Optional[str] = None
     image_url: Optional[str] = None
     is_quota: Optional[bool] = None
+    is_food: Optional[bool] = None
+    unavailable: Optional[bool] = None
+    is_house_account: Optional[bool] = None
 
 class StockReplenishIn(BaseModel):
     product_id: str
@@ -122,6 +128,8 @@ class PaymentIn(BaseModel):
     points_used: int = 0
     note: Optional[str] = None
     keep_change_as_credit: bool = False  # se False, valor abate é capped na dívida
+    tip: float = 0.0  # gratificação (parte do amount que NÃO abate à dívida — receita extra)
+    sale_ids: Optional[List[str]] = None  # se fornecido, paga apenas estas vendas em específico
 
 class PaymentUpdate(BaseModel):
     amount: Optional[float] = None
@@ -633,6 +641,22 @@ async def _next_tx_number() -> int:
     return int(res["seq"]) if res else 1
 
 
+async def _ensure_house_supplier():
+    """Garante que existe o 'fornecedor' virtual Conta da Casa."""
+    existing = await db.suppliers.find_one({"id": "_house"}, {"_id": 0})
+    if not existing:
+        await db.suppliers.insert_one({
+            "id": "_house",
+            "name": "Conta da Casa",
+            "code": "F00",
+            "contact": None,
+            "email": None,
+            "nif": None,
+            "balance": 0,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+
 async def _log_points(client_id: str, delta: int, source: str, ref_id: Optional[str], note: str, user_email: str):
     """Regista uma entrada no histórico de pontos."""
     if delta == 0:
@@ -676,23 +700,50 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
     products_list = await db.products.find({"id": {"$in": product_ids}}, {"_id": 0}).to_list(len(product_ids))
     products_map = {p["id"]: p for p in products_list}
     line_items = []
-    total = 0.0
+    total = 0.0      # valor que o cliente paga
+    house_total = 0.0  # valor "conta da casa" (despesa do bar)
+    now_hour = datetime.now(timezone.utc).hour
+    # Ajustar para hora local PT (CET = UTC+0, mas PT-Continental é normalmente UTC+0 inverno / +1 verão)
+    # Usar local time portuguesa simplificada
+    try:
+        from zoneinfo import ZoneInfo
+        now_local = datetime.now(ZoneInfo("Europe/Lisbon"))
+        now_hour = now_local.hour
+    except Exception:
+        pass
+    role = user.get("role")
+    is_staff = role in ("admin", "tesoureiro")
     for it in body.items:
         prod = products_map.get(it.product_id)
         if not prod:
             raise HTTPException(status_code=404, detail=f"Produto {it.product_id} não encontrado")
         if it.quantity <= 0:
             raise HTTPException(status_code=400, detail="Quantidade inválida")
+        # Comida só entre 16h e 20h, exceto admin/tesoureiro
+        if prod.get("is_food") and not is_staff:
+            if not (16 <= now_hour < 20):
+                raise HTTPException(status_code=400, detail=f"'{prod['name']}' só disponível das 16h às 20h")
+        # Marcado como indisponível? funcionário não pode vender; admin/tesoureiro pode
+        if prod.get("unavailable") and not is_staff:
+            raise HTTPException(status_code=400, detail=f"'{prod['name']}' marcado como indisponível")
         if prod["quantity"] < it.quantity:
             raise HTTPException(status_code=400, detail=f"Stock insuficiente para {prod['name']}")
-        subtotal = float(prod["price"]) * int(it.quantity)
+        unit_price = float(prod["price"])
+        qty = int(it.quantity)
+        subtotal_full = unit_price * qty
+        is_house = bool(prod.get("is_house_account"))
+        subtotal = 0.0 if is_house else subtotal_full
+        if is_house:
+            house_total += subtotal_full
         total += subtotal
         line_items.append({
             "product_id": prod["id"],
             "product_name": prod["name"],
-            "unit_price": float(prod["price"]),
-            "quantity": int(it.quantity),
+            "unit_price": unit_price,
+            "quantity": qty,
             "subtotal": subtotal,
+            "is_house_account": is_house,
+            "house_value": subtotal_full if is_house else 0.0,
         })
 
     # decrement stock
@@ -712,6 +763,7 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
         "client_name": client_doc["name"],
         "items": line_items,
         "total": total,
+        "house_total": house_total,
         "points_earned": points_earned,
         "points_pending_before": old_pending,
         "points_pending_after": new_pending,
@@ -720,6 +772,26 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
         "user_email": user["email"],
     }
     await db.sales.insert_one(sale_doc)
+
+    # Se houve "conta da casa", regista como despesa de fornecedor (internal)
+    if house_total > 0:
+        await _ensure_house_supplier()
+        expense_tx = await _next_tx_number()
+        await db.supplier_expenses.insert_one({
+            "id": str(uuid.uuid4()),
+            "tx_number": expense_tx,
+            "supplier_id": "_house",
+            "supplier_name": "Conta da Casa",
+            "description": f"Conta da casa · venda #{tx_no} · {client_doc['name']}",
+            "amount": float(house_total),
+            "paid": True,
+            "due_date": None,
+            "paid_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "user_email": user["email"],
+            "sale_id": sale_id,
+            "house_items": [li for li in line_items if li.get("is_house_account")],
+        })
 
     # update client balance, total spent, points and pending value
     set_ops: dict = {}
@@ -1119,6 +1191,8 @@ async def reject_consumption_request(req_id: str, user: dict = Depends(get_curre
 async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)):
     if body.amount < 0:
         raise HTTPException(status_code=400, detail="Valor inválido")
+    if body.tip < 0 or body.tip > body.amount:
+        raise HTTPException(status_code=400, detail="Gratificação inválida")
     if body.points_used < 0:
         raise HTTPException(status_code=400, detail="Pontos inválidos")
     if body.points_used and body.points_used % POINTS_PER_EURO != 0:
@@ -1129,14 +1203,25 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
     if body.points_used and body.points_used > int(c.get("points", 0)):
         raise HTTPException(status_code=400, detail="Pontos insuficientes")
     points_euros = body.points_used / POINTS_PER_EURO
-    total_paid_raw = float(body.amount) + points_euros
-    if total_paid_raw <= 0:
+    tip = round(float(body.tip), 2)
+    cash_effective = round(float(body.amount) - tip, 2)  # parte do cash que abate à dívida
+    total_paid_raw = cash_effective + points_euros
+    if total_paid_raw <= 0 and tip <= 0:
         raise HTTPException(status_code=400, detail="O pagamento total tem de ser superior a 0")
-    current_debt = max(float(c.get("balance", 0)), 0.0)
-    # Cap o valor creditado se NÃO quiser deixar troco como crédito
-    if not body.keep_change_as_credit and total_paid_raw > current_debt:
-        total_paid = current_debt
-        change_returned = round(total_paid_raw - current_debt, 2)
+    # Cálculo do target (vendas específicas ou dívida total)
+    sale_ids_clean: list = []
+    if body.sale_ids:
+        target_sales = await db.sales.find(
+            {"id": {"$in": body.sale_ids}, "client_id": body.client_id},
+            {"_id": 0, "id": 1, "total": 1},
+        ).to_list(len(body.sale_ids))
+        sale_ids_clean = [s["id"] for s in target_sales]
+        target_amount = round(sum(float(s["total"]) for s in target_sales), 2)
+    else:
+        target_amount = max(float(c.get("balance", 0)), 0.0)
+    if not body.keep_change_as_credit and total_paid_raw > target_amount:
+        total_paid = target_amount
+        change_returned = round(total_paid_raw - target_amount, 2)
     else:
         total_paid = total_paid_raw
         change_returned = 0.0
@@ -1148,13 +1233,15 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
         "tx_number": tx_no,
         "client_id": body.client_id,
         "client_name": c["name"],
-        "amount": float(body.amount),              # numerário entregue (cash)
-        "tendered": round(total_paid_raw, 2),      # total entregue (cash + valor pontos)
+        "amount": float(body.amount),              # numerário entregue (cash bruto, inclui tip)
+        "tendered": round(total_paid_raw + tip, 2),# total entregue (cash + valor pontos)
         "points_used": int(body.points_used or 0),
-        "points_value": points_value,              # valor dos pontos em €
+        "points_value": points_value,
         "total_credited": round(total_paid, 2),    # valor abatido à dívida
-        "change_returned": change_returned,        # troco devolvido em dinheiro
+        "change_returned": change_returned,
         "keep_change_as_credit": bool(body.keep_change_as_credit),
+        "tip": tip,                                # gratificação (receita extra)
+        "sale_ids": sale_ids_clean,                # vendas específicas (vazio = FIFO)
         "note": body.note,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "user_email": user["email"],
@@ -1167,8 +1254,45 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
     await db.clients.update_one({"id": body.client_id}, {"$inc": inc})
     if body.points_used:
         await _log_points(body.client_id, -int(body.points_used), "payment", pid, f"Pagamento (descontou {points_euros:.2f} €)", user["email"])
+    if tip > 0:
+        await _audit("payment_tip", user["email"], entity="payment", entity_id=pid, after={"tip": tip, "client": c["name"]}, summary=f"Gratificação {tip:.2f} € de {c['name']}")
     pay.pop("_id", None)
     return pay
+
+
+@api_router.post("/payments/{payment_id}/reverse")
+async def reverse_payment(payment_id: str, user: dict = Depends(get_current_user)):
+    """Estorna um pagamento. Permissões:
+    - Admin/Tesoureiro: sempre.
+    - Quem fez o lançamento: até 5 minutos depois de criado.
+    """
+    pay = await db.payments.find_one({"id": payment_id}, {"_id": 0})
+    if not pay:
+        raise HTTPException(status_code=404, detail="Pagamento não encontrado")
+    role = user.get("role")
+    is_priv = role in ("admin", "tesoureiro")
+    if not is_priv:
+        if pay.get("user_email") != user.get("email"):
+            raise HTTPException(status_code=403, detail="Só podes estornar pagamentos que tu lançaste")
+        # janela de 5 min
+        try:
+            created = datetime.fromisoformat(pay["created_at"].replace("Z", "+00:00"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Data inválida no pagamento")
+        delta = datetime.now(timezone.utc) - created
+        if delta.total_seconds() > 5 * 60:
+            raise HTTPException(status_code=403, detail="Prazo expirado (5 min). Pede ao admin/tesoureiro.")
+    total_credited = float(pay.get("total_credited", pay.get("amount", 0)))
+    points_used = int(pay.get("points_used", 0))
+    inc = {"balance": total_credited}
+    if points_used:
+        inc["points"] = points_used
+    await db.clients.update_one({"id": pay["client_id"]}, {"$inc": inc})
+    if points_used:
+        await _log_points(pay["client_id"], points_used, "payment_reverse", payment_id, "Estorno de pagamento", user["email"])
+    await db.payments.delete_one({"id": payment_id})
+    await _audit("payment_reverse", user["email"], entity="payment", entity_id=payment_id, before=pay, summary=f"Estorno de pagamento (#{pay.get('tx_number', '—')}) · cliente {pay.get('client_name', '—')}")
+    return {"ok": True, "restored_balance": total_credited, "restored_points": points_used}
 
 @api_router.put("/payments/{payment_id}")
 async def update_payment(payment_id: str, body: PaymentUpdate, user: dict = Depends(require_role("admin", "tesoureiro"))):
@@ -1724,7 +1848,7 @@ async def admin_client_profile_extra(client_id: str, body: AdminClientProfileIn,
     if not update:
         raise HTTPException(status_code=400, detail="Sem alterações")
     await db.clients.update_one({"id": client_id}, {"$set": update})
-    await _audit(user["email"], "client_profile_extra_edit", "client", client_id, before={k: c.get(k) for k in update}, after=update, summary=f"Perfil de {c['name']} actualizado")
+    await _audit("client_profile_extra_edit", user["email"], entity="client", entity_id=client_id, before={k: c.get(k) for k in update}, after=update, summary=f"Perfil de {c['name']} actualizado")
     doc = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
     return doc
 
@@ -2186,8 +2310,11 @@ async def list_suppliers(user: dict = Depends(get_current_user)):
 @api_router.post("/suppliers")
 async def create_supplier(body: SupplierIn, user: dict = Depends(require_role("admin", "tesoureiro"))):
     sid = str(uuid.uuid4())
+    # Próximo código sequencial F01, F02...
+    code = await _next_supplier_code()
     doc = {
         "id": sid,
+        "code": code,
         "name": body.name,
         "contact": body.contact,
         "email": body.email,
@@ -2198,6 +2325,15 @@ async def create_supplier(body: SupplierIn, user: dict = Depends(require_role("a
     await db.suppliers.insert_one(doc)
     doc.pop("_id", None)
     return doc
+
+
+async def _next_supplier_code() -> str:
+    from pymongo import ReturnDocument
+    res = await db.counters.find_one_and_update(
+        {"_id": "supplier_code"}, {"$inc": {"seq": 1}}, upsert=True, return_document=ReturnDocument.AFTER,
+    )
+    seq = int(res["seq"]) if res else 1
+    return f"F{seq:02d}"
 
 @api_router.put("/suppliers/{supplier_id}")
 async def update_supplier(supplier_id: str, body: SupplierUpdate, user: dict = Depends(require_role("admin", "tesoureiro"))):
@@ -2483,6 +2619,21 @@ async def on_startup():
             pay_fix += 1
     if pay_fix:
         logging.getLogger(__name__).info(f"Backfill pagamentos: {pay_fix} docs preenchidos com amount/total_credited/tendered/points")
+
+    # Backfill fornecedores com código F01...
+    counter_doc = await db.counters.find_one({"_id": "supplier_code"})
+    seq = int(counter_doc["seq"]) if counter_doc else 0
+    sup_fix = 0
+    async for s in db.suppliers.find({"$or": [{"code": {"$exists": False}}, {"code": None}]}, {"_id": 0}).sort("created_at", 1):
+        if s.get("id") == "_house":
+            await db.suppliers.update_one({"id": s["id"]}, {"$set": {"code": "F00"}})
+            continue
+        seq += 1
+        await db.suppliers.update_one({"id": s["id"]}, {"$set": {"code": f"F{seq:02d}"}})
+        sup_fix += 1
+    if sup_fix:
+        await db.counters.update_one({"_id": "supplier_code"}, {"$set": {"seq": seq}}, upsert=True)
+        logging.getLogger(__name__).info(f"Backfill fornecedores: {sup_fix} códigos F atribuídos")
 
 @app.on_event("shutdown")
 async def on_shutdown():

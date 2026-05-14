@@ -41,6 +41,9 @@ export default function Stock() {
     category: "Bebida",
     image_url: "",
     is_quota: false,
+    is_food: false,
+    unavailable: false,
+    is_house_account: false,
   });
   const [replForm, setReplForm] = useState({ quantity: "", cost_price: "", note: "" });
 
@@ -67,6 +70,9 @@ export default function Stock() {
       category: "Bebida",
       image_url: "",
       is_quota: false,
+      is_food: false,
+      unavailable: false,
+      is_house_account: false,
     });
     setShowAdd(true);
   };
@@ -80,6 +86,9 @@ export default function Stock() {
       category: p.category || "",
       image_url: p.image_url || "",
       is_quota: !!p.is_quota,
+      is_food: !!p.is_food,
+      unavailable: !!p.unavailable,
+      is_house_account: !!p.is_house_account,
     });
     setShowEdit(p);
   };
@@ -95,6 +104,9 @@ export default function Stock() {
         category: form.category,
         image_url: form.image_url || null,
         is_quota: !!form.is_quota,
+        is_food: !!form.is_food,
+        unavailable: !!form.unavailable,
+        is_house_account: !!form.is_house_account,
       });
       toast.success("Produto adicionado");
       setShowAdd(false);
@@ -115,9 +127,22 @@ export default function Stock() {
         category: form.category,
         image_url: form.image_url || null,
         is_quota: !!form.is_quota,
+        is_food: !!form.is_food,
+        unavailable: !!form.unavailable,
+        is_house_account: !!form.is_house_account,
       });
       toast.success("Produto atualizado");
       setShowEdit(null);
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const toggleUnavailable = async (p) => {
+    try {
+      await api.put(`/products/${p.id}`, { unavailable: !p.unavailable });
+      toast.success(p.unavailable ? "Produto disponível" : "Produto marcado como indisponível");
       await load();
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
@@ -221,11 +246,26 @@ export default function Stock() {
                       className="border-t border-slate-800/60 hover:bg-slate-900/60"
                     >
                       <td className="px-5 py-4 font-medium text-slate-100">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           {p.name}
                           {p.is_quota && (
                             <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-500/15 text-green-300 border border-green-500/30">
                               Cota
+                            </span>
+                          )}
+                          {p.is_food && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-500/15 text-orange-300 border border-orange-500/30" title="Só disponível 16h-20h">
+                              Comida 16h–20h
+                            </span>
+                          )}
+                          {p.is_house_account && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30" title="Conta da casa">
+                              Conta da casa
+                            </span>
+                          )}
+                          {p.unavailable && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-300 border border-rose-500/30">
+                              Indisponível
                             </span>
                           )}
                         </div>
@@ -263,6 +303,16 @@ export default function Stock() {
                               className="px-3 py-1.5 rounded-md text-xs font-medium bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 flex items-center gap-1.5"
                             >
                               <ArrowsClockwise size={14} weight="bold" /> Carregar
+                            </button>
+                          )}
+                          {canManage && (
+                            <button
+                              data-testid={`toggle-avail-btn-${p.id}`}
+                              onClick={() => toggleUnavailable(p)}
+                              title={p.unavailable ? "Tornar disponível" : "Marcar indisponível"}
+                              className={`p-2 rounded-md ${p.unavailable ? "bg-rose-500/15 text-rose-300 hover:bg-rose-500/25" : "bg-slate-800 hover:bg-slate-700 text-slate-400"}`}
+                            >
+                              {p.unavailable ? "⊘" : "○"}
                             </button>
                           )}
                           {canManage && (
@@ -443,6 +493,42 @@ function ProductForm({ form, setForm, onSubmit, cta, testidPrefix }) {
         />
         <span className="text-xs text-slate-200">
           <strong>Cota / Quota</strong> — receita do clube, <em>não conta</em> para o valor em stock nem alertas de stock baixo.
+        </span>
+      </label>
+      <label className="flex items-start gap-3 px-3 py-3 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-orange-500/40">
+        <input
+          data-testid={`${testidPrefix}-is-food-toggle`}
+          type="checkbox"
+          checked={!!form.is_food}
+          onChange={(e) => setForm({ ...form, is_food: e.target.checked })}
+          className="mt-0.5 w-4 h-4 accent-orange-500"
+        />
+        <span className="text-xs text-slate-200">
+          <strong>Comida</strong> — só pode ser vendido pelo balcão e portal do sócio entre as <strong>16h e 20h</strong>.
+        </span>
+      </label>
+      <label className="flex items-start gap-3 px-3 py-3 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-rose-500/40">
+        <input
+          data-testid={`${testidPrefix}-unavailable-toggle`}
+          type="checkbox"
+          checked={!!form.unavailable}
+          onChange={(e) => setForm({ ...form, unavailable: e.target.checked })}
+          className="mt-0.5 w-4 h-4 accent-rose-500"
+        />
+        <span className="text-xs text-slate-200">
+          <strong>Indisponível</strong> — esconde o produto da venda e do portal do sócio mesmo havendo stock.
+        </span>
+      </label>
+      <label className="flex items-start gap-3 px-3 py-3 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-fuchsia-500/40">
+        <input
+          data-testid={`${testidPrefix}-house-toggle`}
+          type="checkbox"
+          checked={!!form.is_house_account}
+          onChange={(e) => setForm({ ...form, is_house_account: e.target.checked })}
+          className="mt-0.5 w-4 h-4 accent-fuchsia-500"
+        />
+        <span className="text-xs text-slate-200">
+          <strong>Conta da casa</strong> — venda gratuita ao cliente; o stock decrementa na mesma e o valor entra como despesa do bar.
         </span>
       </label>
       <button
