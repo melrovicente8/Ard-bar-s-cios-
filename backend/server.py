@@ -1961,6 +1961,59 @@ async def socio_my_requests(socio: dict = Depends(get_current_socio)):
     items = await db.consumption_requests.find({"client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return items
 
+
+@api_router.delete("/socio/consumption-requests/{req_id}")
+async def socio_cancel_request(req_id: str, socio: dict = Depends(get_current_socio)):
+    """Sócio pode cancelar o seu pedido enquanto estiver 'pending'."""
+    req = await db.consumption_requests.find_one({"id": req_id, "client_id": socio["id"]}, {"_id": 0})
+    if not req:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if req.get("status") != "pending":
+        raise HTTPException(status_code=400, detail=f"Pedido já {req.get('status')}, não pode ser cancelado")
+    await db.consumption_requests.update_one(
+        {"id": req_id},
+        {"$set": {"status": "cancelled", "decided_at": datetime.now(timezone.utc).isoformat(), "decided_by": socio.get("email") or "socio-self"}},
+    )
+    return {"ok": True}
+
+
+@api_router.put("/socio/consumption-requests/{req_id}")
+async def socio_edit_request(req_id: str, body: SocioConsumptionReqIn, socio: dict = Depends(get_current_socio)):
+    """Sócio pode editar itens / nota enquanto o pedido ainda estiver pendente."""
+    req = await db.consumption_requests.find_one({"id": req_id, "client_id": socio["id"]}, {"_id": 0})
+    if not req:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if req.get("status") != "pending":
+        raise HTTPException(status_code=400, detail=f"Pedido já {req.get('status')}, não pode ser alterado")
+    if not body.items:
+        raise HTTPException(status_code=400, detail="Sem itens")
+    pids = [it.product_id for it in body.items]
+    prods = await db.products.find({"id": {"$in": pids}}, {"_id": 0}).to_list(len(pids))
+    pmap = {p["id"]: p for p in prods}
+    line_items = []
+    total = 0.0
+    for it in body.items:
+        prod = pmap.get(it.product_id)
+        if not prod:
+            raise HTTPException(status_code=404, detail=f"Produto {it.product_id} não encontrado")
+        if it.quantity <= 0:
+            raise HTTPException(status_code=400, detail="Quantidade inválida")
+        sub = float(prod["price"]) * int(it.quantity)
+        total += sub
+        line_items.append({
+            "product_id": prod["id"],
+            "product_name": prod["name"],
+            "unit_price": float(prod["price"]),
+            "quantity": int(it.quantity),
+            "subtotal": sub,
+        })
+    await db.consumption_requests.update_one(
+        {"id": req_id},
+        {"$set": {"items": line_items, "total": total, "note": body.note, "edited_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    updated = await db.consumption_requests.find_one({"id": req_id}, {"_id": 0})
+    return updated
+
 @api_router.get("/socio/points-history")
 async def socio_points_history(socio: dict = Depends(get_current_socio)):
     items = await db.points_history.find({"client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(1000)
