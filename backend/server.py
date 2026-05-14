@@ -413,6 +413,9 @@ async def create_product(body: ProductIn, user: dict = Depends(require_role("adm
         "category": body.category or "Bebida",
         "image_url": body.image_url,
         "is_quota": bool(body.is_quota),
+        "is_food": bool(body.is_food),
+        "unavailable": bool(body.unavailable),
+        "is_house_account": bool(body.is_house_account),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.products.insert_one(doc)
