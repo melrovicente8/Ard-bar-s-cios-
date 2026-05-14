@@ -871,6 +871,61 @@ export default function SocioPortal() {
               <h3 className="font-outfit text-xl font-semibold">Pedir consumo</h3>
             </div>
             <p className="text-xs text-slate-400 mb-3">O pedido vai para o staff validar. Quando aprovado, é lançado na tua conta.</p>
+
+            {/* Carrinho actual (com +/- e remover) */}
+            {Object.entries(reqCart).filter(([, q]) => q > 0).length > 0 && (
+              <div className="mb-3 bg-slate-950 border border-amber-500/30 rounded-lg p-2 max-h-40 overflow-y-auto" data-testid="req-cart-list">
+                <div className="text-[10px] uppercase tracking-wider text-amber-400 font-bold mb-1.5 px-1">No carrinho</div>
+                {Object.entries(reqCart).filter(([, q]) => q > 0).map(([pid, q]) => {
+                  const p = products.find((x) => x.id === pid);
+                  if (!p) return null;
+                  return (
+                    <div key={pid} className="flex items-center justify-between gap-2 py-1.5 px-1 border-b border-slate-800 last:border-0">
+                      <div className="flex-1 min-w-0">
+                        <div className="truncate text-sm font-medium">{p.name}</div>
+                        <div className="text-[10px] text-slate-500">{euro(p.price)} · subtotal {euro(p.price * q)}</div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          data-testid={`req-dec-${pid}`}
+                          onClick={() => {
+                            const next = { ...reqCart };
+                            const nq = (next[pid] || 0) - 1;
+                            if (nq <= 0) delete next[pid]; else next[pid] = nq;
+                            setReqCart(next);
+                          }}
+                          className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700 text-base font-bold"
+                          title="Retirar 1"
+                        >−</button>
+                        <span className="min-w-[24px] text-center font-bold text-amber-300 text-sm">{q}</span>
+                        <button
+                          type="button"
+                          data-testid={`req-inc-${pid}`}
+                          onClick={() => setReqCart({ ...reqCart, [pid]: q + 1 })}
+                          disabled={q >= p.quantity}
+                          className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700 text-base font-bold disabled:opacity-30"
+                          title={q >= p.quantity ? "Stock esgotado" : "Adicionar 1"}
+                        >+</button>
+                        <button
+                          type="button"
+                          data-testid={`req-rm-${pid}`}
+                          onClick={() => {
+                            const next = { ...reqCart };
+                            delete next[pid];
+                            setReqCart(next);
+                          }}
+                          className="w-7 h-7 rounded bg-rose-950 hover:bg-rose-900 text-rose-400 text-xs ml-1"
+                          title="Remover"
+                        >×</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1 px-1">Produtos disponíveis</div>
             <div className="flex-1 overflow-y-auto grid grid-cols-2 md:grid-cols-3 gap-2 mb-3">
               {products.filter((p) => !p.is_quota && p.quantity > 0).map((p) => (
                 <button

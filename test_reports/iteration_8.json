@@ -1,0 +1,38 @@
+{
+  "summary": "Iter 10 — backend 9/9 pytest PASS + frontend critical flows verified. Bugs reportados pelo utilizador estão TODOS corrigidos. (1) Backfill tx_number: 207 transações actualizadas no startup; agora todas as 208 transações na DB têm tx_number (collections sales/payments/supplier_orders/supplier_expenses, ranges 2..209). GET /api/transactions/{tx_number} resolve para qualquer nº no intervalo. Nota: tx_number=1 não está atribuído (contador pré-existia em seq=1 antes do backfill, portanto o primeiro doc backfilled recebeu nº 2). Isto NÃO viola o requisito 'todas as transações têm nº' — viola apenas o approximado '1..207' do prompt. (2) Novo endpoint GET /api/socio/products (auth: socio_token) devolve produtos não-cota com quantity>0; sem auth retorna 401. POST /api/socio/consumption-request continua a funcionar. (3) Nova UI do modal 'Pedir consumo' no SocioPortal: secção 'NO CARRINHO' com data-testids req-cart-list, req-prod-{id}, req-inc-{id}, req-dec-{id}, req-rm-{id}, req-total, req-submit todos presentes e funcionais — testado: adicionar 2x produto1 + 1x produto2 mostra total 3,60€; dec→2,40€; inc→3,60€; remove (×)→2,40€; submit fecha modal sem erro. (4) Frontend admin regressão: login admin@ard.pt → ficha Ana Ferreira → SEMPRE → clique no print da venda mais antiga (12/05/2026 12:39:43) → NÃO aparece toast 'Transação sem nº' → abre recibo com 'TRANSAÇÃO Nº 4' (a venda mais antiga tinha tx_number atribuído pelo backfill). Também verificado: novas vendas criadas via POST /api/sales recebem tx_number incremental ≥210 (counter atómico mantido).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/transactions/1", "issue": "tx_number=1 não existe (gap no início). Counter pré-existia em seq=1 antes do backfill, portanto o primeiro doc backfilled recebeu seq=2. Não afeta a funcionalidade (todas as transações na DB têm tx_number), mas o range completo é 2..209 em vez de 1..208. Se importante para o utilizador ter 1..N exato sem holes, é preciso reset do counter para 0 antes do backfill. Caso contrário, ignorar."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter10_backfill_socio.py",
+    "/app/test_reports/pytest/iter10_results.xml"
+  ],
+  "action_items": [
+    "OPCIONAL: se o utilizador quer numeração começando exactamente em 1 (sem buraco no nº 1), reset do counter 'tx' para 0 antes do loop de backfill no startup. Caso contrário, deixar como está — todas as transações estão devidamente numeradas."
+  ],
+  "critical_code_review_comments": [
+    "server.py:2385-2403 backfill — Lógica correta usando _next_tx_number via $inc atómico com upsert. Ordenado por created_at. Idempotente (só apanha docs com tx_number ausente ou null). Único caveat: se o counter 'tx' já existia (caso real), o primeiro nº atribuído é seq+1, não 1. Fix trivial: db.counters.update_one({'_id':'tx'},{'$set':{'seq':0}}) antes do loop, mas apenas se for desejável reset.",
+    "server.py:1721-1731 /api/socio/products — Query mongo correta: $and com $or (is_quota ausente OU false) e quantity>0. Projecção exclui _id. Sort por nome. Bom.",
+    "SocioPortal.jsx:866-925 modal Pedir consumo — UI com cart list, +/-/× clean. data-testids consistentes (req-prod-, req-inc-, req-dec-, req-rm-, req-cart-list, req-total, req-submit). Stock cap no botão + (disabled quando q>=p.quantity). Excelente.",
+    "SocioPortal.jsx:206 — fetch usa /socio/products (auth correto). Fallback /products (linha 211) é dead code para sócios (dá 401) mas inofensivo.",
+    "ClienteFicha.jsx:261 mensagem 'Transação sem nº' permanece — só dispara se sale.tx_number for falsy, o que após o backfill não acontece. OK."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter10_backfill_socio.py (NEW, 9 tests, 100% passing)"
+  ],
+  "success_rate": {"backend": "100% (9/9)", "frontend": "100% (Socio cart +/-/× + total; admin print receipt c/ TRANSAÇÃO Nº 4 e Nº 211 sem toast de erro)"},
+  "test_credentials": "admin@ard.pt/admin123 OK; sócio 88/00088 (David Vicente) OK",
+  "seed_data_creation": "1 sale criada e cancelada em test_new_sale_gets_tx_above_max (cleanup automático via /api/sales/{id}/cancel). 1 consumption-request 'TEST_iter10' criada (pendente, não-impactante).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iteração 10 concluída sem bugs funcionais. Observação: contador 'tx' está em seq=209 e backfill cobriu todas as 208 transações (sales=117, payments=77, supplier_orders=8, supplier_expenses=6). Range usado: 2..209. Único 'hole' é tx_number=1 — apenas um ajuste opcional de UX. Próxima iteração pode focar em outros bugs/features sem worry sobre tx_numbers.",
+  "rca of the issue": "Bug 1 (toast 'Transação sem nº' em vendas antigas): RCA — vendas/pagamentos criados antes da introdução do campo tx_number ficaram sem ele. Fix verificado: backfill no startup percorre 4 collections, ordena por created_at e atribui nº incremental via counter atómico. Verificado em Ana Ferreira: venda mais antiga (12/05/2026 12:39:43) agora exibe 'TRANSAÇÃO Nº 4' no recibo. Bug 2 (sócio não vê carrinho no modal Pedir consumo): RCA — (a) modal só tinha grelha de produtos sem secção 'no carrinho'; (b) products vinham de /api/products que dá 401 a sócio (cookie socio_token, não access_token). Fix verificado: (a) UI nova com 'NO CARRINHO' + req-inc/dec/rm-{pid} + total dinâmico; (b) endpoint dedicado GET /api/socio/products que filtra is_quota+quantity>0. Sócio 88/00088 consegue adicionar 2 produtos, ajustar quantidades, remover e submeter — modal fecha e pedido é criado em pending."
+}

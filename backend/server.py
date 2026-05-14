@@ -1718,6 +1718,19 @@ async def socio_members_paid_up(socio: dict = Depends(get_current_socio)):
             out.append({"name": m["name"], "member_number": m.get("member_number")})
     return sorted(out, key=lambda x: (x["member_number"] or ""))
 
+@api_router.get("/socio/products")
+async def socio_list_products(socio: dict = Depends(get_current_socio)):
+    """Lista de produtos disponíveis para o sócio pedir consumo (exclui cotas e sem stock)."""
+    items = await db.products.find(
+        {"$and": [
+            {"$or": [{"is_quota": {"$exists": False}}, {"is_quota": False}]},
+            {"quantity": {"$gt": 0}},
+        ]},
+        {"_id": 0},
+    ).sort("name", 1).to_list(1000)
+    return items
+
+
 @api_router.post("/socio/consumption-request")
 async def socio_consumption_request(body: SocioConsumptionReqIn, socio: dict = Depends(get_current_socio)):
     if not body.items:
@@ -2368,6 +2381,26 @@ async def on_startup():
             count += 1
     if count:
         logging.getLogger(__name__).info(f"Auto-PIN atribuído a {count} sócios")
+
+    # Backfill tx_number — TODAS as transações têm de ter nº (regra do utilizador)
+    from pymongo import ReturnDocument as _RD
+    backfill_total = 0
+    for coll_name in ("sales", "payments", "supplier_orders", "supplier_expenses"):
+        coll = db[coll_name]
+        # ordenar por created_at para manter ordem cronológica
+        cursor2 = coll.find(
+            {"$or": [{"tx_number": {"$exists": False}}, {"tx_number": None}]},
+            {"_id": 0, "id": 1, "created_at": 1},
+        ).sort("created_at", 1)
+        async for doc in cursor2:
+            res = await db.counters.find_one_and_update(
+                {"_id": "tx"}, {"$inc": {"seq": 1}}, upsert=True, return_document=_RD.AFTER,
+            )
+            new_no = int(res["seq"]) if res else 1
+            await coll.update_one({"id": doc["id"]}, {"$set": {"tx_number": new_no}})
+            backfill_total += 1
+    if backfill_total:
+        logging.getLogger(__name__).info(f"Backfill tx_number: {backfill_total} transações actualizadas")
 
 @app.on_event("shutdown")
 async def on_shutdown():
