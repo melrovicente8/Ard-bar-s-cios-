@@ -103,6 +103,35 @@ App de gestão completa de bar/clube ARD Nespereira (POS + stock + sócios + tes
 - Página `/equipa` para admin renomear funcionários.
 - Page audit log: `audit_log` collection regista `sale_cancel` e `sale_edit`.
 
+### Iter 11 — Fases 1-4 grandes (14 Mai 2026)
+**Fase 1 — Caixa & Pagamentos**
+- `PaymentIn` ganha `tip` (gratificação) e `sale_ids` (caixa selectiva). Cliente pode escolher quais vendas paga; troco pode ficar como gratificação (não-credit, receita extra).
+- `POST /api/payments/{id}/reverse` — admin/tesoureiro sempre; quem lançou ≤5min.
+- `paidStatus` no frontend respeita `sale_ids` (FIFO só para pagamentos sem alvo).
+- Atividade recente: link clicável `#tx_number` → `/transacoes/{tx}` (página universal de consulta + 2ª via).
+
+**Fase 2 — Dashboard & UX**
+- Saudação dinâmica (Bom dia/tarde/noite) + nome do user + relógio.
+- Mensagem rotativa do presidente (7, indexada pelo dia da semana).
+- Aviso de fecho do bar a partir das 2h.
+- Mascaramento por defeito em KPIs do dashboard (excepto Vendas hoje, A receber, Pessoas em dívida); ícone olho para revelar (auto-remask 8s).
+- Total consumido na ficha do cliente mascarado por defeito.
+- Alertas intermitentes (animate-pulse) para Pedidos/MBWay/Mensagens pendentes (polling 15s).
+
+**Fase 3 — Stock & Restrições**
+- Produto com `is_food`: só vendável 16h–20h (Europa/Lisboa) para funcionário; admin/tesoureiro sem restrição.
+- Produto com `unavailable`: escondido da venda mesmo havendo stock; admin pode override.
+- Produto com `is_house_account` (Conta da Casa): venda gratuita ao cliente (`total=0`), `house_total` registado, despesa automática em `supplier_expenses` com `supplier_id='_house'` (F00), stock decrementa na mesma.
+- Botão rápido de toggle disponibilidade na lista de Stock.
+
+**Fase 4 — Fornecedores & Listagens**
+- Fornecedores recebem código `F01`, `F02`… (counter atómico). Backfill no startup.
+- `GET /api/admin/clients` enriquecido com `quotas_paid` / `quotas_up_to_date` por sócio (ano corrente).
+- Diretório Clientes: toggle Grelha/Lista + ordenação Nome/Nº Sócio/Últimos movimentos.
+
+**Documentação técnica**
+- Nova página `/documentacao` (admin-only) com a documentação completa de construção da app — stack, modelos, endpoints, regras, papéis, setup. Copiar para área de transferência ou descarregar `.md`/`.txt`.
+
 ### Iter 10 — Bug fixes (14 Mai 2026)
 - **Backfill tx_number**: startup percorre `sales`/`payments`/`supplier_orders`/`supplier_expenses`, ordena por `created_at` e atribui `tx_number` incremental (counter atómico) a docs sem nº. Aplicado a 207 transações existentes. Idempotente — só apanha docs sem o campo.
 - **Endpoint novo**: `GET /api/socio/products` devolve produtos não-cota com stock>0 (auth via `socio_token`). Antes o frontend chamava `/api/products` que dava 401 ao sócio → modal "Pedir consumo" aparecia vazio.
