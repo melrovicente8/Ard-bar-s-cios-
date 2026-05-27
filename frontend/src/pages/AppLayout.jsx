@@ -1,6 +1,8 @@
-import React, { useState } from "react";
-import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
+import React, { useEffect, useState } from "react";
+import { NavLink, Outlet, useNavigate, useLocation, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import api from "../lib/api";
+import { toast } from "sonner";
 import {
   ChartLineUp,
   Storefront,
@@ -19,6 +21,10 @@ import {
   ShoppingCart,
   Bank,
   ChatCircle,
+  Bell,
+  Beer,
+  Lock,
+  LockOpen,
   Book,
   List,
   X as XIcon,
@@ -73,8 +79,51 @@ export default function AppLayout() {
   const location = useLocation();
   const isHome = location.pathname === "/" || location.pathname === "";
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [pending, setPending] = useState({ requests: 0, messages: 0, mbway: 0 });
+  const [bar, setBar] = useState({ is_open: true });
+  const canToggleBar = user?.role === "admin" || user?.role === "tesoureiro";
 
   React.useEffect(() => { setMobileOpen(false); }, [location.pathname]);
+
+  const loadPending = async () => {
+    if (!user) return;
+    try {
+      const [r, m, mb] = await Promise.all([
+        api.get("/consumption-requests", { params: { status_filter: "pending" } }).catch(() => ({ data: [] })),
+        api.get("/socio-messages", { params: { status_filter: "open" } }).catch(() => ({ data: [] })),
+        api.get("/mbway-payments").catch(() => ({ data: [] })),
+      ]);
+      const pendingMb = (mb.data || []).filter((x) => x.status === "pending").length;
+      setPending({ requests: (r.data || []).length, messages: (m.data || []).length, mbway: pendingMb });
+    } catch { /* ignore */ }
+  };
+
+  const loadBar = async () => {
+    try {
+      const { data } = await api.get("/bar/state");
+      setBar(data || { is_open: true });
+    } catch { /* ignore */ }
+  };
+
+  useEffect(() => {
+    if (!user) return;
+    loadPending();
+    loadBar();
+    const t = setInterval(() => { loadPending(); loadBar(); }, 15000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line
+  }, [user?.email]);
+
+  const toggleBar = async () => {
+    try {
+      const next = !bar.is_open;
+      const { data } = await api.put("/bar/state", { is_open: next });
+      setBar(data);
+      toast.success(next ? "Bar aberto" : "Bar fechado · sócios não podem fazer pedidos");
+    } catch (e) {
+      toast.error("Erro a alterar estado do bar");
+    }
+  };
 
   const onLogout = async () => {
     await logout();
@@ -182,7 +231,7 @@ export default function AppLayout() {
 
       {/* Main */}
       <main className="flex-1 overflow-x-hidden flex flex-col min-w-0">
-        <div className="sticky top-0 z-20 bg-slate-950/80 backdrop-blur-xl border-b border-slate-900 px-3 md:px-6 py-3 flex items-center gap-2">
+        <div className="sticky top-0 z-20 bg-slate-950/85 backdrop-blur-xl border-b border-slate-900 px-3 md:px-6 py-3 flex items-center gap-2">
           <button
             data-testid="mobile-menu-btn"
             onClick={() => setMobileOpen(true)}
@@ -208,6 +257,58 @@ export default function AppLayout() {
           >
             <House size={16} weight="duotone" />
           </button>
+
+          {/* Direita: estado bar + notificações */}
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              data-testid="topbar-bar-state"
+              onClick={canToggleBar ? toggleBar : undefined}
+              disabled={!canToggleBar}
+              title={canToggleBar ? "Clica para alternar estado" : `Bar ${bar.is_open ? "aberto" : "fechado"}`}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-bold uppercase tracking-wider border transition-colors ${
+                bar.is_open
+                  ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25"
+                  : "bg-rose-500/15 text-rose-300 border-rose-500/30 hover:bg-rose-500/25 animate-pulse"
+              } ${!canToggleBar ? "cursor-default opacity-90" : ""}`}
+            >
+              {bar.is_open ? <LockOpen size={14} weight="duotone" /> : <Lock size={14} weight="duotone" />}
+              <span className="hidden sm:inline">{bar.is_open ? "Bar aberto" : "Bar fechado"}</span>
+            </button>
+
+            <Link
+              to="/pedidos"
+              data-testid="topbar-notif-requests"
+              title={`${pending.requests} pedido(s) por validar`}
+              className="relative flex items-center justify-center w-9 h-9 rounded-md text-slate-300 hover:text-amber-300 hover:bg-slate-900 transition-colors"
+            >
+              <Bell size={18} weight={pending.requests ? "fill" : "duotone"} />
+              {pending.requests > 0 && (
+                <span data-testid="badge-requests" className="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] rounded-full bg-amber-400 text-slate-950 text-[9px] font-bold flex items-center justify-center px-1 animate-pulse">{pending.requests}</span>
+              )}
+            </Link>
+            <Link
+              to="/mbway"
+              data-testid="topbar-notif-mbway"
+              title={`${pending.mbway} MBWay pendente(s)`}
+              className="relative flex items-center justify-center w-9 h-9 rounded-md text-slate-300 hover:text-sky-300 hover:bg-slate-900 transition-colors"
+            >
+              <DeviceMobile size={18} weight={pending.mbway ? "fill" : "duotone"} />
+              {pending.mbway > 0 && (
+                <span data-testid="badge-mbway" className="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] rounded-full bg-sky-400 text-slate-950 text-[9px] font-bold flex items-center justify-center px-1 animate-pulse">{pending.mbway}</span>
+              )}
+            </Link>
+            <Link
+              to="/mensagens"
+              data-testid="topbar-notif-messages"
+              title={`${pending.messages} mensagem(s)`}
+              className="relative flex items-center justify-center w-9 h-9 rounded-md text-slate-300 hover:text-fuchsia-300 hover:bg-slate-900 transition-colors"
+            >
+              <ChatCircle size={18} weight={pending.messages ? "fill" : "duotone"} />
+              {pending.messages > 0 && (
+                <span data-testid="badge-messages" className="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] rounded-full bg-fuchsia-400 text-slate-950 text-[9px] font-bold flex items-center justify-center px-1 animate-pulse">{pending.messages}</span>
+              )}
+            </Link>
+          </div>
         </div>
         <div className="flex-1">
           <Outlet />

@@ -1916,6 +1916,9 @@ async def socio_list_products(socio: dict = Depends(get_current_socio)):
 
 @api_router.post("/socio/consumption-request")
 async def socio_consumption_request(body: SocioConsumptionReqIn, socio: dict = Depends(get_current_socio)):
+    state = await db.bar_state.find_one({"_id": "current"}, {"_id": 0})
+    if state and state.get("is_open") is False:
+        raise HTTPException(status_code=403, detail="O bar está fechado neste momento. Apenas consulta disponível.")
     if not body.items:
         raise HTTPException(status_code=400, detail="Sem itens")
     pids = [it.product_id for it in body.items]
@@ -2088,6 +2091,200 @@ async def staff_reply_message(msg_id: str, body: SocioMessageReplyIn, user: dict
         }},
     )
     return await db.socio_messages.find_one({"id": msg_id}, {"_id": 0})
+
+
+def _can_edit_msg(msg: dict, user_email: str, role: str) -> bool:
+    if role == "admin":
+        return True
+    if msg.get("sent_by") != user_email and msg.get("replied_by") != user_email:
+        return False
+    # window 5 min
+    ts = msg.get("replied_at") or msg.get("created_at")
+    if not ts:
+        return False
+    try:
+        when = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except Exception:
+        return False
+    return (datetime.now(timezone.utc) - when).total_seconds() <= 5 * 60
+
+
+class StaffMessageEditIn(BaseModel):
+    message: Optional[str] = None
+    reply: Optional[str] = None
+
+
+@api_router.put("/socio-messages/{msg_id}")
+async def staff_edit_message(msg_id: str, body: StaffMessageEditIn, user: dict = Depends(get_current_user)):
+    msg = await db.socio_messages.find_one({"id": msg_id}, {"_id": 0})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Mensagem não encontrada")
+    if not _can_edit_msg(msg, user["email"], user.get("role", "")):
+        raise HTTPException(status_code=403, detail="Sem permissão (admin sempre; criador ≤5min)")
+    update = {}
+    if body.message is not None:
+        update["message"] = body.message.strip()[:5000]
+    if body.reply is not None:
+        update["reply"] = body.reply.strip()[:5000]
+    if not update:
+        raise HTTPException(status_code=400, detail="Sem alterações")
+    update["edited_at"] = datetime.now(timezone.utc).isoformat()
+    update["edited_by"] = user["email"]
+    await db.socio_messages.update_one({"id": msg_id}, {"$set": update})
+    return await db.socio_messages.find_one({"id": msg_id}, {"_id": 0})
+
+
+@api_router.delete("/socio-messages/{msg_id}")
+async def staff_delete_message(msg_id: str, user: dict = Depends(get_current_user)):
+    msg = await db.socio_messages.find_one({"id": msg_id}, {"_id": 0})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Mensagem não encontrada")
+    if not _can_edit_msg(msg, user["email"], user.get("role", "")):
+        raise HTTPException(status_code=403, detail="Sem permissão (admin sempre; criador ≤5min)")
+    await db.socio_messages.delete_one({"id": msg_id})
+    return {"ok": True}
+
+
+@api_router.put("/socio/messages/{msg_id}")
+async def socio_edit_own_message(msg_id: str, body: StaffMessageEditIn, socio: dict = Depends(get_current_socio)):
+    msg = await db.socio_messages.find_one({"id": msg_id, "client_id": socio["id"]}, {"_id": 0})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Mensagem não encontrada")
+    if not body.message:
+        raise HTTPException(status_code=400, detail="Mensagem vazia")
+    try:
+        when = datetime.fromisoformat(msg["created_at"].replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Data inválida")
+    if (datetime.now(timezone.utc) - when).total_seconds() > 5 * 60:
+        raise HTTPException(status_code=403, detail="Prazo de edição expirado (5 min)")
+    await db.socio_messages.update_one(
+        {"id": msg_id},
+        {"$set": {"message": body.message.strip()[:5000], "edited_at": datetime.now(timezone.utc).isoformat(), "edited_by": "socio-self"}},
+    )
+    return await db.socio_messages.find_one({"id": msg_id}, {"_id": 0})
+
+
+@api_router.delete("/socio/messages/{msg_id}")
+async def socio_delete_own_message(msg_id: str, socio: dict = Depends(get_current_socio)):
+    msg = await db.socio_messages.find_one({"id": msg_id, "client_id": socio["id"]}, {"_id": 0})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Mensagem não encontrada")
+    try:
+        when = datetime.fromisoformat(msg["created_at"].replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Data inválida")
+    if (datetime.now(timezone.utc) - when).total_seconds() > 5 * 60:
+        raise HTTPException(status_code=403, detail="Prazo de eliminação expirado (5 min)")
+    await db.socio_messages.delete_one({"id": msg_id})
+    return {"ok": True}
+
+
+# ---------- Estado do Bar (aberto/fechado) ----------
+class BarStateIn(BaseModel):
+    is_open: bool
+    note: Optional[str] = None
+
+
+@api_router.get("/bar/state")
+async def get_bar_state():
+    doc = await db.bar_state.find_one({"_id": "current"}, {"_id": 0})
+    if not doc:
+        # estado por defeito: aberto
+        doc = {"is_open": True, "changed_at": None, "changed_by": None, "note": None}
+    return doc
+
+
+@api_router.put("/bar/state")
+async def set_bar_state(body: BarStateIn, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    update = {
+        "is_open": bool(body.is_open),
+        "note": body.note,
+        "changed_at": datetime.now(timezone.utc).isoformat(),
+        "changed_by": user["email"],
+    }
+    await db.bar_state.update_one({"_id": "current"}, {"$set": update}, upsert=True)
+    return {**update}
+
+
+# ---------- Chat da Comunidade (sócios) ----------
+class CommunityMessageIn(BaseModel):
+    message: str
+
+
+@api_router.get("/community/messages")
+async def list_community(limit: int = 200):
+    items = await db.community_chat.find({"deleted_at": None}, {"_id": 0}).sort("created_at", -1).to_list(min(limit, 500))
+    return list(reversed(items))
+
+
+@api_router.post("/community/messages")
+async def post_community_socio(body: CommunityMessageIn, socio: dict = Depends(get_current_socio)):
+    msg = body.message.strip()
+    if not msg:
+        raise HTTPException(status_code=400, detail="Mensagem vazia")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "author_id": socio["id"],
+        "author_name": socio["name"],
+        "member_number": socio.get("member_number"),
+        "role": "socio",
+        "message": msg[:1000],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "deleted_at": None,
+    }
+    await db.community_chat.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.post("/community/messages/staff")
+async def post_community_staff(body: CommunityMessageIn, user: dict = Depends(get_current_user)):
+    msg = body.message.strip()
+    if not msg:
+        raise HTTPException(status_code=400, detail="Mensagem vazia")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "author_id": user["email"],
+        "author_name": user.get("name") or "Staff ARD",
+        "member_number": None,
+        "role": "staff",
+        "message": msg[:1000],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "deleted_at": None,
+    }
+    await db.community_chat.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.delete("/community/messages/{msg_id}")
+async def delete_community_message(msg_id: str, user: dict = Depends(get_current_user)):
+    # Admin sempre, autor staff sempre, autor sócio só via endpoint próprio
+    msg = await db.community_chat.find_one({"id": msg_id}, {"_id": 0})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Mensagem não encontrada")
+    if user.get("role") != "admin" and msg.get("author_id") != user.get("email"):
+        raise HTTPException(status_code=403, detail="Sem permissão (admin sempre)")
+    await db.community_chat.update_one({"id": msg_id}, {"$set": {"deleted_at": datetime.now(timezone.utc).isoformat(), "deleted_by": user["email"]}})
+    return {"ok": True}
+
+
+@api_router.delete("/community/messages/{msg_id}/socio")
+async def delete_community_message_socio(msg_id: str, socio: dict = Depends(get_current_socio)):
+    msg = await db.community_chat.find_one({"id": msg_id}, {"_id": 0})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Mensagem não encontrada")
+    if msg.get("author_id") != socio["id"]:
+        raise HTTPException(status_code=403, detail="Só podes apagar mensagens tuas")
+    try:
+        when = datetime.fromisoformat(msg["created_at"].replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Data inválida")
+    if (datetime.now(timezone.utc) - when).total_seconds() > 5 * 60:
+        raise HTTPException(status_code=403, detail="Prazo de eliminação expirado (5 min)")
+    await db.community_chat.update_one({"id": msg_id}, {"$set": {"deleted_at": datetime.now(timezone.utc).isoformat(), "deleted_by": "socio-self"}})
+    return {"ok": True}
 
 # ---------- Relatório de contas (Deve / Haver) ----------
 async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> dict:

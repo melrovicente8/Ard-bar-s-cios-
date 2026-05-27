@@ -66,6 +66,30 @@ export default function Mensagens() {
     }
   };
 
+  const deleteMsg = async (m) => {
+    if (!window.confirm("Apagar esta mensagem?")) return;
+    try {
+      await api.delete(`/socio-messages/${m.id}`);
+      toast.success("Apagada");
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const editMsgBody = async (m, field) => {
+    const current = field === "reply" ? (m.reply || "") : m.message;
+    const next = window.prompt(`Editar ${field === "reply" ? "resposta" : "mensagem"}`, current);
+    if (next === null || next === current) return;
+    try {
+      await api.put(`/socio-messages/${m.id}`, { [field]: next });
+      toast.success("Editada");
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
   return (
     <div className="p-6 md:p-10 animate-in" data-testid="mensagens-page">
       <div className="flex items-center justify-between gap-3 mb-6">
@@ -120,7 +144,15 @@ export default function Mensagens() {
                 </div>
                 <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${m.status === "open" ? "bg-amber-500/15 text-amber-300 border-amber-500/30" : "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"}`}>
                   {m.status === "open" ? "Por responder" : "Respondida"}
+                  {m.edited_at && " · editada"}
                 </span>
+                <div className="flex items-center gap-1">
+                  <button data-testid={`edit-msg-${m.id}`} onClick={() => editMsgBody(m, "message")} title="Editar mensagem (admin sempre · criador ≤5min)" className="p-1.5 rounded bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 text-xs">✎</button>
+                  {m.reply && (
+                    <button data-testid={`edit-reply-${m.id}`} onClick={() => editMsgBody(m, "reply")} title="Editar resposta" className="p-1.5 rounded bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 text-xs">↩ ✎</button>
+                  )}
+                  <button data-testid={`del-msg-${m.id}`} onClick={() => deleteMsg(m)} title="Apagar mensagem" className="p-1.5 rounded bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 text-xs">×</button>
+                </div>
               </div>
               <div className="font-semibold text-slate-200 mb-1">{m.subject}</div>
               <p className="text-sm text-slate-300 whitespace-pre-wrap">{m.message}</p>

@@ -56,6 +56,43 @@ export default function SocioPortal() {
   const [showMyRequests, setShowMyRequests] = useState(false);
   const [myRequests, setMyRequests] = useState([]);
   const [pendingReqCount, setPendingReqCount] = useState(0);
+  // Estado do bar (aberto/fechado)
+  const [bar, setBar] = useState({ is_open: true });
+  const [barClosedDismissed, setBarClosedDismissed] = useState(false);
+  // Chat da comunidade
+  const [showCommunity, setShowCommunity] = useState(false);
+  const [communityMsgs, setCommunityMsgs] = useState([]);
+  const [newCommunityMsg, setNewCommunityMsg] = useState("");
+
+  const loadBar = async () => {
+    try { const { data } = await api.get("/bar/state"); setBar(data || { is_open: true }); } catch { /* ignore */ }
+  };
+
+  const loadCommunity = async () => {
+    try { const { data } = await api.get("/community/messages"); setCommunityMsgs(data || []); } catch { /* ignore */ }
+  };
+
+  const sendCommunityMsg = async () => {
+    const t = newCommunityMsg.trim();
+    if (!t) return;
+    try {
+      await api.post("/community/messages", { message: t });
+      setNewCommunityMsg("");
+      await loadCommunity();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const deleteCommunityMsg = async (m) => {
+    if (!window.confirm("Apagar esta mensagem?")) return;
+    try {
+      await api.delete(`/community/messages/${m.id}/socio`);
+      await loadCommunity();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
 
   const loadMyRequests = async () => {
     try {
@@ -91,8 +128,15 @@ export default function SocioPortal() {
       api.get("/socio/quotas").then(({ data: qd }) => setQuotas(qd)).catch(() => {});
       // Pré-carrega meus pedidos para mostrar badge pendente
       loadMyRequests();
+      // Estado do bar
+      loadBar();
     }
   }, [data]);
+
+  useEffect(() => {
+    const t = setInterval(() => { loadBar(); }, 20000);
+    return () => clearInterval(t);
+  }, []);
 
   if (!data || !data.client) {
     return (
@@ -620,9 +664,18 @@ export default function SocioPortal() {
               <button
                 data-testid="socio-request-btn"
                 onClick={loadRequest}
-                className="text-xs px-3 py-1.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 flex items-center gap-1.5"
+                disabled={!bar.is_open}
+                title={bar.is_open ? "" : "O bar está fechado. Apenas consulta disponível."}
+                className="text-xs px-3 py-1.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Plus size={13} weight="bold" /> Pedir consumo
+              </button>
+              <button
+                data-testid="socio-community-btn"
+                onClick={() => { loadCommunity(); setShowCommunity(true); }}
+                className="text-xs px-3 py-1.5 rounded-md bg-sky-500/15 text-sky-300 border border-sky-500/30 hover:bg-sky-500/25 flex items-center gap-1.5"
+              >
+                <ChatCircle size={13} weight="duotone" /> Chat da Comunidade
               </button>
               <button
                 data-testid="socio-my-requests-btn"
@@ -943,11 +996,23 @@ export default function SocioPortal() {
             <div className="flex-1 overflow-y-auto space-y-2">
               {myMessages.length === 0 ? (
                 <div className="text-center text-slate-500 py-6 text-sm">Sem mensagens.</div>
-              ) : myMessages.map((m) => (
+              ) : myMessages.map((m) => {
+                const mine = !m.from_staff;
+                const created = new Date(m.created_at).getTime();
+                const canEdit = mine && (Date.now() - created) < 5 * 60 * 1000;
+                return (
                 <div key={m.id} data-testid={`socio-msg-${m.id}`} className={`rounded-lg px-3 py-2 border ${m.from_staff ? "bg-fuchsia-500/5 border-fuchsia-500/20" : "bg-slate-950/50 border-slate-800"}`}>
                   <div className="flex items-center justify-between text-[10px] text-slate-500">
-                    <span>{m.from_staff ? "Da associação" : "Tua mensagem"} · {new Date(m.created_at).toLocaleString("pt-PT")}</span>
-                    {m.reply && <span className="text-emerald-400">✓ respondida</span>}
+                    <span>{m.from_staff ? "Da associação" : "Tua mensagem"} · {new Date(m.created_at).toLocaleString("pt-PT")}{m.edited_at && " · editado"}</span>
+                    <div className="flex items-center gap-1">
+                      {m.reply && <span className="text-emerald-400">✓ respondida</span>}
+                      {canEdit && (
+                        <>
+                          <button data-testid={`socio-msg-edit-${m.id}`} onClick={async () => { const txt = window.prompt("Editar mensagem", m.message); if (!txt) return; try { await api.put(`/socio/messages/${m.id}`, { message: txt }); toast.success("Editada"); await loadMessages(); } catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); } }} className="text-amber-400 hover:text-amber-300 text-[10px] px-1">✎</button>
+                          <button data-testid={`socio-msg-del-${m.id}`} onClick={async () => { if (!window.confirm("Apagar?")) return; try { await api.delete(`/socio/messages/${m.id}`); toast.success("Apagada"); await loadMessages(); } catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); } }} className="text-rose-400 hover:text-rose-300 text-[10px] px-1">×</button>
+                        </>
+                      )}
+                    </div>
                   </div>
                   <div className="font-semibold text-slate-200 text-sm mt-0.5">{m.subject}</div>
                   <p className="text-xs text-slate-400 whitespace-pre-wrap">{m.message}</p>
@@ -958,7 +1023,8 @@ export default function SocioPortal() {
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
             <button onClick={() => setShowMessages(false)} className="mt-3 w-full px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700">Fechar</button>
           </div>
@@ -1262,6 +1328,67 @@ export default function SocioPortal() {
             </div>
 
             <button onClick={() => setShowMyRequests(false)} className="mt-3 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm">Fechar</button>
+          </div>
+        </div>
+      )}
+
+      {showCommunity && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/90 backdrop-blur-sm p-4" onClick={() => setShowCommunity(false)} data-testid="socio-community-modal">
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-sky-500/30 rounded-xl w-full max-w-2xl p-5 max-h-[90vh] flex flex-col">
+            <div className="flex items-center gap-2 mb-2">
+              <ChatCircle size={20} weight="duotone" className="text-sky-400" />
+              <h3 className="font-outfit text-xl font-semibold">Chat da Comunidade</h3>
+              <button onClick={loadCommunity} title="Actualizar" className="ml-auto text-xs text-slate-400 hover:text-sky-300">↻</button>
+            </div>
+            <p className="text-xs text-slate-400 mb-3">Espaço aberto a todos os sócios. Sê respeitoso. Mensagens podem ser apagadas pelo autor (5min) ou pela administração.</p>
+            <div className="flex-1 overflow-y-auto bg-slate-950 border border-slate-800 rounded-lg p-3 space-y-2 mb-3">
+              {communityMsgs.length === 0 ? (
+                <div className="text-center text-slate-500 py-10 text-sm">Sê o primeiro a deixar uma mensagem!</div>
+              ) : communityMsgs.map((m) => {
+                const mine = m.author_id === c.id;
+                const canDelete = mine && (Date.now() - new Date(m.created_at).getTime()) < 5 * 60 * 1000;
+                return (
+                  <div key={m.id} data-testid={`community-msg-${m.id}`} className={`px-3 py-2 rounded-lg border ${m.role === "staff" ? "bg-amber-500/5 border-amber-500/20" : mine ? "bg-sky-500/5 border-sky-500/30 ml-6" : "bg-slate-900/40 border-slate-800"}`}>
+                    <div className="flex items-center justify-between text-[10px] text-slate-500">
+                      <span>
+                        <strong className={m.role === "staff" ? "text-amber-300" : mine ? "text-sky-300" : "text-slate-200"}>{m.author_name}</strong>
+                        {m.member_number ? ` · nº ${m.member_number}` : ""}
+                        {m.role === "staff" ? " · STAFF" : ""}
+                      </span>
+                      <span>{new Date(m.created_at).toLocaleString("pt-PT")}</span>
+                    </div>
+                    <p className="text-sm text-slate-200 whitespace-pre-wrap mt-1">{m.message}</p>
+                    {canDelete && (
+                      <button data-testid={`community-del-${m.id}`} onClick={() => deleteCommunityMsg(m)} className="mt-1 text-[10px] text-rose-400 hover:text-rose-300">Apagar</button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex gap-2">
+              <input
+                data-testid="community-input"
+                value={newCommunityMsg}
+                onChange={(e) => setNewCommunityMsg(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && sendCommunityMsg()}
+                placeholder="Escreve uma mensagem…"
+                maxLength={1000}
+                className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/50"
+              />
+              <button data-testid="community-send" onClick={sendCommunityMsg} disabled={!newCommunityMsg.trim()} className="px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-40 text-slate-950 font-bold text-sm">Enviar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!bar.is_open && !barClosedDismissed && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/95 backdrop-blur-md p-4 animate-in" data-testid="socio-bar-closed-popup">
+          <div className="bg-slate-900 border-2 border-rose-500/40 rounded-xl max-w-md w-full p-6 text-center space-y-4 shadow-2xl">
+            <div className="text-6xl">🔒</div>
+            <h2 className="font-outfit text-2xl font-bold text-rose-300">O bar está fechado</h2>
+            <p className="text-slate-300 text-sm">Neste momento o bar não está em funcionamento. Podes consultar a tua conta, mas não é possível fazer pedidos de consumo.</p>
+            <p className="text-xs text-slate-500">Reabrimos brevemente. Até já!</p>
+            <button data-testid="bar-closed-dismiss" onClick={() => setBarClosedDismissed(true)} className="w-full px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold">Entendi · ver a minha conta</button>
           </div>
         </div>
       )}
