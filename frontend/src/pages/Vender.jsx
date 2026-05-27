@@ -18,6 +18,7 @@ export default function Vender() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [houseOffer, setHouseOffer] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -88,9 +89,10 @@ export default function Vender() {
     }
     setSubmitting(true);
     try {
-      await api.post("/sales", { client_id: clientId, items });
-      toast.success(`Venda registada · ${euro(total)}`);
+      await api.post("/sales", { client_id: clientId, items, house_offer: houseOffer });
+      toast.success(houseOffer ? `Oferta da casa registada · ${euro(total)}` : `Venda registada · ${euro(total)}`);
       setCart({});
+      setHouseOffer(false);
       await load();
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));

@@ -117,6 +117,7 @@ class SaleItemIn(BaseModel):
 class SaleIn(BaseModel):
     client_id: str
     items: List[SaleItemIn]
+    house_offer: bool = False  # marca a venda toda como "Oferta da casa" — total=0, despesa de bar, -1 pt sócio
 
 class SaleEditIn(BaseModel):
     client_id: Optional[str] = None  # se fornecido, transfere a venda para este cliente
@@ -716,6 +717,9 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
         pass
     role = user.get("role")
     is_staff = role in ("admin", "tesoureiro")
+    house_offer = bool(getattr(body, "house_offer", False))
+    if house_offer and not is_staff:
+        raise HTTPException(status_code=403, detail="Oferta da casa só pode ser marcada por admin/tesoureiro")
     for it in body.items:
         prod = products_map.get(it.product_id)
         if not prod:
@@ -734,7 +738,7 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
         unit_price = float(prod["price"])
         qty = int(it.quantity)
         subtotal_full = unit_price * qty
-        is_house = bool(prod.get("is_house_account"))
+        is_house = bool(prod.get("is_house_account")) or house_offer
         subtotal = 0.0 if is_house else subtotal_full
         if is_house:
             house_total += subtotal_full
@@ -767,6 +771,7 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
         "items": line_items,
         "total": total,
         "house_total": house_total,
+        "house_offer": house_offer,
         "points_earned": points_earned,
         "points_pending_before": old_pending,
         "points_pending_after": new_pending,
@@ -776,16 +781,18 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
     }
     await db.sales.insert_one(sale_doc)
 
-    # Se houve "conta da casa", regista como despesa de fornecedor (internal)
+    # Se houve "conta da casa" ou "oferta da casa", regista como despesa de bar
     if house_total > 0:
         await _ensure_house_supplier()
         expense_tx = await _next_tx_number()
+        desc = (f"Oferta da casa · venda #{tx_no} · {client_doc['name']}" if house_offer
+                else f"Conta da casa · venda #{tx_no} · {client_doc['name']}")
         await db.supplier_expenses.insert_one({
             "id": str(uuid.uuid4()),
             "tx_number": expense_tx,
             "supplier_id": "_house",
-            "supplier_name": "Conta da Casa",
-            "description": f"Conta da casa · venda #{tx_no} · {client_doc['name']}",
+            "supplier_name": "Bar / Oferta" if house_offer else "Conta da Casa",
+            "description": desc,
             "amount": float(house_total),
             "paid": True,
             "due_date": None,
@@ -793,20 +800,33 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
             "created_at": datetime.now(timezone.utc).isoformat(),
             "user_email": user["email"],
             "sale_id": sale_id,
+            "house_offer": house_offer,
             "house_items": [li for li in line_items if li.get("is_house_account")],
         })
 
     # update client balance, total spent, points and pending value
     set_ops: dict = {}
-    inc_ops = {"balance": total, "total_spent": total, "points": points_earned}
-    if is_member:
-        set_ops["points_pending_value"] = new_pending
-    op = {"$inc": inc_ops}
-    if set_ops:
-        op["$set"] = set_ops
-    await db.clients.update_one({"id": body.client_id}, op)
-    if points_earned:
-        await _log_points(body.client_id, points_earned, "sale", sale_id, f"Venda de {total:.2f} €", user["email"])
+    if house_offer:
+        # Oferta: não conta para total_spent, não soma pontos; deduz 1 pt como custo
+        deduct_pts = 0
+        if is_member:
+            current_pts = int(client_doc.get("points", 0))
+            deduct_pts = -1 if current_pts >= 1 else 0
+        inc_ops = {"points": deduct_pts}
+        op = {"$inc": inc_ops}
+        await db.clients.update_one({"id": body.client_id}, op)
+        if deduct_pts:
+            await _log_points(body.client_id, deduct_pts, "house_offer", sale_id, f"Oferta da casa · venda #{tx_no}", user["email"])
+    else:
+        inc_ops = {"balance": total, "total_spent": total, "points": points_earned}
+        if is_member:
+            set_ops["points_pending_value"] = new_pending
+        op = {"$inc": inc_ops}
+        if set_ops:
+            op["$set"] = set_ops
+        await db.clients.update_one({"id": body.client_id}, op)
+        if points_earned:
+            await _log_points(body.client_id, points_earned, "sale", sale_id, f"Venda de {total:.2f} €", user["email"])
     sale_doc.pop("_id", None)
     return sale_doc
 
