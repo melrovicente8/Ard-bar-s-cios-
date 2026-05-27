@@ -51,6 +51,21 @@ export default function SocioPortal() {
   const [showRequest, setShowRequest] = useState(false);
   const [products, setProducts] = useState([]);
   const [reqCart, setReqCart] = useState({});
+  const [editingReqId, setEditingReqId] = useState(null);
+  // Lista "Os meus pedidos"
+  const [showMyRequests, setShowMyRequests] = useState(false);
+  const [myRequests, setMyRequests] = useState([]);
+  const [pendingReqCount, setPendingReqCount] = useState(0);
+
+  const loadMyRequests = async () => {
+    try {
+      const { data } = await api.get("/socio/consumption-requests");
+      setMyRequests(data || []);
+      setPendingReqCount((data || []).filter((r) => r.status === "pending").length);
+    } catch {
+      // ignore
+    }
+  };
 
   useEffect(() => {
     api.get("/club/info").then((r) => setClub(r.data)).catch(() => {});
@@ -74,6 +89,8 @@ export default function SocioPortal() {
       }));
       // Pré-carrega resumo das cotas para mostrar X/12 no dashboard
       api.get("/socio/quotas").then(({ data: qd }) => setQuotas(qd)).catch(() => {});
+      // Pré-carrega meus pedidos para mostrar badge pendente
+      loadMyRequests();
     }
   }, [data]);
 
@@ -215,6 +232,7 @@ export default function SocioPortal() {
       } catch { setProducts([]); }
     }
     setReqCart({});
+    setEditingReqId(null);
     setShowRequest(true);
   };
 
@@ -222,10 +240,43 @@ export default function SocioPortal() {
     const items = Object.entries(reqCart).filter(([, q]) => q > 0).map(([product_id, quantity]) => ({ product_id, quantity }));
     if (!items.length) return toast.error("Adiciona pelo menos um item");
     try {
-      await api.post("/socio/consumption-request", { items });
-      toast.success("Pedido enviado · aguarda validação do staff");
+      if (editingReqId) {
+        await api.put(`/socio/consumption-requests/${editingReqId}`, { items });
+        toast.success("Pedido actualizado");
+      } else {
+        await api.post("/socio/consumption-request", { items });
+        toast.success("Pedido enviado · aguarda validação do staff");
+      }
       setShowRequest(false);
+      setEditingReqId(null);
       await refresh();
+      await loadMyRequests();
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    }
+  };
+
+  const openEditRequest = async (req) => {
+    try {
+      const { data } = await api.get("/socio/products");
+      setProducts(data);
+    } catch {
+      setProducts([]);
+    }
+    const cart = {};
+    (req.items || []).forEach((it) => { cart[it.product_id] = it.quantity; });
+    setReqCart(cart);
+    setEditingReqId(req.id);
+    setShowMyRequests(false);
+    setShowRequest(true);
+  };
+
+  const cancelRequest = async (req) => {
+    if (!window.confirm(`Cancelar este pedido de ${euro(req.total)}?`)) return;
+    try {
+      await api.delete(`/socio/consumption-requests/${req.id}`);
+      toast.success("Pedido cancelado");
+      await loadMyRequests();
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
     }
@@ -574,6 +625,18 @@ export default function SocioPortal() {
                 <Plus size={13} weight="bold" /> Pedir consumo
               </button>
               <button
+                data-testid="socio-my-requests-btn"
+                onClick={() => { loadMyRequests(); setShowMyRequests(true); }}
+                className="text-xs px-3 py-1.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1.5 relative"
+              >
+                <Receipt size={13} weight="duotone" /> Os meus pedidos
+                {pendingReqCount > 0 && (
+                  <span data-testid="socio-pending-badge" className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] rounded-full bg-amber-400 text-slate-950 text-[10px] font-bold flex items-center justify-center px-1 animate-pulse">
+                    {pendingReqCount}
+                  </span>
+                )}
+              </button>
+              <button
                 data-testid="socio-messages-btn"
                 onClick={loadMessages}
                 className="text-xs px-3 py-1.5 rounded-md bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30 hover:bg-fuchsia-500/25 flex items-center gap-1.5"
@@ -907,7 +970,7 @@ export default function SocioPortal() {
           <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg p-6 max-h-[90vh] flex flex-col">
             <div className="flex items-center gap-2 mb-2">
               <Plus size={22} weight="bold" className="text-emerald-400" />
-              <h3 className="font-outfit text-xl font-semibold">Pedir consumo</h3>
+              <h3 className="font-outfit text-xl font-semibold">{editingReqId ? "Editar pedido" : "Pedir consumo"}</h3>
             </div>
             <p className="text-xs text-slate-400 mb-3">O pedido vai para o staff validar. Quando aprovado, é lançado na tua conta.</p>
 
@@ -988,7 +1051,7 @@ export default function SocioPortal() {
             </div>
             <div className="flex gap-2">
               <button type="button" onClick={() => setShowRequest(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700">Cancelar</button>
-              <button data-testid="req-submit" onClick={submitRequest} disabled={!Object.keys(reqCart).length} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold">Enviar pedido</button>
+              <button data-testid="req-submit" onClick={submitRequest} disabled={!Object.keys(reqCart).length} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold">{editingReqId ? "Guardar alterações" : "Enviar pedido"}</button>
             </div>
           </div>
         </div>
@@ -1124,6 +1187,81 @@ export default function SocioPortal() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showMyRequests && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/90 backdrop-blur-sm p-4" onClick={() => setShowMyRequests(false)} data-testid="socio-my-requests-modal">
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-amber-500/30 rounded-xl w-full max-w-2xl p-6 max-h-[90vh] flex flex-col">
+            <div className="flex items-center gap-2 mb-1">
+              <Receipt size={20} weight="duotone" className="text-amber-400" />
+              <h3 className="font-outfit text-xl font-semibold">Os meus pedidos</h3>
+              <button onClick={loadMyRequests} title="Actualizar" className="ml-auto text-xs text-slate-400 hover:text-amber-300">↻ Atualizar</button>
+            </div>
+            <p className="text-xs text-slate-400 mb-3">Acompanha o estado dos teus pedidos de consumo. Podes editar ou cancelar enquanto estiver <strong className="text-amber-300">pendente</strong>.</p>
+
+            <div className="flex-1 overflow-y-auto space-y-3">
+              {myRequests.length === 0 && (
+                <div className="text-center text-slate-500 text-sm py-10">Ainda não fizeste pedidos.</div>
+              )}
+              {myRequests.map((r) => {
+                const statusStyle =
+                  r.status === "pending" ? "bg-amber-500/15 text-amber-300 border-amber-500/30" :
+                  r.status === "approved" ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" :
+                  r.status === "rejected" ? "bg-rose-500/15 text-rose-300 border-rose-500/30" :
+                  "bg-slate-700/30 text-slate-400 border-slate-700/40";
+                const statusLabel =
+                  r.status === "pending" ? "⏳ Pendente" :
+                  r.status === "approved" ? "✓ Aprovado" :
+                  r.status === "rejected" ? "✗ Recusado" : "⊘ Cancelado";
+                return (
+                  <div key={r.id} data-testid={`req-card-${r.id}`} className="bg-slate-950 border border-slate-800 rounded-lg p-4 space-y-2">
+                    <div className="flex items-start justify-between gap-2 flex-wrap">
+                      <div className="text-[10px] text-slate-500">
+                        {new Date(r.created_at).toLocaleString("pt-PT")}
+                        {r.edited_at && <span className="ml-2 text-amber-400">· editado {new Date(r.edited_at).toLocaleString("pt-PT")}</span>}
+                      </div>
+                      <span data-testid={`req-status-${r.id}`} className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${statusStyle}`}>{statusLabel}</span>
+                    </div>
+                    <ul className="text-sm space-y-1">
+                      {(r.items || []).map((it, i) => (
+                        <li key={i} className="flex items-center justify-between text-slate-300">
+                          <span><span className="text-slate-500">{it.quantity}×</span> {it.product_name}</span>
+                          <span className="text-slate-500">{euro(it.subtotal)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="flex items-center justify-between border-t border-slate-800 pt-2">
+                      <span className="text-[10px] uppercase tracking-wider text-slate-500">Total</span>
+                      <span className="text-amber-300 font-bold">{euro(r.total)}</span>
+                    </div>
+                    {r.status === "approved" && r.decided_at && (
+                      <div className="text-[10px] text-emerald-300/80">Validado em {new Date(r.decided_at).toLocaleString("pt-PT")}{r.sale_id ? " · adicionado à tua conta" : ""}</div>
+                    )}
+                    {r.status === "rejected" && r.decided_at && (
+                      <div className="text-[10px] text-rose-300/80">Recusado em {new Date(r.decided_at).toLocaleString("pt-PT")}</div>
+                    )}
+                    {r.status === "pending" && (
+                      <div className="flex gap-2 pt-1">
+                        <button
+                          data-testid={`req-edit-${r.id}`}
+                          onClick={() => openEditRequest(r)}
+                          className="flex-1 px-3 py-2 rounded-md bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 text-xs font-bold"
+                        >Editar pedido</button>
+                        <button
+                          data-testid={`req-cancel-${r.id}`}
+                          onClick={() => cancelRequest(r)}
+                          className="flex-1 px-3 py-2 rounded-md bg-rose-500/15 text-rose-300 hover:bg-rose-500/25 text-xs font-bold"
+                        >Cancelar</button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <button onClick={() => setShowMyRequests(false)} className="mt-3 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm">Fechar</button>
           </div>
         </div>
       )}

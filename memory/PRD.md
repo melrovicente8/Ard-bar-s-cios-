@@ -103,6 +103,12 @@ App de gestão completa de bar/clube ARD Nespereira (POS + stock + sócios + tes
 - Página `/equipa` para admin renomear funcionários.
 - Page audit log: `audit_log` collection regista `sale_cancel` e `sale_edit`.
 
+### Iter 12 — Sócio acompanha pedidos (27 Mai 2026)
+- **Endpoints novos**: `DELETE /api/socio/consumption-requests/{id}` (cancela próprio pedido enquanto `pending`) e `PUT /api/socio/consumption-requests/{id}` (edita itens enquanto `pending`).
+- **Frontend SocioPortal**: novo botão **"Os meus pedidos"** com badge intermitente para nº pendentes.
+- Modal lista todos os pedidos com estado colorido (⏳ Pendente · ✓ Aprovado · ✗ Recusado · ⊘ Cancelado), data de criação/edição/decisão, itens, total.
+- Acções disponíveis enquanto `pending`: **Editar** (reabre o modal com produtos pré-preenchidos) e **Cancelar** (com confirmação). Submissão reusa o mesmo modal alternando título e CTA.
+
 ### Iter 11 — Fases 1-4 grandes (14 Mai 2026)
 **Fase 1 — Caixa & Pagamentos**
 - `PaymentIn` ganha `tip` (gratificação) e `sale_ids` (caixa selectiva). Cliente pode escolher quais vendas paga; troco pode ficar como gratificação (não-credit, receita extra).
