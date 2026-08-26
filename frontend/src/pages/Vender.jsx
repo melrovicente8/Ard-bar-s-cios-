@@ -7,6 +7,9 @@ import {
   ShoppingCart,
   MagnifyingGlass,
   Wine,
+  Lightning,
+  SquaresFour,
+  List as ListIcon,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -18,6 +21,9 @@ export default function Vender() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [viewMode, setViewMode] = useState("grid"); // grid | list
+  const [fastMode, setFastMode] = useState(false);
+  const [topProducts, setTopProducts] = useState([]);
 
   const load = async () => {
     setLoading(true);
@@ -36,11 +42,25 @@ export default function Vender() {
     // eslint-disable-next-line
   }, []);
 
+  const toggleFast = async () => {
+    if (!fastMode) {
+      try {
+        const { data } = await api.get("/products/top?limit=8");
+        setTopProducts(data);
+      } catch {
+        setTopProducts([]);
+      }
+    }
+    setFastMode((v) => !v);
+  };
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return products;
     return products.filter((p) => p.name.toLowerCase().includes(q));
   }, [products, search]);
+
+  const topIds = useMemo(() => new Set(topProducts.map((p) => p.id)), [topProducts]);
 
   const inCart = (id) => cart[id] || 0;
 
@@ -106,6 +126,102 @@ export default function Vender() {
     })
     .filter(Boolean);
 
+  const ProductCard = ({ p }) => {
+    const out = p.quantity <= 0;
+    const low = p.quantity <= p.low_stock_threshold;
+    const isTop = fastMode && topIds.has(p.id);
+    return (
+      <button
+        key={p.id}
+        data-testid={`product-card-${p.id}`}
+        disabled={out}
+        onClick={() => add(p)}
+        className={`text-left bg-slate-900/40 backdrop-blur-xl border rounded-xl overflow-hidden transition-all hover:border-amber-500/40 hover:-translate-y-0.5 ${
+          isTop ? "border-amber-500/60 ring-1 ring-amber-500/30" : "border-slate-800"
+        } ${out ? "opacity-50 cursor-not-allowed" : ""}`}
+      >
+        <div className="aspect-[4/3] bg-slate-950 relative overflow-hidden">
+          {p.image_url ? (
+            <img src={p.image_url} alt={p.name} className="w-full h-full object-cover" />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-950">
+              <Wine size={36} weight="duotone" className="text-amber-500/50" />
+            </div>
+          )}
+          <div className="absolute top-2 right-2 flex flex-col items-end gap-1">
+            {isTop && (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-slate-950 border border-amber-400 flex items-center gap-1">
+                <Lightning size={10} weight="fill" /> TOP
+              </span>
+            )}
+            {out ? (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                ESGOTADO
+              </span>
+            ) : low ? (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                BAIXO
+              </span>
+            ) : null}
+          </div>
+          {inCart(p.id) > 0 && (
+            <div className="absolute bottom-2 left-2 w-7 h-7 rounded-full bg-amber-500 text-slate-950 text-xs font-bold flex items-center justify-center">
+              {inCart(p.id)}
+            </div>
+          )}
+        </div>
+        <div className="p-3">
+          <div className="font-medium text-slate-100 truncate">{p.name}</div>
+          <div className="flex items-center justify-between mt-1.5">
+            <span className="text-amber-400 font-bold">{euro(p.price)}</span>
+            <span className="text-xs text-slate-500">{p.quantity} un.</span>
+          </div>
+        </div>
+      </button>
+    );
+  };
+
+  const ProductRow = ({ p }) => {
+    const out = p.quantity <= 0;
+    const isTop = fastMode && topIds.has(p.id);
+    return (
+      <button
+        key={p.id}
+        data-testid={`product-row-${p.id}`}
+        disabled={out}
+        onClick={() => add(p)}
+        className={`w-full flex items-center gap-3 px-4 py-3 border-b border-slate-800/60 text-left transition-colors ${
+          out ? "opacity-50 cursor-not-allowed" : "hover:bg-slate-900/60"
+        } ${isTop ? "bg-amber-500/5" : ""}`}
+      >
+        <div className="w-10 h-10 rounded-lg bg-slate-950 border border-slate-800 flex items-center justify-center overflow-hidden flex-shrink-0">
+          {p.image_url ? (
+            <img src={p.image_url} alt={p.name} className="w-full h-full object-cover" />
+          ) : (
+            <Wine size={18} weight="duotone" className="text-amber-500/50" />
+          )}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="font-medium text-slate-100 truncate flex items-center gap-2">
+            {p.name}
+            {isTop && (
+              <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-amber-500 text-slate-950 flex items-center gap-1">
+                <Lightning size={9} weight="fill" /> TOP
+              </span>
+            )}
+          </div>
+          <div className="text-xs text-slate-500">{p.quantity} un. em stock</div>
+        </div>
+        {inCart(p.id) > 0 && (
+          <span className="w-6 h-6 rounded-full bg-amber-500 text-slate-950 text-[10px] font-bold flex items-center justify-center">
+            {inCart(p.id)}
+          </span>
+        )}
+        <span className="text-amber-400 font-bold w-16 text-right">{euro(p.price)}</span>
+      </button>
+    );
+  };
+
   return (
     <div className="p-6 md:p-8 animate-in" data-testid="vender-page">
       <div className="mb-6">
@@ -120,7 +236,7 @@ export default function Vender() {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Products grid */}
         <div className="lg:col-span-8">
-          <div className="relative mb-5">
+          <div className="relative mb-4">
             <MagnifyingGlass
               size={18}
               className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500"
@@ -134,6 +250,73 @@ export default function Vender() {
             />
           </div>
 
+          {/* Toolbar: modo rápido + vista */}
+          <div className="flex items-center gap-2 mb-5 flex-wrap" data-testid="vender-toolbar">
+            <button
+              data-testid="vender-fast-toggle"
+              onClick={toggleFast}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 border transition-colors ${
+                fastMode
+                  ? "bg-amber-500 text-slate-950 border-amber-500"
+                  : "bg-slate-900/60 text-slate-300 border-slate-800 hover:border-amber-500/40"
+              }`}
+            >
+              <Lightning size={13} weight="fill" /> Modo rápido
+            </button>
+            <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900/60 p-1" data-testid="vender-view-toggle">
+              {[
+                { v: "grid", icon: SquaresFour, label: "Grelha" },
+                { v: "list", icon: ListIcon, label: "Lista" },
+              ].map((opt) => (
+                <button
+                  key={opt.v}
+                  data-testid={`vender-view-${opt.v}`}
+                  onClick={() => setViewMode(opt.v)}
+                  className={`px-2.5 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-colors ${
+                    viewMode === opt.v ? "bg-slate-700 text-white" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  <opt.icon size={12} weight="fill" /> {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Modo rápido: top produtos em destaque */}
+          {fastMode && topProducts.length > 0 && (
+            <div className="mb-5" data-testid="vender-fast-section">
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80 mb-2 flex items-center gap-1.5">
+                <Lightning size={11} weight="fill" /> Mais vendidos
+              </div>
+              <div className="flex gap-2 overflow-x-auto pb-2">
+                {topProducts.map((p) => (
+                  <button
+                    key={p.id}
+                    data-testid={`fast-product-${p.id}`}
+                    disabled={p.quantity <= 0}
+                    onClick={() => add(p)}
+                    className={`flex-shrink-0 w-28 text-left bg-slate-900/60 border border-amber-500/40 rounded-xl p-2 hover:border-amber-500/70 transition-colors ${
+                      p.quantity <= 0 ? "opacity-50 cursor-not-allowed" : ""
+                    }`}
+                  >
+                    <div className="w-full h-16 bg-slate-950 rounded-lg flex items-center justify-center mb-1.5 overflow-hidden">
+                      {p.image_url ? (
+                        <img src={p.image_url} alt={p.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <Wine size={20} weight="duotone" className="text-amber-500/50" />
+                      )}
+                    </div>
+                    <div className="text-xs font-medium text-slate-100 truncate">{p.name}</div>
+                    <div className="flex items-center justify-between mt-0.5">
+                      <span className="text-amber-400 font-bold text-xs">{euro(p.price)}</span>
+                      <span className="text-[9px] text-slate-500">{p.sold} vend.</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {loading ? (
             <div className="text-slate-500 p-10 text-center">A carregar...</div>
           ) : filtered.length === 0 ? (
@@ -141,60 +324,17 @@ export default function Vender() {
               <Wine size={40} className="mx-auto text-slate-700 mb-3" weight="duotone" />
               <p className="text-slate-400">Nenhum produto. Adiciona na página Stock.</p>
             </div>
+          ) : viewMode === "list" ? (
+            <div className="bg-slate-900/40 border border-slate-800 rounded-xl overflow-hidden" data-testid="vender-list">
+              {filtered.map((p) => (
+                <ProductRow key={p.id} p={p} />
+              ))}
+            </div>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
-              {filtered.map((p) => {
-                const out = p.quantity <= 0;
-                const low = p.quantity <= p.low_stock_threshold;
-                return (
-                  <button
-                    key={p.id}
-                    data-testid={`product-card-${p.id}`}
-                    disabled={out}
-                    onClick={() => add(p)}
-                    className={`text-left bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl overflow-hidden transition-all hover:border-amber-500/40 hover:-translate-y-0.5 ${
-                      out ? "opacity-50 cursor-not-allowed" : ""
-                    }`}
-                  >
-                    <div className="aspect-[4/3] bg-slate-950 relative overflow-hidden">
-                      {p.image_url ? (
-                        <img
-                          src={p.image_url}
-                          alt={p.name}
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-950">
-                          <Wine size={36} weight="duotone" className="text-amber-500/50" />
-                        </div>
-                      )}
-                      <div className="absolute top-2 right-2">
-                        {out ? (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">
-                            ESGOTADO
-                          </span>
-                        ) : low ? (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                            BAIXO
-                          </span>
-                        ) : null}
-                      </div>
-                      {inCart(p.id) > 0 && (
-                        <div className="absolute bottom-2 left-2 w-7 h-7 rounded-full bg-amber-500 text-slate-950 text-xs font-bold flex items-center justify-center">
-                          {inCart(p.id)}
-                        </div>
-                      )}
-                    </div>
-                    <div className="p-3">
-                      <div className="font-medium text-slate-100 truncate">{p.name}</div>
-                      <div className="flex items-center justify-between mt-1.5">
-                        <span className="text-amber-400 font-bold">{euro(p.price)}</span>
-                        <span className="text-xs text-slate-500">{p.quantity} un.</span>
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
+              {filtered.map((p) => (
+                <ProductCard key={p.id} p={p} />
+              ))}
             </div>
           )}
         </div>

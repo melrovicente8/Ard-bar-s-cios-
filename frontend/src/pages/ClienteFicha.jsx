@@ -43,7 +43,7 @@ export default function ClienteFicha() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showPay, setShowPay] = useState(false);
-  const [payForm, setPayForm] = useState({ amount: "", points_used: 0, note: "", keep_change_as_credit: false, tip: 0, tip_change: false });
+  const [payForm, setPayForm] = useState({ amount: "", points_used: 0, note: "", keep_change_as_credit: false, tip: 0, tip_change: false, is_house_offer: false });
   const [paySelectedSales, setPaySelectedSales] = useState({}); // {sale_id: true}
   const [notifyPayment, setNotifyPayment] = useState(null);
   const [showEdit, setShowEdit] = useState(false);
@@ -94,12 +94,52 @@ export default function ClienteFicha() {
     }
   };
 
+  const printQuotaReceipt = (payment, months) => {
+    if (!payment) return;
+    const M = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+    const w = window.open("", "_blank", "width=420,height=640");
+    if (!w) return toast.error("Permite popups");
+    const dateStr = new Date(payment.created_at).toLocaleString("pt-PT");
+    const txNo = payment.tx_number || "";
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Talão de cotas</title>
+<style>body{font-family:'Courier New',monospace;max-width:320px;margin:14px auto;padding:0 12px;font-size:13px;color:#000}
+h1{font-size:16px;text-align:center;margin:4px 0 0;letter-spacing:.18em}
+h2{font-size:11px;text-align:center;margin:0 0 14px;color:#444;letter-spacing:.25em}
+hr{border:0;border-top:1px dashed #000;margin:10px 0}
+.row{display:flex;justify-content:space-between;margin:4px 0}
+.big{font-size:20px;font-weight:bold}
+.muted{color:#555;font-size:11px}
+.txn{font-size:14px;font-weight:bold;background:#000;color:#fff;text-align:center;padding:4px;border-radius:3px;margin:8px 0}
+@media print{ body{margin:0} button{display:none} }
+</style></head><body>
+<h1>ARD · NESPEREIRA</h1>
+<h2>TALÃO DE COTAS</h2>
+${txNo ? `<div class="txn">TRANSAÇÃO Nº ${txNo}</div>` : ""}
+<div class="muted">${dateStr}</div>
+<div class="muted">Registado por: ${payment.user_email || "—"}</div>
+<hr/>
+<div class="row"><span>Sócio</span><strong>${c.name}</strong></div>
+${c.member_number ? `<div class="row"><span>Nº Sócio</span><strong>${c.member_number}</strong></div>` : ""}
+<div class="row"><span>Ano</span><strong>${quotaYear}</strong></div>
+<div class="row"><span>Meses</span><strong>${months.map((m) => M[m - 1]).join(", ")}</strong></div>
+<hr/>
+<div class="row big"><span>TOTAL PAGO</span><span>${euro(payment.total_credited || payment.amount || 0)}</span></div>
+${(c.member_number && quotas) ? `<div class="row"><span>Estado de cotas</span><strong>Cotas ${quotaYear}: ${quotas.quotas.filter((q) => q.status === "paid").length}/${quotas.quotas.length} pagas</strong></div>` : ""}
+<hr/>
+<div style="text-align:center" class="muted">Obrigado pela preferência</div>
+<div style="text-align:center;margin-top:14px"><button onclick="window.print()">Imprimir</button></div>
+<script>setTimeout(()=>window.print(),300);</script>
+</body></html>`);
+    w.document.close();
+  };
+
   const submitQuotaPayment = async () => {
     const months = Object.entries(quotaSelection).filter(([, v]) => v).map(([m]) => Number(m));
     if (!months.length) return toast.error("Seleciona pelo menos um mês");
     try {
-      await api.post("/quotas/pay", { client_id: id, year: quotaYear, months });
-      toast.success(`${months.length} cota(s) pagas`);
+      const { data } = await api.post("/quotas/pay", { client_id: id, year: quotaYear, months });
+      toast.success(`${months.length} cota(s) pagas · transação Nº ${data?.payment?.tx_number || ""}`);
+      if (data?.payment) printQuotaReceipt(data.payment, months);
       await loadQuotas(quotaYear);
       await load();
     } catch (e) {
@@ -404,6 +444,7 @@ ${change > 0 ? `<div class="row"><span>Troco devolvido</span><span>${euro(change
 ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : ""}
 <hr/>
 <div class="row big"><span>${change > 0 ? "ABATIDO" : "TOTAL ABATIDO"}</span><span>${euro(credited)}</span></div>`}
+${quotaLine ? `<hr/>${quotaLine}` : ""}
 <hr/>
 <div style="text-align:center" class="muted">Obrigado pela preferência</div>
 <div style="text-align:center;margin-top:14px"><button onclick="window.print()">Imprimir</button></div>
@@ -433,7 +474,7 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
     ${saleRows.map(({sale, applied}) => `
       <div style="margin-top:6px">
         <div class="row"><span class="muted">${new Date(sale.created_at).toLocaleDateString("pt-PT")}</span><span>${euro(sale.total)}</span></div>
-        ${sale.items.map((it) => `<div class="row" style="font-size:11px"><span>· ${it.quantity}× ${it.product_name}</span><span>${euro(it.subtotal)}</span></div>`).join("")}
+        ${sale.items.map((it) => `<div class="row" style="font-size:11px"><span>· ${it.quantity}× ${it.product_name} <span class="muted">(${euro(it.unit_price || (it.subtotal / it.quantity))}/un.)</span></span><span>${euro(it.subtotal)}</span></div>`).join("")}
         ${applied < sale.total ? `<div class="row" style="font-size:10px;color:#888"><span>aplicado:</span><span>${euro(applied)}</span></div>` : ""}
       </div>
     `).join("")}`;
@@ -1020,6 +1061,16 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
                       <span className="font-outfit text-lg font-bold text-amber-400">
                         {euro(s.total)}
                       </span>
+                      {status !== "paid" && (
+                        <button
+                          data-testid={`pay-sale-quick-${s.id}`}
+                          onClick={() => { setPaySelectedSales({ [s.id]: true }); setShowPay(true); }}
+                          title="Registar pagamento desta venda"
+                          className="px-2 py-1 rounded-md bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 text-[10px] font-bold flex items-center gap-1"
+                        >
+                          <CurrencyEur size={12} weight="bold" /> Pagar
+                        </button>
+                      )}
                       <button
                         data-testid={`print-sale-${s.id}`}
                         onClick={() => printTransaction(s)}

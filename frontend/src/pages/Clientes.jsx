@@ -150,8 +150,12 @@ export default function Clientes() {
           className="bg-slate-900/80 border border-slate-800 rounded-lg px-3 py-2 text-white text-xs"
         >
           <option value="name">Nome (A-Z)</option>
+          <option value="estatuto">Estatuto</option>
+          <option value="contact">Contacto</option>
+          <option value="balance">A pagar (maior)</option>
+          <option value="total">Total (maior)</option>
+          <option value="points">Pontos (maior)</option>
           <option value="number">Nº sócio</option>
-          <option value="activity">Últimos movimentos</option>
         </select>
         <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900/60 p-1" data-testid="clientes-view-toggle">
           {[

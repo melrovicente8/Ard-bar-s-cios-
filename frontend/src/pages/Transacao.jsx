@@ -24,7 +24,7 @@ export default function Transacao() {
     if (!w) return toast.error("Permite popups");
     const isSale = !!tx.items;
     const dateStr = new Date(tx.created_at).toLocaleString("pt-PT");
-    const itemsHtml = isSale ? tx.items.map((it) => `<div class="row"><span>${it.quantity}× ${it.product_name}</span><span>${euro(it.subtotal)}</span></div>`).join("") : "";
+    const itemsHtml = isSale ? tx.items.map((it) => `<div class="row"><span>${it.quantity}× ${it.product_name} <span class="muted">(${euro(it.unit_price || (it.subtotal / it.quantity))}/un.)</span></span><span>${euro(it.subtotal)}</span></div>`).join("") : "";
     const tendered = tx.tendered || tx.amount || 0;
     const credited = tx.total_credited || tx.amount || 0;
     const change = tx.change_returned || 0;

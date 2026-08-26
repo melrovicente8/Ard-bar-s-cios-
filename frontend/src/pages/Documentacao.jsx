@@ -317,6 +317,51 @@ export default function Documentacao() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [copied, setCopied] = useState(false);
+  const [changelog, setChangelog] = useState(null);
+  const [dailyDate, setDailyDate] = useState(new Date().toISOString().slice(0, 10));
+  const [daily, setDaily] = useState(null);
+
+  useEffect(() => {
+    api.get("/docs/changelog").then(({ data }) => setChangelog(data)).catch(() => setChangelog(null));
+  }, []);
+
+  const loadDaily = async (date) => {
+    try {
+      const { data } = await api.get("/docs/daily-log", { params: date ? { date } : {} });
+      setDaily(data);
+    } catch {
+      setDaily(null);
+    }
+  };
+  useEffect(() => { loadDaily(dailyDate); /* eslint-disable-next-line */ }, [dailyDate]);
+
+  const printDaily = () => {
+    if (!daily) return;
+    const w = window.open("", "_blank");
+    if (!w) return toast.error("Permite popups");
+    const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    const saleRows = daily.sales.map((s) => `<tr><td>${new Date(s.created_at).toLocaleString("pt-PT")}</td><td>${esc(s.client_name)}</td><td>${esc(s.items.map((it) => `${it.quantity}×${it.product_name}`).join(", "))}</td><td style="text-align:right">${(s.total || 0).toFixed(2)}€</td></tr>`).join("");
+    const payRows = daily.payments.map((p) => `<tr><td>${new Date(p.created_at).toLocaleString("pt-PT")}</td><td>${esc(p.client_name)}</td><td>${esc(p.note || p.source || "—")}</td><td style="text-align:right">${(p.total_credited ?? p.amount ?? 0).toFixed(2)}€</td></tr>`).join("");
+    const expRows = daily.expenses.map((e) => `<tr><td>${new Date(e.created_at).toLocaleString("pt-PT")}</td><td>${esc(e.supplier_name)}</td><td>${esc(e.description || "—")}</td><td style="text-align:right">${(e.amount || 0).toFixed(2)}€</td></tr>`).join("");
+    const t = daily.totals;
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Ata diária · ${daily.date}</title>
+<style>body{font-family:Arial,sans-serif;margin:24px;color:#0f172a;font-size:12px}h1{font-size:18px}h2{font-size:13px;margin-top:18px;border-bottom:2px solid #15803d;padding-bottom:4px}table{width:100%;border-collapse:collapse;margin-top:6px}th,td{border:1px solid #e5e7eb;padding:6px 8px;text-align:left}th{background:#f3f4f6;font-size:10px;text-transform:uppercase}.right{text-align:right}.tot{display:flex;gap:12px;margin-top:16px;flex-wrap:wrap}.card{background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:10px 14px}.lbl{font-size:10px;color:#666;text-transform:uppercase}.val{font-size:16px;font-weight:800}@media print{button{display:none}}</style></head><body>
+<h1>ARD Nespereira — Ata diária · ${daily.date}</h1>
+<div class="tot">
+<div class="card"><div class="lbl">Vendas</div><div class="val">${t.sales_count}</div></div>
+<div class="card"><div class="lbl">Receita vendas</div><div class="val">${t.sales.toFixed(2)}€</div></div>
+<div class="card"><div class="lbl">Pagamentos</div><div class="val">${t.payments.toFixed(2)}€</div></div>
+<div class="card"><div class="lbl">Despesas</div><div class="val">${t.expenses.toFixed(2)}€</div></div>
+<div class="card"><div class="lbl">Saldo</div><div class="val">${t.balance.toFixed(2)}€</div></div>
+</div>
+<h2>Vendas</h2><table><thead><tr><th>Data</th><th>Cliente</th><th>Itens</th><th class="right">Total</th></tr></thead><tbody>${saleRows || "<tr><td colspan=4>—</td></tr>"}</tbody></table>
+<h2>Pagamentos</h2><table><thead><tr><th>Data</th><th>Cliente</th><th>Nota</th><th class="right">Valor</th></tr></thead><tbody>${payRows || "<tr><td colspan=4>—</td></tr>"}</tbody></table>
+<h2>Despesas</h2><table><thead><tr><th>Data</th><th>Fornecedor</th><th>Descrição</th><th class="right">Valor</th></tr></thead><tbody>${expRows || "<tr><td colspan=4>—</td></tr>"}</tbody></table>
+<button onclick="window.print()" style="margin-top:16px">Imprimir</button>
+<script>setTimeout(()=>window.print(),300);</script>
+</body></html>`);
+    w.document.close();
+  };
 
   if (user?.role !== "admin") {
     return (

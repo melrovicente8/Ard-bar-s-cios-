@@ -130,6 +130,7 @@ class PaymentIn(BaseModel):
     keep_change_as_credit: bool = False  # se False, valor abate é capped na dívida
     tip: float = 0.0  # gratificação (parte do amount que NÃO abate à dívida — receita extra)
     sale_ids: Optional[List[str]] = None  # se fornecido, paga apenas estas vendas em específico
+    is_house_offer: bool = False  # oferta da casa: dá baixa da dívida a zero (despesa do bar)
 
 class PaymentUpdate(BaseModel):
     amount: Optional[float] = None
@@ -400,6 +401,25 @@ async def list_users(user: dict = Depends(require_role("admin"))):
 async def list_products(user: dict = Depends(get_current_user)):
     items = await db.products.find({}, {"_id": 0}).sort("name", 1).to_list(1000)
     return items
+
+@api_router.get("/products/top")
+async def top_products(limit: int = 10, user: dict = Depends(get_current_user)):
+    """Produtos mais vendidos (por quantidade) — modo rápido de venda."""
+    pipeline = [
+        {"$unwind": "$items"},
+        {"$group": {"_id": "$items.product_id", "qty": {"$sum": "$items.quantity"}}},
+        {"$sort": {"qty": -1}},
+        {"$limit": max(1, min(int(limit), 50))},
+    ]
+    rows = await db.sales.aggregate(pipeline).to_list(50)
+    ids = [r["_id"] for r in rows if r.get("_id")]
+    products = {p["id"]: p for p in (await db.products.find({"id": {"$in": ids}}, {"_id": 0}).to_list(len(ids)) if ids else [])}
+    out = []
+    for r in rows:
+        p = products.get(r["_id"])
+        if p:
+            out.append({"id": p["id"], "name": p["name"], "price": p["price"], "quantity": p.get("quantity", 0), "image_url": p.get("image_url"), "sold": r["qty"]})
+    return out
 
 @api_router.post("/products")
 async def create_product(body: ProductIn, user: dict = Depends(require_role("admin", "tesoureiro"))):
@@ -1083,6 +1103,63 @@ async def list_audit_log(
     items = await db.audit_log.find(q, {"_id": 0}).sort("at", -1).to_list(min(max(limit, 1), 2000))
     return items
 
+
+# ---------- Documentação automática (Registo de Melhorias + Ata diária) ----------
+@api_router.get("/docs/changelog")
+async def docs_changelog(user: dict = Depends(get_current_user)):
+    """Registo de Melhorias — gerado automaticamente a partir do audit log."""
+    entries = await db.audit_log.find({}, {"_id": 0}).sort("at", -1).to_list(500)
+    lines = []
+    last_day = None
+    for e in entries:
+        day = (e.get("at") or "")[:10]
+        if day != last_day:
+            last_day = day
+            lines.append(f"\n## {day}" if lines else f"## {day}")
+        summary = e.get("summary") or e.get("type") or "—"
+        lines.append(f"- **{summary}** · por {e.get('by', '—')} · {e.get('type', '')}")
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "entries": entries[:100],
+        "markdown": "\n".join(lines) or "Sem alterações registadas.",
+    }
+
+
+@api_router.get("/docs/daily-log")
+async def docs_daily_log(date: Optional[str] = None, user: dict = Depends(get_current_user)):
+    """Ata diária de eventos (vendas, pagamentos, cotas, despesas, audit) por data."""
+    try:
+        tz = ZoneInfo("Europe/Lisbon")
+    except Exception:
+        tz = timezone.utc
+    target = date or datetime.now(tz).strftime("%Y-%m-%d")
+    start = target + "T00:00:00"
+    end = target + "T23:59:59"
+    sales = await db.sales.find({"created_at": {"$gte": start, "$lte": end}}, {"_id": 0}).sort("created_at", 1).to_list(2000)
+    payments = await db.payments.find({"created_at": {"$gte": start, "$lte": end}}, {"_id": 0}).sort("created_at", 1).to_list(2000)
+    expenses = await db.supplier_expenses.find({"created_at": {"$gte": start, "$lte": end}}, {"_id": 0}).sort("created_at", 1).to_list(2000)
+    audits = await db.audit_log.find({"at": {"$gte": start, "$lte": end}}, {"_id": 0}).sort("at", 1).to_list(2000)
+    total_sales = round(sum(float(s.get("total", 0)) for s in sales), 2)
+    total_paid = round(sum(float(p.get("total_credited", p.get("amount", 0))) for p in payments), 2)
+    total_expenses = round(sum(float(e.get("amount", 0)) for e in expenses), 2)
+    return {
+        "date": target,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "sales": sales,
+        "payments": payments,
+        "expenses": expenses,
+        "audits": audits,
+        "totals": {
+            "sales": total_sales,
+            "payments": total_paid,
+            "expenses": total_expenses,
+            "balance": round(total_sales + total_paid - total_expenses, 2),
+            "sales_count": len(sales),
+            "payments_count": len(payments),
+        },
+    }
+
+
 # ---------- Points history ----------
 @api_router.get("/clients/{client_id}/points-history")
 async def client_points_history(client_id: str, user: dict = Depends(get_current_user)):
@@ -1203,6 +1280,64 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
     c = await db.clients.find_one({"id": body.client_id})
     if not c:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    # ---- Oferta da casa: dá baixa da dívida a zero, sem numerário ----
+    if body.is_house_offer:
+        if body.sale_ids:
+            target_sales = await db.sales.find(
+                {"id": {"$in": body.sale_ids}, "client_id": body.client_id},
+                {"_id": 0, "id": 1, "total": 1},
+            ).to_list(len(body.sale_ids))
+            sale_ids_clean = [s["id"] for s in target_sales]
+            written_off = round(sum(float(s["total"]) for s in target_sales), 2)
+        else:
+            sale_ids_clean = []
+            written_off = round(max(float(c.get("balance", 0)), 0.0), 2)
+        if written_off <= 0:
+            raise HTTPException(status_code=400, detail="Não há saldo a cobrir para oferta da casa")
+        pid = str(uuid.uuid4())
+        tx_no = await _next_tx_number()
+        pay = {
+            "id": pid,
+            "tx_number": tx_no,
+            "client_id": body.client_id,
+            "client_name": c["name"],
+            "amount": 0.0,
+            "tendered": 0.0,
+            "points_used": 0,
+            "points_value": 0.0,
+            "total_credited": written_off,
+            "change_returned": 0.0,
+            "keep_change_as_credit": False,
+            "tip": 0.0,
+            "sale_ids": sale_ids_clean,
+            "note": body.note or "Oferta da casa",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "user_email": user["email"],
+            "source": "house_offer",
+            "is_house_offer": True,
+        }
+        await db.payments.insert_one(pay)
+        await db.clients.update_one({"id": body.client_id}, {"$inc": {"balance": -written_off}})
+        await _ensure_house_supplier()
+        expense_tx = await _next_tx_number()
+        await db.supplier_expenses.insert_one({
+            "id": str(uuid.uuid4()),
+            "tx_number": expense_tx,
+            "supplier_id": "_house",
+            "supplier_name": "Conta da Casa",
+            "description": f"Oferta da casa · {c['name']}" + (f" · {body.note}" if body.note else ""),
+            "amount": float(written_off),
+            "paid": True,
+            "due_date": None,
+            "paid_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "user_email": user["email"],
+            "payment_id": pid,
+        })
+        await _audit("house_offer", user["email"], entity="client", entity_id=body.client_id, after={"written_off": written_off}, summary=f"Oferta da casa · {c['name']} · {written_off:.2f} €")
+        pay.pop("_id", None)
+        return pay
+
     if body.points_used and body.points_used > int(c.get("points", 0)):
         raise HTTPException(status_code=400, detail="Pontos insuficientes")
     points_euros = body.points_used / POINTS_PER_EURO
@@ -1663,6 +1798,7 @@ async def pay_quotas(body: QuotaPayIn, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail=f"Já pagos: {', '.join(MONTHS_PT[a['month']-1] for a in already)}")
     total = QUOTA_MONTHLY_VALUE * len(body.months)
     sale_id = str(uuid.uuid4())
+    tx_no = await _next_tx_number()
     items = [{
         "product_id": f"quota-{body.year}-{m:02d}",
         "product_name": f"Cota {MONTHS_PT[m-1]}/{body.year}",
@@ -1672,6 +1808,7 @@ async def pay_quotas(body: QuotaPayIn, user: dict = Depends(get_current_user)):
     } for m in body.months]
     sale = {
         "id": sale_id,
+        "tx_number": tx_no,
         "client_id": body.client_id,
         "client_name": c["name"],
         "items": items,
@@ -2030,6 +2167,27 @@ async def socio_quotas(year: Optional[int] = None, socio: dict = Depends(get_cur
 async def _socio_has_open_quotas(client_id: str, year: int) -> bool:
     qs = await _quotas_status(client_id, year)
     return any(q["status"] != "paid" for q in qs)
+
+
+async def _quota_label_status(client_id: str) -> str:
+    """Estado das cotas para badge do sócio: 'paid' (mês anterior pago) ou 'to_regularize'."""
+    try:
+        now_local = datetime.now(ZoneInfo("Europe/Lisbon"))
+    except Exception:
+        now_local = datetime.now(timezone.utc)
+    year = now_local.year
+    month = now_local.month
+    if month == 1:
+        qs_prev = await _quotas_status(client_id, year - 1)
+        dec = next((q for q in qs_prev if q["month"] == 12), None)
+        if not dec or dec["status"] != "paid":
+            return "to_regularize"
+        return "paid"
+    cur = await _quotas_status(client_id, year)
+    for q in cur:
+        if q["month"] < month and q["status"] != "paid":
+            return "to_regularize"
+    return "paid"
 
 # ---------- Sócio messages ----------
 class SocioMessageIn(BaseModel):

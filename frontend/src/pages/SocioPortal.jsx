@@ -435,7 +435,7 @@ export default function SocioPortal() {
                   const paid = quotas.quotas.filter((q) => q.status === "paid").length;
                   const total = quotas.quotas.length || 12;
                   const pct = Math.round((paid / total) * 100);
-                  const upToDate = paid >= total;
+                  const upToDate = c.quota_status === "paid";
                   return (
                     <>
                       <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80 flex items-center gap-1.5">
@@ -791,17 +791,24 @@ export default function SocioPortal() {
             <div className="flex-1 overflow-y-auto space-y-1 pr-1">
               {pointsHist.items.length === 0 ? (
                 <div className="text-center text-slate-500 py-8 text-sm">Sem movimentos.</div>
-              ) : pointsHist.items.map((it) => (
+              ) : pointsHist.items.map((it) => {
+                const tx = it.ref_id ? txById[it.ref_id] : null;
+                return (
                 <div key={it.id} className="flex items-center justify-between text-sm px-3 py-2 rounded bg-slate-950/50 border border-slate-800/50">
                   <div className="flex-1 min-w-0">
                     <div className="text-[10px] text-slate-500">{new Date(it.created_at).toLocaleString("pt-PT")}</div>
-                    <div className="text-xs text-slate-300 truncate">{it.note}</div>
+                    <div className="text-xs text-slate-300 truncate">
+                      <span className={`font-bold ${it.delta > 0 ? "text-green-300" : "text-rose-300"}`}>{it.delta > 0 ? "Atribuição" : "Desconto"}</span>
+                      {" · "}{it.note}
+                    </div>
+                    {tx && <div className="text-[10px] text-amber-400/80 mt-0.5">Transação Nº {tx}</div>}
                   </div>
                   <span className={`font-bold ${it.delta > 0 ? "text-green-300" : "text-rose-300"}`}>
                     {it.delta > 0 ? "+" : ""}{it.delta} pts
                   </span>
                 </div>
-              ))}
+                );
+              })}
             </div>
             <button onClick={() => setShowPointsHist(false)} className="mt-4 w-full px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Fechar</button>
           </div>
@@ -1139,3 +1146,4 @@ const Field = ({ label, required, children }) => (
     {children}
   </div>
 );
+;
