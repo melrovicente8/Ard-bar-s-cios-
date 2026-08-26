@@ -1,0 +1,12 @@
+{
+  "previewPort": 3000,
+  "healthPath": "/",
+  "startCommand": "docker compose -f docker-compose.base44.yml up -d",
+  "secrets": [
+    {
+      "name": "RESEND_API_KEY",
+      "description": "Resend API key for outgoing transactional email (password resets, notifications). Optional — the app boots and runs fully without it; email sending just reports 'not configured'. Obtain from https://resend.com/api-keys.",
+      "requiredAtBoot": false
+    }
+  ]
+}

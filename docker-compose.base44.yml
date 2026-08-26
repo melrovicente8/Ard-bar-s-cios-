@@ -1,0 +1,63 @@
+services:
+  # ---------- Local infrastructure ----------
+  mongo:
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ard
+      MONGO_INITDB_ROOT_PASSWORD: ardpass
+      MONGO_INITDB_DATABASE: ard_nespereira
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # ---------- Backend (FastAPI / uvicorn, live reload) ----------
+  backend:
+    image: python:3.12-slim
+    working_dir: /app/backend
+    volumes:
+      - ./backend:/app/backend
+    environment:
+      MONGO_URL: mongodb://ard:ardpass@mongo:27017/?authSource=admin
+      DB_NAME: ard_nespereira
+      JWT_SECRET: b4s344-s3tup-d3v-jwt-s3cr3t-9f1c2a7e8b3d4e5f6a7c8d9e0f1a2b3c
+      CORS_ORIGINS: https://3000-${BASE44_PUBLIC_HOST_SUFFIX}
+      ADMIN_EMAIL: admin@ard.pt
+      ADMIN_PASSWORD: admin123
+      CLUB_NAME: ARD Nespereira
+    env_file:
+      - ./.env.base44-defaults
+      - /run/base44/app.env
+    depends_on:
+      mongo:
+        condition: service_healthy
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.base44.txt
+      && uvicorn server:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/backend"
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  # ---------- Frontend (CRA + craco, live reload) ----------
+  frontend:
+    image: node:22
+    working_dir: /app/frontend
+    volumes:
+      - ./frontend:/app/frontend
+    environment:
+      REACT_APP_BACKEND_URL: https://8000-${BASE44_PUBLIC_HOST_SUFFIX}
+      HOST: 0.0.0.0
+      PORT: 3000
+      DANGEROUSLY_DISABLE_HOST_CHECK: "true"
+      CI: "false"
+    command: sh -c "yarn install --frozen-lockfile && yarn start"
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  mongo_data:
