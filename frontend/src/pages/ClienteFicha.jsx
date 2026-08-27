@@ -960,7 +960,7 @@ ${quotaLine ? `<hr/>${quotaLine}` : ""}
                 <button
                   key={q.month}
                   type="button"
-                  disabled={paid || !canEditAll}
+                  disabled={paid || !canEditAny}
                   data-testid={`quota-${q.month}`}
                   onClick={() => setQuotaSelection({ ...quotaSelection, [q.month]: !selected })}
                   className={`px-2 py-2 rounded-lg text-xs font-medium border transition-colors text-left ${
@@ -969,7 +969,7 @@ ${quotaLine ? `<hr/>${quotaLine}` : ""}
                       : selected
                       ? "bg-amber-500/25 text-amber-200 border-amber-500/60"
                       : "bg-slate-950 text-slate-300 border-slate-800 hover:border-amber-500/40"
-                  } ${!canEditAll && !paid ? "opacity-60" : ""}`}
+                  } ${!canEditAny && !paid ? "opacity-60" : ""}`}
                 >
                   <div className="text-[10px] uppercase font-bold tracking-wider opacity-70">{q.label}</div>
                   <div className="mt-0.5 flex items-center justify-between">
@@ -980,7 +980,7 @@ ${quotaLine ? `<hr/>${quotaLine}` : ""}
               );
             })}
           </div>
-          {canEditAll && (
+          {canEditAny && (
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-slate-400">
                 {Object.values(quotaSelection).filter(Boolean).length > 0

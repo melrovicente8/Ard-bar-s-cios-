@@ -61,7 +61,7 @@ const navGroups = [
     items: [
       { to: "/equipa", label: "Equipa", icon: UsersThree, testid: "nav-equipa", roles: ["admin"] },
       { to: "/contas", label: "Contas", icon: Bank, testid: "nav-contas", roles: ["admin", "tesoureiro"] },
-      { to: "/historico", label: "Histórico", icon: ClockCounterClockwise, testid: "nav-historico", roles: ["admin", "tesoureiro"] },
+      { to: "/historico", label: "Histórico", icon: ClockCounterClockwise, testid: "nav-historico", roles: ["admin", "tesoureiro", "funcionario"] },
       { to: "/documentacao", label: "Documentação", icon: Book, testid: "nav-documentacao", roles: ["admin"] },
     ],
   },

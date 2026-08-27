@@ -106,10 +106,7 @@ function App() {
                   path="equipa"
                   element={<AdminOnly><Equipa /></AdminOnly>}
                 />
-                <Route
-                  path="historico"
-                  element={<StaffOnly><Historico /></StaffOnly>}
-                />
+                <Route path="historico" element={<Historico />} />
                 <Route
                   path="contas"
                   element={<StaffOnly><Contas /></StaffOnly>}
