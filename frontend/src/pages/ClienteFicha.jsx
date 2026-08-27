@@ -149,11 +149,28 @@ export default function ClienteFicha() {
     }
   };
 
+  // Extracto de pontos
+  const [pointsHistory, setPointsHistory] = useState([]);
+  const [showPointsHistory, setShowPointsHistory] = useState(false);
+
+  const loadPointsHistory = async () => {
+    try {
+      const { data } = await api.get(`/clients/${id}/points-history`);
+      // Endpoint devolve { items:[], client:{} }
+      const items = Array.isArray(data) ? data : (data.items || []);
+      setPointsHistory(items);
+    } catch { /* ignore */ }
+  };
+
   useEffect(() => {
     if (data?.client?.is_member) loadQuotas(quotaYear);
     // eslint-disable-next-line
   }, [data?.client?.id, quotaYear]);
 
+  useEffect(() => {
+    if (id) loadPointsHistory();
+    // eslint-disable-next-line
+  }, [id]);
   const load = async () => {
     setLoading(true);
     try {
@@ -378,6 +395,17 @@ export default function ClienteFicha() {
     const tendered = tx.tendered || tx.amount;
     const credited = tx.total_credited || tx.amount;
     const change = tx.change_returned || 0;
+    // Estatuto de sócio: cotas pagas até ao mês anterior
+    const clientHere = data?.client || {};
+    let socioLine = "";
+    if (clientHere.member_number) {
+      const nowD = new Date();
+      const yr = nowD.getFullYear();
+      const upToMonth = nowD.getMonth(); // mês anterior (0-based == mês atual seguinte no PT)
+      const paidUpTo = (quotas?.quotas || []).filter((q) => q.status === "paid" && q.month <= upToMonth).length;
+      const status = paidUpTo >= upToMonth && upToMonth > 0 ? "Cotas pagas" : "Cotas por regularizar";
+      socioLine = `<div class="row"><span>Sócio nº ${clientHere.member_number}</span><strong style="color:${status.includes('pagas') ? '#059669' : '#b45309'}">${status}</strong></div>`;
+    }
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Transação ${tx.tx_number}</title>
 <style>body{font-family:'Courier New',monospace;max-width:320px;margin:14px auto;padding:0 12px;font-size:13px;color:#000}
 h1{font-size:16px;text-align:center;margin:4px 0 0;letter-spacing:.18em}
@@ -390,12 +418,14 @@ hr{border:0;border-top:1px dashed #000;margin:10px 0}
 @media print{ body{margin:0} button{display:none} }
 </style></head><body>
 <h1>ARD · NESPEREIRA</h1>
-<h2>${isSale ? "VENDA" : "RECIBO DE PAGAMENTO"} · 2ª VIA</h2>
+<h2>${isSale ? "VENDA" : "RECIBO DE PAGAMENTO"} · 2ª VIA${tx.house_offer ? " · OFERTA DA CASA" : ""}</h2>
 <div class="txn">TRANSAÇÃO Nº ${tx.tx_number}</div>
+${tx.house_offer ? '<div style="text-align:center;background:#a21caf;color:#fff;padding:4px;border-radius:3px;margin:6px 0;font-weight:bold">★ OFERTA DA CASA ★</div>' : ""}
 <div class="muted">${dateStr}</div>
 <div class="muted">Registado por: ${tx.user_email || "—"}</div>
 <hr/>
 <div class="row"><span>Cliente</span><strong>${tx.client_name}</strong></div>
+${socioLine}
 ${isSale ? `<hr/>${itemsHtml}<hr/><div class="row big"><span>TOTAL</span><span>${euro(tx.total)}</span></div>${tx.points_earned ? `<div class="row"><span>Pontos ganhos</span><span>+${tx.points_earned}</span></div>` : ""}` : `<hr/>
 <div class="row"><span>Numerário entregue</span><span>${euro(tendered)}</span></div>
 ${tx.points_used ? `<div class="row"><span>Pontos usados</span><span>${tx.points_used} pts</span></div>` : ""}
@@ -710,10 +740,17 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
                 </button>
               )}
               {c.is_member ? (
-                <span className="px-3 py-1 rounded-full text-xs font-bold bg-green-500/15 text-green-300 border border-green-500/30 flex items-center gap-1.5">
-                  <Medal size={14} weight="fill" />
-                  Sócio {c.member_number ? `nº ${c.member_number}` : ""} · Cotas pagas
-                </span>
+                c.has_paid_prev_quota ? (
+                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-green-500/15 text-green-300 border border-green-500/30 flex items-center gap-1.5">
+                    <Medal size={14} weight="fill" />
+                    Sócio {c.member_number ? `nº ${c.member_number}` : ""} · Cotas em dia
+                  </span>
+                ) : (
+                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
+                    <Medal size={14} />
+                    Sócio {c.member_number ? `nº ${c.member_number}` : ""} · Cotas por regularizar
+                  </span>
+                )
               ) : c.member_number ? (
                 <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
                   <Medal size={14} />
@@ -844,24 +881,36 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
           </div>
         </div>
         <div className="bg-gradient-to-br from-green-600/10 to-green-600/5 border border-green-500/20 rounded-xl p-5">
-          <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-green-400/80 flex items-center gap-1.5">
-            <Star size={11} weight="fill" /> Pontos
+          <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-green-400/80 flex items-center gap-1.5 justify-between">
+            <span className="flex items-center gap-1.5"><Star size={11} weight="fill" /> Pontos</span>
+            <button
+              data-testid="ficha-points-history-btn"
+              onClick={() => setShowPointsHistory(true)}
+              title="Ver extracto de pontos"
+              className="text-[10px] text-green-300 hover:text-green-200 font-bold"
+            >Extracto ›</button>
           </div>
           <div data-testid="ficha-points" className="mt-2 font-outfit text-3xl font-bold text-green-300">
             {c.points || 0}
           </div>
           <div className="text-[10px] text-slate-500 mt-1">
-            {c.is_member ? "1 pt cada 5€" : "1 pt cada 10€"}
+            {c.is_member && c.has_paid_prev_quota ? "1 pt cada 5€" : "1 pt cada 10€"}
           </div>
         </div>
-        <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5">
-          <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
-            Vendas
+        <Link
+          to={`/historico?tab=sales&client_id=${id}&preset=all`}
+          data-testid="ficha-sales-link"
+          title="Ver detalhe de todas as vendas deste cliente"
+          className="bg-slate-900/40 border border-slate-800 hover:border-amber-500/40 rounded-xl p-5 block transition-colors"
+        >
+          <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 flex items-center justify-between">
+            <span>Vendas</span>
+            <span className="text-amber-400/80 text-[10px]">Detalhe ›</span>
           </div>
           <div className="mt-2 font-outfit text-3xl font-bold text-slate-200">
             {sales.length}
           </div>
-        </div>
+        </Link>
       </div>
 
       {/* Consumption breakdown */}
@@ -873,7 +922,8 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
       </div>
 
       {/* Cotas mensais — apenas sócios */}
-      {c.member_number && quotas && (
+      {/* Cotas mensais — sócios (mesmo sem member_number) */}
+      {c.is_member && quotas && (
         <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-6 mb-8" data-testid="quotas-section">
           <div className="flex items-center gap-2 mb-4">
             <CalendarBlank size={20} weight="duotone" className="text-amber-400" />
@@ -1020,6 +1070,20 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
                       <span className="font-outfit text-lg font-bold text-amber-400">
                         {euro(s.total)}
                       </span>
+                      {status !== "paid" && (
+                        <button
+                          data-testid={`pay-sale-btn-${s.id}`}
+                          onClick={() => {
+                            setPaySelectedSales({ [s.id]: true });
+                            setPayForm({ amount: String(s.total.toFixed(2)), points_used: 0, note: `Venda #${s.tx_number || ""}`.trim(), keep_change_as_credit: false, tip: 0, tip_change: false });
+                            setShowPay(true);
+                          }}
+                          title="Registar pagamento desta venda"
+                          className="px-2 py-1 rounded-md text-[10px] font-bold bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 border border-amber-500/30"
+                        >
+                          💰 Pagar
+                        </button>
+                      )}
                       <button
                         data-testid={`print-sale-${s.id}`}
                         onClick={() => printTransaction(s)}
@@ -1102,6 +1166,9 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
                     </div>
                     <div className="text-sm font-medium text-slate-200">
                       {ev.type === "sale" ? "Venda" : "Pagamento"}
+                      {ev.type === "sale" && ev.house_offer && (
+                        <span data-testid={`sale-house-${ev.id}`} className="ml-2 px-2 py-0.5 rounded-full text-[10px] font-bold bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30 align-middle">★ Oferta da Casa</span>
+                      )}
                       {ev.type === "payment" && ev.note ? (
                         <span className="text-xs text-slate-500 ml-2">· {ev.note}</span>
                       ) : null}
@@ -1229,12 +1296,30 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
                         </div>
                       </div>
                       <ul className="text-slate-300 mt-0.5 pl-6">
-                        {s.items.map((it, i) => (
-                          <li key={i} className="flex items-center justify-between">
-                            <span><span className="text-slate-500">{it.quantity}×</span> {it.product_name}</span>
-                            <span className="text-slate-500">{euro(it.subtotal)}</span>
-                          </li>
-                        ))}
+                        {s.items.map((it, i) => {
+                          const isHouseItem = !!it.is_house_account;
+                          const fullValue = (it.unit_price || 0) * (it.quantity || 0);
+                          return (
+                            <li key={i} className="flex items-center justify-between gap-2">
+                              <span className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-slate-500">{it.quantity}×</span>
+                                {it.product_name}
+                                <span className="text-slate-500 text-[10px]">({euro(it.unit_price || 0)}/un)</span>
+                                {isHouseItem && (
+                                  <span className="px-1 py-0.5 rounded text-[9px] font-bold bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-500/30">OFERTA DA CASA</span>
+                                )}
+                              </span>
+                              {isHouseItem ? (
+                                <span className="flex items-center gap-1">
+                                  <span className="text-slate-600 line-through text-[10px]">{euro(fullValue)}</span>
+                                  <span className="text-fuchsia-300 font-bold">0,00 €</span>
+                                </span>
+                              ) : (
+                                <span className="text-slate-500">{euro(it.subtotal)}</span>
+                              )}
+                            </li>
+                          );
+                        })}
                       </ul>
                     </label>
                     );
@@ -1986,6 +2071,46 @@ ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : 
               <button data-testid="ficha-profile-submit" type="submit" className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold">Guardar</button>
             </div>
           </form>
+        </div>
+      )}
+
+      {showPointsHistory && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setShowPointsHistory(false)} data-testid="ficha-points-history-modal">
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-green-500/30 rounded-xl w-full max-w-2xl p-5 max-h-[90vh] flex flex-col">
+            <div className="flex items-center gap-2 mb-3">
+              <Star size={20} weight="fill" className="text-green-400" />
+              <h3 className="font-outfit text-xl font-semibold">Extracto de pontos</h3>
+              <span className="ml-auto text-sm text-slate-400">Saldo actual: <strong className="text-green-300">{c.points || 0} pt</strong></span>
+            </div>
+            <p className="text-xs text-slate-400 mb-3">Movimentos de atribuição (+), resgate (−) e ajustes. Clica no # para ver a transação.</p>
+            <div className="flex-1 overflow-y-auto space-y-1.5">
+              {pointsHistory.length === 0 ? (
+                <div className="text-center text-slate-500 py-10 text-sm">Sem movimentos.</div>
+              ) : pointsHistory.map((h, idx) => {
+                const amt = h.amount ?? h.delta ?? 0;
+                const pos = amt > 0;
+                return (
+                  <div key={idx} data-testid="points-hist-row" className="flex items-center gap-3 px-3 py-2 rounded-lg bg-slate-950 border border-slate-800">
+                    <div className={`w-12 text-center font-bold ${pos ? "text-green-300" : "text-rose-300"}`}>
+                      {pos ? "+" : ""}{amt}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[10px] text-slate-500 flex items-center gap-2 flex-wrap">
+                        <span>{new Date(h.created_at).toLocaleString("pt-PT")}</span>
+                        <span className="uppercase tracking-wider text-slate-400">{h.source || "—"}</span>
+                        {h.user_email && <span className="text-slate-600">· por {h.user_email}</span>}
+                      </div>
+                      <div className="text-sm text-slate-200 truncate">{h.note || h.source || "—"}</div>
+                    </div>
+                    {h.tx_number && (
+                      <Link to={`/transacoes/${h.tx_number}`} className="text-[11px] text-amber-400 hover:text-amber-300 font-mono">#{h.tx_number}</Link>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <button onClick={() => setShowPointsHistory(false)} className="mt-3 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm">Fechar</button>
+          </div>
         </div>
       )}
     </div>
