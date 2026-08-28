@@ -1,6 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { useNotifications } from "../lib/useNotifications";
 import {
   ChartLineUp,
   Storefront,
@@ -22,6 +23,8 @@ import {
   Book,
   List,
   X as XIcon,
+  Clock,
+  Bell,
 } from "@phosphor-icons/react";
 
 const ROLE_LABEL = {
@@ -73,8 +76,14 @@ export default function AppLayout() {
   const location = useLocation();
   const isHome = location.pathname === "/" || location.pathname === "";
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [clock, setClock] = useState(() => new Date());
+  const notifs = useNotifications();
 
   React.useEffect(() => { setMobileOpen(false); }, [location.pathname]);
+  useEffect(() => {
+    const id = setInterval(() => setClock(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const onLogout = async () => {
     await logout();
@@ -182,7 +191,7 @@ export default function AppLayout() {
 
       {/* Main */}
       <main className="flex-1 overflow-x-hidden flex flex-col min-w-0">
-        <div className="sticky top-0 z-20 bg-slate-950/80 backdrop-blur-xl border-b border-slate-900 px-3 md:px-6 py-3 flex items-center gap-2">
+        <div className="sticky top-0 z-20 bg-slate-950/80 backdrop-blur-xl border-b border-slate-900 px-3 md:px-6 py-2.5 flex items-center gap-1.5 md:gap-2" data-testid="topbar">
           <button
             data-testid="mobile-menu-btn"
             onClick={() => setMobileOpen(true)}
@@ -203,11 +212,75 @@ export default function AppLayout() {
           <button
             data-testid="topbar-home-btn"
             onClick={() => navigate("/")}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm text-slate-400 hover:text-white hover:bg-slate-900 transition-colors"
+            className="flex items-center justify-center w-9 h-9 rounded-md text-slate-400 hover:text-white hover:bg-slate-900 transition-colors"
             title="Início"
           >
             <House size={16} weight="duotone" />
           </button>
+
+          {/* Clock */}
+          <div className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-slate-300 font-mono" data-testid="topbar-clock">
+            <Clock size={16} weight="duotone" className="text-amber-400" />
+            <span className="tabular-nums">{clock.toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+          </div>
+
+          {/* Notifications — right side */}
+          <div className="ml-auto flex items-center gap-1 md:gap-1.5">
+            <button
+              data-testid="topbar-notif-pedidos"
+              onClick={() => navigate("/pedidos")}
+              className="relative flex items-center justify-center w-9 h-9 rounded-md text-slate-400 hover:text-amber-400 hover:bg-slate-900 transition-colors"
+              title="Pedidos de sócio"
+            >
+              <ShoppingCart size={18} weight="duotone" />
+              {notifs.pedidos > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-amber-500 text-slate-950 text-[10px] font-bold flex items-center justify-center animate-pulse">
+                  {notifs.pedidos}
+                </span>
+              )}
+            </button>
+            <button
+              data-testid="topbar-notif-mensagens"
+              onClick={() => navigate("/mensagens")}
+              className="relative flex items-center justify-center w-9 h-9 rounded-md text-slate-400 hover:text-amber-400 hover:bg-slate-900 transition-colors"
+              title="Mensagens de sócios"
+            >
+              <ChatCircle size={18} weight="duotone" />
+              {notifs.mensagens > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-amber-500 text-slate-950 text-[10px] font-bold flex items-center justify-center animate-pulse">
+                  {notifs.mensagens}
+                </span>
+              )}
+            </button>
+            <button
+              data-testid="topbar-notif-mbway"
+              onClick={() => navigate("/mbway")}
+              className="relative flex items-center justify-center w-9 h-9 rounded-md text-slate-400 hover:text-amber-400 hover:bg-slate-900 transition-colors"
+              title="Pagamentos MBWay"
+            >
+              <DeviceMobile size={18} weight="duotone" />
+              {notifs.mbway > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-amber-500 text-slate-950 text-[10px] font-bold flex items-center justify-center animate-pulse">
+                  {notifs.mbway}
+                </span>
+              )}
+            </button>
+
+            {/* User */}
+            <div className="hidden sm:flex items-center gap-2.5 pl-2 ml-1 border-l border-slate-800" data-testid="topbar-user">
+              <div className="w-8 h-8 rounded-full bg-amber-500/20 text-amber-500 flex items-center justify-center font-bold text-sm">
+                {(user?.name || "U")[0]?.toUpperCase()}
+              </div>
+              <div className="leading-tight">
+                <div className="text-sm font-medium truncate max-w-[140px]" data-testid="topbar-user-name">
+                  {user?.name || "Utilizador"}
+                </div>
+                <div className="text-[10px] uppercase tracking-wider text-amber-400/80 font-bold">
+                  {ROLE_LABEL[user?.role] || user?.role}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
         <div className="flex-1">
           <Outlet />

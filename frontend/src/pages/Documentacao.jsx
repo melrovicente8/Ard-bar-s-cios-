@@ -1,6 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import api from "../lib/api";
 import { DownloadSimple, Code, Book, ArrowLeft } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -56,6 +57,8 @@ App de gestão integrada de bar/clube ARD Nespereira em **PT-PT**. Combina:
 │   ├── src/
 │   │   ├── App.js                 ← Routes
 │   │   ├── lib/api.js             ← Axios instance + helpers
+│   │   ├── lib/useNotifications.js ← Hook polling notificações topbar (pedidos, msgs, mbway)
+│   │   ├── lib/quotaStatus.js     ← Cálculo estado de cotas (regularizadas/por regularizar/em atraso)
 │   │   ├── context/               ← AuthContext, SocioContext
 │   │   ├── components/ui/         ← Shadcn UI primitives
 │   │   └── pages/
@@ -88,6 +91,8 @@ App de gestão integrada de bar/clube ARD Nespereira em **PT-PT**. Combina:
 
 ### sales
 \`{ id, tx_number, client_id, client_name, items[], total, house_total, points_earned, points_pending_before, points_pending_after, is_member_at_sale, user_email, created_at, source?: 'quota' }\`
+- **items[]**: \`{ product_id, product_name, quantity, unit_price, subtotal, is_house_account, house_value }\`
+- \`is_house_account\` por item: produto marcado OU checkbox "oferta da casa" no POS
 
 ### payments
 \`{ id, tx_number, client_id, client_name, amount, tendered, points_used, points_value, total_credited, change_returned, keep_change_as_credit, tip, sale_ids[], note, user_email, created_at, source }\`
@@ -134,7 +139,7 @@ App de gestão integrada de bar/clube ARD Nespereira em **PT-PT**. Combina:
   - quem lançou → ≤ 5 min após criação
 
 ### Conta da casa
-- Produto com \`is_house_account: true\`
+- Produto com \`is_house_account: true\` **ou** item marcado como oferta da casa no POS (checkbox por item no carrinho)
 - Vendido com valor 0€ para o cliente (não conta na dívida)
 - Stock decrementa na mesma
 - Gera automaticamente uma despesa em \`supplier_expenses\` com \`supplier_id: '_house'\` (F00)
@@ -307,6 +312,15 @@ Relatórios PDF/print disponíveis em:
 - **Iter 9 (Fase B+C)**: Cotas 12/ano, keep_change toggle, points history, página /pedidos, mobile sidebar
 - **Iter 10**: Backfill tx_number + endpoint /socio/products + carrinho com +/- no portal
 - **Iter 11**: Foto+data na ficha, cotas mensais na ficha, aba "Cotas em dia", \`tip\`, \`sale_ids\`, estorno 5min, conta da casa, horário comida, indisponível, dashboard mascarado, saudação, alertas
+- **Iter 12 (Base44)**:
+  - **Topbar universal**: relógio ao vivo, nome+role do user, botão Voltar+Início, e **badges de notificação** (Pedidos sócio, Mensagens, MBWay pendentes) com polling 15s — sempre visíveis em todas as abas
+  - **Oferta da casa por item** (\`SaleItemIn.is_house_account\`): checkbox no carrinho do POS marca item como oferta da casa (grátis para o cliente, valor vai como despesa do bar)
+  - **Conta corrente do cliente no POS**: mostra saldo, pontos e estado de sócio acima da grelha de produtos
+  - **Recibos com nº de transação**: auto-impressão após venda no POS; botão "Imprimir última venda"
+  - **Estado de cotas nos recibos**: todos os recibos/facturas mostram "Cotas regularizadas / Por regularizar / Em atraso" (baseado no ano corrente: em dia = mês atual pago ou ano completo; atraso = >3 meses)
+  - **Ficha de cliente**: secção de cotas disponível com \`is_member\` ("Sócio com cotas pagas")
+  - **Hook \`useNotifications\`**: polling centralizado de notificações para o topbar
+  - **Hook \`quotaStatus\`**: cálculo partilhado do estado de cotas (regularizadas/por regularizar/em atraso)
 
 ---
 

@@ -41,3 +41,15 @@ docker compose -f docker-compose.base44.yml up -d
 ## Tests
 
 Backend tests (`backend/tests/`) use `pytest` + `requests` against a running server. They are not part of the dev compose; run them separately if needed (they require the full `requirements.txt` deps).
+
+## Recent changes (Iter 12 — Base44)
+
+- **Topbar universal** (`AppLayout.jsx`): relógio ao vivo, nome+role do user, botões Voltar+Início, e badges de notificação (Pedidos/Mensagens/MBWay) com polling 15s. Sempre visíveis em todas as abas.
+- **Hook `useNotifications`** (`frontend/src/lib/useNotifications.js`): polling centralizado de contagens pendentes.
+- **Hook `quotaStatus`** (`frontend/src/lib/quotaStatus.js`): cálculo partilhado do estado de cotas (regularizadas/por regularizar/em atraso).
+- **Oferta da casa por item**: `SaleItemIn.is_house_account` (backend) + checkbox no carrinho do POS (frontend). Item fica grátis para o cliente, valor registado como despesa do bar.
+- **Conta corrente do cliente no POS**: saldo, pontos e estado de sócio acima da grelha de produtos.
+- **Recibos com nº de transação**: auto-impressão após venda no POS.
+- **Estado de cotas nos recibos**: todos os recibos mostram "Cotas regularizadas / Por regularizar / Em atraso".
+- **Ficha de cliente**: secção de cotas disponível com `is_member` ("Sócio com cotas pagas").
+- **Documentação**: `Documentacao.jsx` atualizada com Iter 12; corrigidos imports em falta (`useEffect`, `api`).
