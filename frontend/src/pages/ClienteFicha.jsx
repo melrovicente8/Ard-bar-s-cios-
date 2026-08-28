@@ -30,6 +30,7 @@ import {
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
 import { useNavigate } from "react-router-dom";
+import { computeQuotaStatus } from "../lib/quotaStatus";
 
 export default function ClienteFicha() {
   const { id } = useParams();
@@ -124,7 +125,7 @@ ${c.member_number ? `<div class="row"><span>Nº Sócio</span><strong>${c.member_
 <div class="row"><span>Meses</span><strong>${months.map((m) => M[m - 1]).join(", ")}</strong></div>
 <hr/>
 <div class="row big"><span>TOTAL PAGO</span><span>${euro(payment.total_credited || payment.amount || 0)}</span></div>
-${(c.member_number && quotas) ? `<div class="row"><span>Estado de cotas</span><strong>Cotas ${quotaYear}: ${quotas.quotas.filter((q) => q.status === "paid").length}/${quotas.quotas.length} pagas</strong></div>` : ""}
+${(c.member_number && quotas) ? `<div class="row"><span>Estado de cotas</span><strong>${(() => { const qs = computeQuotaStatus(quotas); return qs ? `<span style="color:${qs.color}">${qs.label}</span> · ` : ""; })()}Cotas ${quotaYear}: ${quotas.quotas.filter((q) => q.status === "paid").length}/${quotas.quotas.length} pagas</strong></div>` : ""}
 <hr/>
 <div style="text-align:center" class="muted">Obrigado pela preferência</div>
 <div style="text-align:center;margin-top:14px"><button onclick="window.print()">Imprimir</button></div>
@@ -418,6 +419,11 @@ ${(c.member_number && quotas) ? `<div class="row"><span>Estado de cotas</span><s
     const tendered = tx.tendered || tx.amount;
     const credited = tx.total_credited || tx.amount;
     const change = tx.change_returned || 0;
+    let quotaLine = "";
+    if ((c.is_member || c.member_number) && quotas) {
+      const qs = computeQuotaStatus(quotas);
+      if (qs) quotaLine = `<div class="row"><span>Estado de cotas</span><strong style="color:${qs.color}">${qs.label}</strong></div>`;
+    }
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Transação ${tx.tx_number}</title>
 <style>body{font-family:'Courier New',monospace;max-width:320px;margin:14px auto;padding:0 12px;font-size:13px;color:#000}
 h1{font-size:16px;text-align:center;margin:4px 0 0;letter-spacing:.18em}
@@ -462,6 +468,11 @@ ${quotaLine ? `<hr/>${quotaLine}` : ""}
     const totalRecv = Number(notifyPayment.total_credited || notifyPayment.amount || 0);
     let cover = totalRecv;
     const saleRows = [];
+    let quotaLine = "";
+    if ((c.is_member || c.member_number) && quotas) {
+      const qs = computeQuotaStatus(quotas);
+      if (qs) quotaLine = `<div class="row"><span>Estado de cotas</span><strong style="color:${qs.color}">${qs.label}</strong></div>`;
+    }
     salesAsc.slice().reverse().forEach((s) => {
       // mostra vendas que este pagamento cobriu (parcial ou totalmente)
       if (cover <= 0) return;
@@ -577,7 +588,7 @@ ${quotaLine ? `<hr/>${quotaLine}` : ""}
     <div class="card"><div class="lbl">Total pago</div><div class="val pos">${euro(data.totals.paid)}</div></div>
     <div class="card"><div class="lbl">Em dívida (período)</div><div class="val">${euro(Math.max(data.totals.diff, 0))}</div></div>
   </div>
-  <div class="meta" style="margin-top:18px">Saldo atual em dívida: <strong>${euro(Math.max(data.client.balance || 0, 0))}</strong> · Pontos: <strong>${data.client.points || 0}</strong></div>
+  <div class="meta" style="margin-top:18px">Saldo atual em dívida: <strong>${euro(Math.max(data.client.balance || 0, 0))}</strong> · Pontos: <strong>${data.client.points || 0}</strong>${(() => { const qs = computeQuotaStatus(quotas); return qs ? ` · Estado de cotas: <strong style="color:${qs.color}">${qs.label}</strong>` : ""; })()}</div>
   <footer>
     <span>${data.club_name}</span>
     <span><button onclick="window.print()">Imprimir</button></span>
@@ -914,7 +925,7 @@ ${quotaLine ? `<hr/>${quotaLine}` : ""}
       </div>
 
       {/* Cotas mensais — apenas sócios */}
-      {c.member_number && quotas && (
+      {(c.member_number || c.is_member) && quotas && (
         <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-6 mb-8" data-testid="quotas-section">
           <div className="flex items-center gap-2 mb-4">
             <CalendarBlank size={20} weight="duotone" className="text-amber-400" />
@@ -1624,6 +1635,7 @@ ${quotaLine ? `<hr/>${quotaLine}` : ""}
                         className="w-4 h-4 accent-green-500"
                       />
                       <span className="text-xs font-medium text-slate-200">Sócio com cotas pagas</span>
+                      <span className="text-[10px] text-amber-400/70 ml-1">(disponibiliza cotas)</span>
                     </label>
                   </div>
                   <div>

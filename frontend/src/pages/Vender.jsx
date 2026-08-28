@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
+import { fetchQuotaStatus } from "../lib/quotaStatus";
 import {
   Plus,
   Minus,
@@ -10,6 +11,8 @@ import {
   Lightning,
   SquaresFour,
   List as ListIcon,
+  Printer,
+  House,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -24,6 +27,8 @@ export default function Vender() {
   const [viewMode, setViewMode] = useState("grid"); // grid | list
   const [fastMode, setFastMode] = useState(false);
   const [topProducts, setTopProducts] = useState([]);
+  const [houseOffers, setHouseOffers] = useState({}); // { product_id: true }
+  const [lastSale, setLastSale] = useState(null); // for print receipt
 
   const load = async () => {
     setLoading(true);
@@ -88,10 +93,69 @@ export default function Vender() {
 
   const total = useMemo(() => {
     return Object.entries(cart).reduce((sum, [pid, qty]) => {
+      if (houseOffers[pid]) return sum; // oferta da casa — grátis para o cliente
       const p = products.find((x) => x.id === pid);
       return sum + (p ? p.price * qty : 0);
     }, 0);
-  }, [cart, products]);
+  }, [cart, products, houseOffers]);
+
+  const houseTotal = useMemo(() => {
+    return Object.entries(cart).reduce((sum, [pid, qty]) => {
+      if (!houseOffers[pid]) return sum;
+      const p = products.find((x) => x.id === pid);
+      return sum + (p ? p.price * qty : 0);
+    }, 0);
+  }, [cart, products, houseOffers]);
+
+  const selectedClient = clients.find((c) => c.id === clientId);
+
+  const printSaleReceipt = async (sale, client) => {
+    if (!sale) return;
+    const w = window.open("", "_blank", "width=420,height=720");
+    if (!w) return toast.error("Permite popups para imprimir");
+    const dateStr = new Date(sale.created_at).toLocaleString("pt-PT");
+    const itemsHtml = sale.items.map((it) => {
+      const houseTag = it.is_house_account ? ' <span style="color:#b45309;font-size:10px">(oferta da casa)</span>' : "";
+      return `<div class="row"><span>${it.quantity}× ${it.product_name}${houseTag}</span><span>${euro(it.subtotal)}</span></div>`;
+    }).join("");
+    // Quota status for sócios
+    let quotaLine = "";
+    if (client?.is_member || client?.member_number) {
+      const qs = await fetchQuotaStatus(client.id);
+      if (qs) quotaLine = `<div class="row"><span>Estado de cotas</span><strong style="color:${qs.color}">${qs.label}</strong></div>`;
+    }
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Talão de venda</title>
+<style>body{font-family:'Courier New',monospace;max-width:320px;margin:14px auto;padding:0 12px;font-size:13px;color:#000}
+h1{font-size:16px;text-align:center;margin:4px 0 0;letter-spacing:.18em}
+h2{font-size:11px;text-align:center;margin:0 0 14px;color:#444;letter-spacing:.25em}
+hr{border:0;border-top:1px dashed #000;margin:10px 0}
+.row{display:flex;justify-content:space-between;margin:4px 0}
+.big{font-size:20px;font-weight:bold}
+.muted{color:#555;font-size:11px}
+.txn{font-size:14px;font-weight:bold;background:#000;color:#fff;text-align:center;padding:4px;border-radius:3px;margin:8px 0}
+@media print{ body{margin:0} button{display:none} }
+</style></head><body>
+<h1>ARD · NESPEREIRA</h1>
+<h2>TALÃO DE VENDA</h2>
+${sale.tx_number ? `<div class="txn">TRANSAÇÃO Nº ${sale.tx_number}</div>` : ""}
+<div class="muted">${dateStr}</div>
+<div class="muted">Registado por: ${sale.user_email || "—"}</div>
+<hr/>
+<div class="row"><span>Cliente</span><strong>${client?.name || sale.client_name || "—"}</strong></div>
+${client?.member_number ? `<div class="row"><span>Nº Sócio</span><strong>${client.member_number}</strong></div>` : ""}
+${quotaLine ? `<hr/>${quotaLine}` : ""}
+<hr/>
+${itemsHtml}
+<hr/>
+<div class="row big"><span>TOTAL</span><span>${euro(sale.total)}</span></div>
+${sale.points_earned ? `<div class="row"><span>Pontos ganhos</span><span>+${sale.points_earned}</span></div>` : ""}
+<hr/>
+<div style="text-align:center" class="muted">Obrigado pela preferência</div>
+<div style="text-align:center;margin-top:14px"><button onclick="window.print()">Imprimir</button></div>
+<script>setTimeout(()=>window.print(),300);</script>
+</body></html>`);
+    w.document.close();
+  };
 
   const submit = async () => {
     if (!clientId) {
@@ -101,6 +165,7 @@ export default function Vender() {
     const items = Object.entries(cart).map(([pid, qty]) => ({
       product_id: pid,
       quantity: qty,
+      is_house_account: !!houseOffers[pid],
     }));
     if (!items.length) {
       toast.error("Carrinho vazio");
@@ -108,10 +173,14 @@ export default function Vender() {
     }
     setSubmitting(true);
     try {
-      await api.post("/sales", { client_id: clientId, items });
-      toast.success(`Venda registada · ${euro(total)}`);
+      const { data: sale } = await api.post("/sales", { client_id: clientId, items });
+      toast.success(`Venda registada · ${euro(sale.total || total)}`);
+      setLastSale({ sale, client: selectedClient });
       setCart({});
+      setHouseOffers({});
       await load();
+      // Auto-open print dialog
+      printSaleReceipt(sale, selectedClient);
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     } finally {
@@ -236,6 +305,43 @@ export default function Vender() {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Products grid */}
         <div className="lg:col-span-8">
+          {/* Conta corrente — selected client balance */}
+          {selectedClient && (
+            <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-4 mb-4 flex items-center gap-4 flex-wrap" data-testid="vender-client-cc">
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Cliente</div>
+                <div className="text-sm font-medium text-slate-200">{selectedClient.name}</div>
+              </div>
+              <div className="h-8 w-px bg-slate-800" />
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">{(selectedClient.balance || 0) < 0 ? "Crédito" : "A pagar"}</div>
+                <div className={`text-lg font-bold ${(selectedClient.balance || 0) < 0 ? "text-emerald-300" : "text-amber-300"}`}>{euro(Math.abs(selectedClient.balance || 0))}</div>
+              </div>
+              <div className="h-8 w-px bg-slate-800" />
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Pontos</div>
+                <div className="text-lg font-bold text-green-300">{selectedClient.points || 0}</div>
+              </div>
+              {selectedClient.is_member && (
+                <>
+                  <div className="h-8 w-px bg-slate-800" />
+                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-green-500/15 text-green-300 border border-green-500/30">
+                    Sócio {selectedClient.member_number ? `nº ${selectedClient.member_number}` : ""}
+                  </span>
+                </>
+              )}
+              {lastSale && (
+                <button
+                  data-testid="vender-print-last"
+                  onClick={() => printSaleReceipt(lastSale.sale, lastSale.client)}
+                  className="ml-auto px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1.5"
+                >
+                  <Printer size={14} weight="duotone" /> Imprimir última venda
+                </button>
+              )}
+            </div>
+          )}
+
           <div className="relative mb-4">
             <MagnifyingGlass
               size={18}
@@ -378,13 +484,24 @@ export default function Vender() {
                   <li
                     key={it.id}
                     data-testid={`cart-item-${it.id}`}
-                    className="flex items-center gap-2 bg-slate-950/60 border border-slate-800 rounded-lg p-2.5"
+                    className={`flex items-center gap-2 bg-slate-950/60 border rounded-lg p-2.5 ${houseOffers[it.id] ? "border-amber-500/40 bg-amber-500/5" : "border-slate-800"}`}
                   >
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate">{it.name}</div>
+                      <div className={`text-sm font-medium truncate ${houseOffers[it.id] ? "line-through opacity-60" : ""}`}>{it.name}</div>
                       <div className="text-xs text-slate-500">
-                        {euro(it.price)} × {it.qty} = {euro(it.price * it.qty)}
+                        {euro(it.price)} × {it.qty} = <span className={houseOffers[it.id] ? "line-through" : ""}>{euro(it.price * it.qty)}</span>
                       </div>
+                      <label className="flex items-center gap-1 mt-1 cursor-pointer" data-testid={`cart-house-${it.id}`}>
+                        <input
+                          type="checkbox"
+                          checked={!!houseOffers[it.id]}
+                          onChange={(e) => setHouseOffers({ ...houseOffers, [it.id]: e.target.checked })}
+                          className="w-3 h-3 accent-amber-400"
+                        />
+                        <span className="text-[10px] text-amber-400/80 font-medium flex items-center gap-0.5">
+                          <House size={10} weight="duotone" /> Oferta da casa
+                        </span>
+                      </label>
                     </div>
                     <div className="flex items-center gap-1">
                       <button
@@ -417,9 +534,17 @@ export default function Vender() {
           </div>
 
           <div className="mt-4 pt-4 border-t border-slate-800">
+            {houseTotal > 0 && (
+              <div className="flex items-center justify-between mb-2 text-xs">
+                <span className="text-amber-400/80 font-medium flex items-center gap-1">
+                  <House size={11} weight="duotone" /> Oferta da casa
+                </span>
+                <span className="text-amber-400/80">{euro(houseTotal)}</span>
+              </div>
+            )}
             <div className="flex items-center justify-between mb-3">
               <span className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">
-                Total
+                Total a pagar
               </span>
               <span
                 data-testid="cart-total"

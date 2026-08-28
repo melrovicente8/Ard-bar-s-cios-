@@ -113,6 +113,7 @@ class ClientUpdate(BaseModel):
 class SaleItemIn(BaseModel):
     product_id: str
     quantity: int
+    is_house_account: bool = False  # oferta da casa — item grátis para o cliente
 
 class SaleIn(BaseModel):
     client_id: str
@@ -754,7 +755,7 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
         unit_price = float(prod["price"])
         qty = int(it.quantity)
         subtotal_full = unit_price * qty
-        is_house = bool(prod.get("is_house_account"))
+        is_house = bool(prod.get("is_house_account")) or bool(it.is_house_account)
         subtotal = 0.0 if is_house else subtotal_full
         if is_house:
             house_total += subtotal_full
