@@ -36,7 +36,6 @@ export default function Vender() {
       const [p, c] = await Promise.all([api.get("/products"), api.get("/clients")]);
       setProducts(p.data);
       setClients(c.data);
-      if (!clientId && c.data.length) setClientId(c.data[0].id);
     } finally {
       setLoading(false);
     }
@@ -305,42 +304,55 @@ ${sale.points_earned ? `<div class="row"><span>Pontos ganhos</span><span>+${sale
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Products grid */}
         <div className="lg:col-span-8">
-          {/* Conta corrente — selected client balance */}
-          {selectedClient && (
-            <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-4 mb-4 flex items-center gap-4 flex-wrap" data-testid="vender-client-cc">
-              <div>
-                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Cliente</div>
-                <div className="text-sm font-medium text-slate-200">{selectedClient.name}</div>
+          {/* Cliente + Conta corrente — acima da grelha de produtos */}
+          <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-4 mb-4" data-testid="vender-client-cc">
+            <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
+              Cliente
+            </label>
+            <select
+              data-testid="cart-client-select"
+              value={clientId}
+              onChange={(e) => setClientId(e.target.value)}
+              className="mt-1.5 mb-3 w-full bg-slate-900/80 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+            >
+              <option value="">— Seleciona cliente —</option>
+              {clients.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+            {selectedClient && (
+              <div className="flex items-center gap-4 flex-wrap pt-3 border-t border-slate-800">
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">{(selectedClient.balance || 0) < 0 ? "Crédito" : "A pagar"}</div>
+                  <div className={`text-lg font-bold ${(selectedClient.balance || 0) < 0 ? "text-emerald-300" : "text-amber-300"}`}>{euro(Math.abs(selectedClient.balance || 0))}</div>
+                </div>
+                <div className="h-8 w-px bg-slate-800" />
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Pontos</div>
+                  <div className="text-lg font-bold text-green-300">{selectedClient.points || 0}</div>
+                </div>
+                {selectedClient.is_member && (
+                  <>
+                    <div className="h-8 w-px bg-slate-800" />
+                    <span className="px-3 py-1 rounded-full text-xs font-bold bg-green-500/15 text-green-300 border border-green-500/30">
+                      Sócio {selectedClient.member_number ? `nº ${selectedClient.member_number}` : ""}
+                    </span>
+                  </>
+                )}
+                {lastSale && (
+                  <button
+                    data-testid="vender-print-last"
+                    onClick={() => printSaleReceipt(lastSale.sale, lastSale.client)}
+                    className="ml-auto px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1.5"
+                  >
+                    <Printer size={14} weight="duotone" /> Imprimir última venda
+                  </button>
+                )}
               </div>
-              <div className="h-8 w-px bg-slate-800" />
-              <div>
-                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">{(selectedClient.balance || 0) < 0 ? "Crédito" : "A pagar"}</div>
-                <div className={`text-lg font-bold ${(selectedClient.balance || 0) < 0 ? "text-emerald-300" : "text-amber-300"}`}>{euro(Math.abs(selectedClient.balance || 0))}</div>
-              </div>
-              <div className="h-8 w-px bg-slate-800" />
-              <div>
-                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Pontos</div>
-                <div className="text-lg font-bold text-green-300">{selectedClient.points || 0}</div>
-              </div>
-              {selectedClient.is_member && (
-                <>
-                  <div className="h-8 w-px bg-slate-800" />
-                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-green-500/15 text-green-300 border border-green-500/30">
-                    Sócio {selectedClient.member_number ? `nº ${selectedClient.member_number}` : ""}
-                  </span>
-                </>
-              )}
-              {lastSale && (
-                <button
-                  data-testid="vender-print-last"
-                  onClick={() => printSaleReceipt(lastSale.sale, lastSale.client)}
-                  className="ml-auto px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1.5"
-                >
-                  <Printer size={14} weight="duotone" /> Imprimir última venda
-                </button>
-              )}
-            </div>
-          )}
+            )}
+          </div>
 
           <div className="relative mb-4">
             <MagnifyingGlass
@@ -453,25 +465,14 @@ ${sale.points_earned ? `<div class="row"><span>Pontos ganhos</span><span>+${sale
         >
           <div className="flex items-center gap-2 mb-4">
             <ShoppingCart size={20} weight="duotone" className="text-amber-500" />
-            <h3 className="font-outfit text-lg font-semibold">Conta corrente</h3>
+            <h3 className="font-outfit text-lg font-semibold">Carrinho</h3>
           </div>
 
-          <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
-            Cliente
-          </label>
-          <select
-            data-testid="cart-client-select"
-            value={clientId}
-            onChange={(e) => setClientId(e.target.value)}
-            className="mt-1.5 mb-4 bg-slate-900/80 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-          >
-            <option value="">— Seleciona cliente —</option>
-            {clients.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
+          {!clientId && (
+            <div className="text-sm text-amber-400/80 text-center py-3 mb-3 bg-amber-500/5 border border-amber-500/20 rounded-lg">
+              Seleciona um cliente para continuar
+            </div>
+          )}
 
           <div className="flex-1 overflow-y-auto -mx-2 px-2 min-h-[120px]">
             {cartItems.length === 0 ? (
