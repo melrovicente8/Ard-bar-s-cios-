@@ -46,6 +46,7 @@ export default function ClienteFicha() {
   const [showPay, setShowPay] = useState(false);
   const [payForm, setPayForm] = useState({ amount: "", points_used: 0, note: "", keep_change_as_credit: false, tip: 0, tip_change: false, is_house_offer: false });
   const [paySelectedSales, setPaySelectedSales] = useState({}); // {sale_id: true}
+  const [payHouseOffers, setPayHouseOffers] = useState({}); // {sale_id: true} — oferta da casa por venda
   const [notifyPayment, setNotifyPayment] = useState(null);
   const [showEdit, setShowEdit] = useState(false);
   const [editForm, setEditForm] = useState({
@@ -215,26 +216,46 @@ ${(c.member_number && quotas) ? `<div class="row"><span>Estado de cotas</span><s
     e.preventDefault();
     try {
       const selectedIds = Object.entries(paySelectedSales).filter(([, v]) => v).map(([k]) => k);
+      const houseOfferIds = Object.entries(payHouseOffers).filter(([, v]) => v).map(([k]) => k);
       const tipValue = payForm.tip_change
         ? Math.max(Number(payForm.amount || 0) - (selectedIds.length
             ? Object.entries(paySelectedSales).filter(([, v]) => v).reduce((s, [sid]) => s + (sales.find((x) => x.id === sid)?.total || 0), 0)
             : Math.max(c.balance || 0, 0)) - (Number(payForm.points_used || 0) / 5), 0)
         : Number(payForm.tip || 0);
-      const { data: payment } = await api.post("/payments", {
-        client_id: id,
-        amount: parseFloat(payForm.amount || 0),
-        points_used: Number(payForm.points_used || 0),
-        note: payForm.note || null,
-        keep_change_as_credit: !!payForm.keep_change_as_credit,
-        tip: tipValue || 0,
-        sale_ids: selectedIds.length ? selectedIds : null,
-      });
-      toast.success("Pagamento registado");
+      const cashAmount = parseFloat(payForm.amount || 0);
+      const pointsUsed = Number(payForm.points_used || 0);
+      // Oferta da casa: dá baixa das vendas assinaladas a zero (despesa do bar)
+      if (houseOfferIds.length) {
+        await api.post("/payments", {
+          client_id: id,
+          amount: 0,
+          sale_ids: houseOfferIds,
+          is_house_offer: true,
+          note: payForm.note ? `Oferta da casa · ${payForm.note}` : "Oferta da casa",
+        });
+      }
+      // Pagamento normal (pode ser zero se só houver oferta da casa ou pontos)
+      const hasNormalPayment = cashAmount > 0 || pointsUsed > 0;
+      let payment = null;
+      if (hasNormalPayment) {
+        const { data: pay } = await api.post("/payments", {
+          client_id: id,
+          amount: cashAmount,
+          points_used: pointsUsed,
+          note: payForm.note || null,
+          keep_change_as_credit: !!payForm.keep_change_as_credit,
+          tip: tipValue || 0,
+          sale_ids: selectedIds.length ? selectedIds : null,
+        });
+        payment = pay;
+      }
+      toast.success(houseOfferIds.length && !hasNormalPayment ? "Oferta da casa registada" : "Pagamento registado");
       setShowPay(false);
       setPaySelectedSales({});
+      setPayHouseOffers({});
       await load();
       // Open notify modal
-      setNotifyPayment(payment);
+      if (payment) setNotifyPayment(payment);
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
@@ -509,6 +530,7 @@ ${quotaLine ? `<hr/>${quotaLine}` : ""}
   <hr/>
   <div class="row"><span>Cliente</span><strong>${c.name}</strong></div>
   ${c.member_number ? `<div class="row"><span>Nº Sócio</span><strong>${c.member_number}</strong></div>` : ""}
+  ${quotaLine ? `<hr/>${quotaLine}` : ""}
   ${itemsHtml}
   <hr/>
   <div class="row"><span>Numerário entregue</span><span>${euro(notifyPayment.tendered || notifyPayment.amount || 0)}</span></div>
@@ -1298,6 +1320,22 @@ ${quotaLine ? `<hr/>${quotaLine}` : ""}
                           </li>
                         ))}
                       </ul>
+                      <label className="flex items-center gap-1.5 mt-1 pl-6 cursor-pointer" data-testid={`pay-house-${s.id}`}>
+                        <input
+                          type="checkbox"
+                          checked={!!payHouseOffers[s.id]}
+                          onChange={(e) => {
+                            const next = { ...payHouseOffers, [s.id]: e.target.checked };
+                            if (e.target.checked) {
+                              // se marcar oferta da casa, desmarcar do pagamento normal
+                              const ns = { ...paySelectedSales }; delete ns[s.id]; setPaySelectedSales(ns);
+                            }
+                            setPayHouseOffers(next);
+                          }}
+                          className="w-3 h-3 accent-amber-400"
+                        />
+                        <span className="text-[10px] text-amber-400/80 font-medium">Oferta da casa (baixa a zero)</span>
+                      </label>
                     </label>
                     );
                   })}
@@ -1314,7 +1352,6 @@ ${quotaLine ? `<hr/>${quotaLine}` : ""}
                   data-testid="payment-amount-input"
                   type="number"
                   step="0.01"
-                  required
                   min="0"
                   autoFocus
                   placeholder="0,00 (valor que o cliente entrega)"

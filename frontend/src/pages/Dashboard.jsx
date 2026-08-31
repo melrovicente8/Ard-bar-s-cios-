@@ -183,33 +183,42 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-5">
-        <StatCard
-          testid="kpi-today-sales"
-          icon={CurrencyEur}
-          label="Vendas hoje"
-          value={euro(data.today_sales_total)}
-          accent="bg-amber-500/10 text-amber-500"
-          to="/vender"
-          unmaskedDefault
-        />
-        <StatCard
-          testid="kpi-week-sales"
-          icon={Calendar}
-          label="Vendas semana"
-          value={euro(data.week_sales_total || 0)}
-          accent="bg-amber-500/10 text-amber-400"
-          to="/vender"
-          masked
-        />
-        <StatCard
-          testid="kpi-month-sales"
-          icon={CalendarBlank}
-          label="Vendas mês"
-          value={euro(data.month_sales_total || 0)}
-          accent="bg-amber-500/10 text-amber-300"
-          to="/vender"
-          masked
-        />
+        {(() => {
+          const t = new Date().toISOString().slice(0, 10);
+          const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+          const monthStart = t.slice(0, 7) + "-01";
+          return (
+            <>
+              <StatCard
+                testid="kpi-today-sales"
+                icon={CurrencyEur}
+                label="Vendas hoje"
+                value={euro(data.today_sales_total)}
+                accent="bg-amber-500/10 text-amber-500"
+                to={`/historico?from=${t}&to=${t}`}
+                unmaskedDefault
+              />
+              <StatCard
+                testid="kpi-week-sales"
+                icon={Calendar}
+                label="Vendas semana"
+                value={euro(data.week_sales_total || 0)}
+                accent="bg-amber-500/10 text-amber-400"
+                to={`/historico?from=${weekAgo}&to=${t}`}
+                masked
+              />
+              <StatCard
+                testid="kpi-month-sales"
+                icon={CalendarBlank}
+                label="Vendas mês"
+                value={euro(data.month_sales_total || 0)}
+                accent="bg-amber-500/10 text-amber-300"
+                to={`/historico?from=${monthStart}&to=${t}`}
+                masked
+              />
+            </>
+          );
+        })()}
         <StatCard
           testid="kpi-outstanding"
           icon={ReceiptX}

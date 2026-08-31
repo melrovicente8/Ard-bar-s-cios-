@@ -67,7 +67,7 @@ export default function Fornecedores() {
   const [reportRange, setReportRange] = useState({ from: "", to: "" });
 
   const [showExpense, setShowExpense] = useState(null); // null/false | {mode:"new"} | {mode:"edit",id}
-  const [expForm, setExpForm] = useState({ supplier_id: "", description: "", amount: "", due_date: "", paid: false, recurring: "", note: "" });
+  const [expForm, setExpForm] = useState({ supplier_id: "", description: "", amount: "", due_date: "", paid: false, recurring: "", note: "", invoice_ref: "" });
 
   const load = async () => {
     setLoading(true);
@@ -175,8 +175,19 @@ export default function Fornecedores() {
     }
   };
 
+  const receiveOrder = async (o) => {
+    if (!window.confirm(`Marcar encomenda de ${o.supplier_name} como entregue? O stock será actualizado e a factura gerada.`)) return;
+    try {
+      await api.post(`/supplier-orders/${o.id}/receive`);
+      toast.success("Encomenda entregue · stock actualizado · factura gerada");
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
   const openNewExpense = () => {
-    setExpForm({ supplier_id: "", description: "", amount: "", due_date: "", paid: false, recurring: "monthly", note: "" });
+    setExpForm({ supplier_id: "", description: "", amount: "", due_date: "", paid: false, recurring: "monthly", note: "", invoice_ref: "" });
     setShowExpense({ mode: "new" });
   };
   const openEditExpense = (e) => {
@@ -188,6 +199,7 @@ export default function Fornecedores() {
       paid: !!e.paid,
       recurring: e.recurring || "",
       note: e.note || "",
+      invoice_ref: e.invoice_ref || "",
     });
     setShowExpense({ mode: "edit", id: e.id });
   };
@@ -201,6 +213,7 @@ export default function Fornecedores() {
       paid: !!expForm.paid,
       recurring: expForm.recurring || null,
       note: expForm.note || null,
+      invoice_ref: expForm.invoice_ref || null,
     };
     try {
       if (showExpense.mode === "new") {
@@ -509,7 +522,7 @@ export default function Fornecedores() {
                     <tr key={o.id} data-testid={`order-row-${o.id}`} className="border-t border-slate-800/60 hover:bg-slate-900/60">
                       <td className="px-5 py-3 text-slate-400 text-xs">{new Date(o.created_at).toLocaleString("pt-PT")}</td>
                       <td className="px-5 py-3 text-slate-200">{o.supplier_name}</td>
-                      <td className="px-5 py-3 text-slate-500 text-xs">{o.invoice_ref || "—"}</td>
+                      <td className="px-5 py-3 text-slate-500 text-xs">{o.invoice_ref || (o.status === "delivered" ? "—" : "—")}</td>
                       <td className="px-5 py-3 text-slate-400">{o.items.reduce((s, i) => s + i.quantity, 0)} un.</td>
                       <td className="px-5 py-3 text-right text-amber-300 font-semibold">{euro(o.total)}</td>
                       <td className="px-5 py-3 text-right">
@@ -518,14 +531,31 @@ export default function Fornecedores() {
                         </span>
                       </td>
                       <td className="px-5 py-3">
-                        {o.paid ? (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">Pago</span>
-                        ) : (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30">Em dívida</span>
-                        )}
+                        <div className="flex flex-col gap-1">
+                          {o.status === "delivered" ? (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/15 text-sky-300 border border-sky-500/30">Entregue{o.invoice_ref ? ` · ${o.invoice_ref}` : ""}</span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-violet-500/15 text-violet-300 border border-violet-500/30">Nota de encomenda</span>
+                          )}
+                          {o.paid ? (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">Pago</span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30">Em dívida</span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-5 py-3">
-                        <div className="flex justify-end">
+                        <div className="flex justify-end gap-1">
+                          {o.status !== "delivered" && canManage && (
+                            <button
+                              data-testid={`order-receive-${o.id}`}
+                              onClick={() => receiveOrder(o)}
+                              title="Marcar como entregue (adiciona stock + gera factura)"
+                              className="px-3 py-1.5 rounded-md text-xs font-bold bg-sky-500/15 text-sky-300 hover:bg-sky-500/25 flex items-center gap-1.5"
+                            >
+                              <Check size={14} weight="bold" /> Entregar
+                            </button>
+                          )}
                           {!o.paid && canManage && (
                             <button
                               data-testid={`order-pay-${o.id}`}
@@ -802,6 +832,15 @@ export default function Fornecedores() {
             />
             <span className="text-xs font-medium text-slate-200">Já está pago</span>
           </label>
+          <Field label="Nº de factura">
+            <input
+              data-testid="expense-invoice-ref-input"
+              value={expForm.invoice_ref}
+              onChange={(e) => setExpForm({ ...expForm, invoice_ref: e.target.value })}
+              placeholder="Ex: FT 2026/001"
+              className={inputCls}
+            />
+          </Field>
           <Field label="Nota">
             <input value={expForm.note} onChange={(e) => setExpForm({ ...expForm, note: e.target.value })} className={inputCls} />
           </Field>

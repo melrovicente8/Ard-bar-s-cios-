@@ -150,6 +150,10 @@ class SocioUpdateIn(BaseModel):
     email: Optional[str] = None
     morada: Optional[str] = None
 
+class SocioChangePinIn(BaseModel):
+    current_pin: str
+    new_pin: str
+
 class MBWayRequestIn(BaseModel):
     amount: float
     mbway_phone: str  # phone used to pay
@@ -199,6 +203,7 @@ class SupplierExpenseIn(BaseModel):
     paid_at: Optional[str] = None
     recurring: Optional[str] = None  # "monthly" | "yearly" | None
     note: Optional[str] = None
+    invoice_ref: Optional[str] = None  # nº de factura
     attachment_name: Optional[str] = None
     attachment_data: Optional[str] = None
 
@@ -211,6 +216,7 @@ class SupplierExpenseUpdate(BaseModel):
     paid_at: Optional[str] = None
     recurring: Optional[str] = None
     note: Optional[str] = None
+    invoice_ref: Optional[str] = None
     attachment_name: Optional[str] = None
     attachment_data: Optional[str] = None
 
@@ -633,6 +639,10 @@ async def client_detail(client_id: str, user: dict = Depends(get_current_user)):
 async def list_debtors(user: dict = Depends(get_current_user)):
     clients = await db.clients.find({}, {"_id": 0, "pin_hash": 0}).to_list(5000)
     debtors = [c for c in clients if (c.get("balance", 0) > 0)]
+    # Adicionar data da última venda para filtros temporais
+    for d in debtors:
+        latest = await db.sales.find_one({"client_id": d["id"]}, {"_id": 0, "created_at": 1}, sort=[("created_at", -1)])
+        d["latest_sale_at"] = latest.get("created_at") if latest else None
     debtors.sort(key=lambda x: x.get("balance", 0), reverse=True)
     return debtors
 
@@ -1992,6 +2002,27 @@ async def socio_update_me(body: SocioUpdateIn, socio: dict = Depends(get_current
     c = await db.clients.find_one({"id": socio["id"]}, {"_id": 0, "pin_hash": 0})
     return c
 
+@api_router.put("/socio/change-pin")
+async def socio_change_pin(body: SocioChangePinIn, socio: dict = Depends(get_current_socio)):
+    """Sócio altera a sua própria palavra-passe (PIN). Fica visível na ficha de administração."""
+    if len(body.new_pin) < 3:
+        raise HTTPException(status_code=400, detail="O novo PIN tem de ter pelo menos 3 caracteres")
+    c = await db.clients.find_one({"id": socio["id"]})
+    if not c or not c.get("pin_hash"):
+        raise HTTPException(status_code=400, detail="PIN não configurado. Pede ao administrador.")
+    if not verify_password(body.current_pin, c["pin_hash"]):
+        raise HTTPException(status_code=403, detail="PIN atual incorreto")
+    if body.new_pin == body.current_pin:
+        raise HTTPException(status_code=400, detail="O novo PIN tem de ser diferente do atual")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.clients.update_one({"id": socio["id"]}, {"$set": {
+        "pin_hash": hash_password(body.new_pin),
+        "pin_changed_at": now_iso,
+        "pin_changed_by_socio": True,
+    }})
+    await _audit("socio_pin_change", socio.get("email") or "socio-self", entity="client", entity_id=socio["id"], summary=f"Sócio alterou o seu PIN: {c.get('name')}")
+    return {"ok": True, "pin_changed_at": now_iso}
+
 @api_router.post("/socio/mbway-request")
 async def socio_mbway_request(body: MBWayRequestIn, socio: dict = Depends(get_current_socio)):
     if body.amount <= 0:
@@ -2703,10 +2734,7 @@ async def create_supplier_order(body: SupplierOrderIn, user: dict = Depends(requ
             "subtotal": sub,
         })
 
-    # Adicionar stock automaticamente
-    for it in body.items:
-        await db.products.update_one({"id": it.product_id}, {"$inc": {"quantity": int(it.quantity)}})
-
+    # Nota de encomenda: o stock só é adicionado quando a encomenda é marcada como entregue
     oid = str(uuid.uuid4())
     paid = bool(body.paid)
     tx_no = await _next_tx_number()
@@ -2724,12 +2752,37 @@ async def create_supplier_order(body: SupplierOrderIn, user: dict = Depends(requ
         "note": body.note,
         "attachment_name": body.attachment_name,
         "attachment_data": body.attachment_data,
+        "status": "ordered",  # ordered | delivered
+        "delivered_at": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "user_email": user["email"],
     }
     await db.supplier_orders.insert_one(doc)
+    await _audit("supplier_order_create", user["email"], entity="supplier", entity_id=oid, summary=f"Nota de encomenda · {sup['name']} · {total:.2f} €")
     doc.pop("_id", None)
     return doc
+
+@api_router.post("/supplier-orders/{order_id}/receive")
+async def receive_supplier_order(order_id: str, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    """Marca a encomenda como entregue: adiciona stock ao armazém e gera factura."""
+    o = await db.supplier_orders.find_one({"id": order_id}, {"_id": 0})
+    if not o:
+        raise HTTPException(status_code=404, detail="Encomenda não encontrada")
+    if o.get("status") == "delivered":
+        raise HTTPException(status_code=400, detail="Encomenda já marcada como entregue")
+    # Adicionar stock
+    for it in o.get("items", []):
+        await db.products.update_one({"id": it["product_id"]}, {"$inc": {"quantity": int(it["quantity"])}})
+    # Gerar factura (invoice_ref auto se não existir)
+    invoice_ref = o.get("invoice_ref") or f"F-{o.get('tx_number', '')}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.supplier_orders.update_one({"id": order_id}, {"$set": {
+        "status": "delivered",
+        "delivered_at": now_iso,
+        "invoice_ref": invoice_ref,
+    }})
+    await _audit("supplier_order_receive", user["email"], entity="supplier", entity_id=order_id, summary=f"Encomenda entregue · factura {invoice_ref} · {o.get('supplier_name')}")
+    return await db.supplier_orders.find_one({"id": order_id}, {"_id": 0})
 
 @api_router.get("/supplier-orders")
 async def list_supplier_orders(supplier_id: Optional[str] = None, only_unpaid: bool = False, user: dict = Depends(get_current_user)):
@@ -2797,6 +2850,7 @@ async def create_supplier_expense(body: SupplierExpenseIn, user: dict = Depends(
         "paid_at": body.paid_at if body.paid else None,
         "recurring": body.recurring,
         "note": body.note,
+        "invoice_ref": body.invoice_ref,
         "attachment_name": body.attachment_name,
         "attachment_data": body.attachment_data,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -2838,6 +2892,25 @@ async def on_startup():
     await db.products.create_index("id", unique=True)
     await db.clients.create_index("id", unique=True)
     await db.sales.create_index("created_at")
+
+    # Quota dedup safeguard — unique index + limpeza de duplicados existentes
+    # (previne cotas em duplicado para qualquer sócio, como aconteceu com o sócio 100)
+    try:
+        # 1. Limpar duplicados: para cada (client_id, year, month) manter apenas o mais recente
+        pipeline = [
+            {"$group": {"_id": {"cid": "$client_id", "y": "$year", "m": "$month"}, "ids": {"$push": {"id": "$_id", "paid_at": "$paid_at", "created": "$_id"}}}},
+            {"$match": {"ids.1": {"$exists": True}}},
+        ]
+        dupes = await db.quotas.aggregate(pipeline).to_list(500)
+        for d in dupes:
+            ids = d.get("ids", [])
+            # manter o primeiro, remover os restantes
+            for entry in ids[1:]:
+                await db.quotas.delete_one({"_id": entry["id"]})
+        # 2. Índice único
+        await db.quotas.create_index([("client_id", 1), ("year", 1), ("month", 1)], unique=True)
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Quota dedup: {e}")
 
     # seed users (admin + tesoureiro + 3 funcionários)
     seed_list = [

@@ -29,6 +29,7 @@ services:
       ADMIN_EMAIL: admin@ard.pt
       ADMIN_PASSWORD: admin123
       CLUB_NAME: ARD Nespereira
+      QUOTA_MONTHLY_VALUE: "1.00"
     env_file:
       - ./.env.base44-defaults
       - /run/base44/app.env

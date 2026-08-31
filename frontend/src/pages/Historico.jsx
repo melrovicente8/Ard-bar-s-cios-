@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { ClockCounterClockwise, Printer, FunnelSimple, MagnifyingGlass, Scroll } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -16,9 +16,12 @@ export default function Historico() {
   const [tab, setTab] = useState("sales"); // sales | audit | acta
   const [actaData, setActaData] = useState(null);
   const [actaDate, setActaDate] = useState(new Date().toISOString().slice(0, 10));
+  const [searchParams] = useSearchParams();
   const today = new Date().toISOString().slice(0, 10);
   const monthStart = today.slice(0, 7) + "-01";
-  const [filters, setFilters] = useState({ from: monthStart, to: today, user_email: "", client_id: "", status: "" });
+  const urlFrom = searchParams.get("from");
+  const urlTo = searchParams.get("to");
+  const [filters, setFilters] = useState({ from: urlFrom || monthStart, to: urlTo || today, user_email: "", client_id: "", status: "" });
   const [salesData, setSalesData] = useState(null);
   const [auditData, setAuditData] = useState([]);
   const [users, setUsers] = useState([]);
@@ -97,8 +100,11 @@ export default function Historico() {
       <tr><td>${new Date(s.created_at).toLocaleString("pt-PT")}</td><td>#${s.tx_number || "—"}</td><td>${s.client_name}</td><td>${(s.items || []).map((it) => `${it.quantity}× ${it.product_name}`).join(", ")}</td><td class="right">${euro(s.total)}</td></tr>`).join("");
     const payRows = (actaData.payments || []).map((p) => `
       <tr><td>${new Date(p.created_at).toLocaleString("pt-PT")}</td><td>#${p.tx_number || "—"}</td><td>${p.client_name}</td><td class="right">${euro(p.total_credited || p.amount)}</td></tr>`).join("");
-    const expRows = (actaData.expenses || []).map((e) => `
-      <tr><td>${new Date(e.created_at).toLocaleString("pt-PT")}</td><td>#${e.tx_number || "—"}</td><td>${e.supplier_name || "—"}</td><td>${e.description}</td><td class="right">${euro(e.amount)}</td></tr>`).join("");
+    const expWithInvoice = (actaData.expenses || []).filter((e) => e.invoice_ref);
+    const expWithoutInvoice = (actaData.expenses || []).filter((e) => !e.invoice_ref);
+    const expRows = expWithInvoice.map((e) => `
+      <tr><td>${new Date(e.created_at).toLocaleString("pt-PT")}</td><td>#${e.tx_number || "—"}</td><td>${e.supplier_name || "—"}</td><td>${e.description} ${e.invoice_ref ? `· <strong>Fact. ${e.invoice_ref}</strong>` : ""}</td><td class="right">${euro(e.amount)}</td></tr>`).join("");
+    const expSummaryRow = expWithoutInvoice.length ? `<tr><td colspan="4" style="text-align:right;color:#666">Sem factura (${expWithoutInvoice.length} despesas)</td><td class="right">${euro(expWithoutInvoice.reduce((s, e) => s + (e.amount || 0), 0))}</td></tr>` : "";
     const auditRows = (actaData.audits || []).map((a) => `
       <tr><td>${new Date(a.at).toLocaleString("pt-PT")}</td><td>${a.by}</td><td>${a.type}</td><td>${a.summary || "—"}</td></tr>`).join("");
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Ata diária · ${actaData.date}</title>
@@ -135,8 +141,8 @@ export default function Historico() {
   <table><thead><tr><th>Data</th><th>Nº</th><th>Cliente</th><th>Itens</th><th class="right">Total</th></tr></thead><tbody>${salesRows || `<tr><td colspan="5" style="text-align:center;color:#666;padding:12px">Sem vendas</td></tr>`}</tbody></table>
   <h2>Pagamentos</h2>
   <table><thead><tr><th>Data</th><th>Nº</th><th>Cliente</th><th class="right">Valor</th></tr></thead><tbody>${payRows || `<tr><td colspan="4" style="text-align:center;color:#666;padding:12px">Sem pagamentos</td></tr>`}</tbody></table>
-  <h2>Despesas</h2>
-  <table><thead><tr><th>Data</th><th>Nº</th><th>Fornecedor</th><th>Descrição</th><th class="right">Valor</th></tr></thead><tbody>${expRows || `<tr><td colspan="5" style="text-align:center;color:#666;padding:12px">Sem despesas</td></tr>`}</tbody></table>
+  <h2>Despesas (com factura)</h2>
+  <table><thead><tr><th>Data</th><th>Nº</th><th>Fornecedor</th><th>Descrição</th><th class="right">Valor</th></tr></thead><tbody>${(expRows + expSummaryRow) || `<tr><td colspan="5" style="text-align:center;color:#666;padding:12px">Sem despesas com factura</td></tr>`}</tbody></table>
   <h2>Registo de auditoria</h2>
   <table><thead><tr><th>Data</th><th>Utilizador</th><th>Tipo</th><th>Detalhes</th></tr></thead><tbody>${auditRows || `<tr><td colspan="4" style="text-align:center;color:#666;padding:12px">Sem registos</td></tr>`}</tbody></table>
   <p style="margin-top:18px;text-align:center"><button onclick="window.print()">Imprimir</button></p>

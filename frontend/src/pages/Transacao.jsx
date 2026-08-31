@@ -18,13 +18,22 @@ export default function Transacao() {
       .finally(() => setLoading(false));
   }, [tx_number]);
 
-  const print2 = () => {
+  const print2 = async () => {
     if (!tx) return;
     const w = window.open("", "_blank", "width=420,height=720");
     if (!w) return toast.error("Permite popups");
     const isSale = !!tx.items;
     const dateStr = new Date(tx.created_at).toLocaleString("pt-PT");
     const itemsHtml = isSale ? tx.items.map((it) => `<div class="row"><span>${it.quantity}× ${it.product_name} <span class="muted">(${euro(it.unit_price || (it.subtotal / it.quantity))}/un.)</span></span><span>${euro(it.subtotal)}</span></div>`).join("") : "";
+    // Buscar saldo de pontos atual do cliente
+    let pointsLine = "";
+    if (tx.client_id) {
+      try {
+        const { data: cd } = await api.get(`/clients/${tx.client_id}`);
+        const pts = cd?.client?.points || 0;
+        pointsLine = `<div class="row"><span>Saldo de pontos</span><strong>${pts} pts</strong></div>`;
+      } catch { /* ignore */ }
+    }
     const tendered = tx.tendered || tx.amount || 0;
     const credited = tx.total_credited || tx.amount || 0;
     const change = tx.change_returned || 0;
@@ -47,7 +56,7 @@ hr{border:0;border-top:1px dashed #000;margin:10px 0}
 <div class="muted">Registado por: ${tx.user_email || "—"}</div>
 <hr/>
 <div class="row"><span>Cliente</span><strong>${tx.client_name || "—"}</strong></div>
-${isSale ? `<hr/>${itemsHtml}<hr/><div class="row big"><span>TOTAL</span><span>${euro(tx.total)}</span></div>` : `<hr/>
+${isSale ? `<hr/>${itemsHtml}<hr/><div class="row big"><span>TOTAL</span><span>${euro(tx.total)}</span></div>${tx.points_earned ? `<div class="row"><span>Pontos ganhos</span><span>+${tx.points_earned}</span></div>` : ""}${pointsLine}` : `<hr/>
 <div class="row"><span>Numerário entregue</span><span>${euro(tendered)}</span></div>
 ${tx.points_used ? `<div class="row"><span>Pontos usados</span><span>${tx.points_used} pts</span></div>` : ""}
 <div class="row"><span>Valor da despesa</span><span>${euro(credited)}</span></div>

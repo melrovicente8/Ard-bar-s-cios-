@@ -8,6 +8,7 @@ export default function DividasHoje() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all"); // all | socio | client | high
+  const [period, setPeriod] = useState("all"); // all | today | week | month
 
   useEffect(() => {
     (async () => {
@@ -25,6 +26,20 @@ export default function DividasHoje() {
   if (filter === "socio") filtered = filtered.filter((c) => c.is_member);
   else if (filter === "client") filtered = filtered.filter((c) => !c.is_member);
   else if (filter === "high") filtered = filtered.filter((c) => c.balance >= 50);
+  if (period !== "all") {
+    const now = new Date();
+    filtered = filtered.filter((c) => {
+      if (!c.latest_sale_at) return false;
+      const d = new Date(c.latest_sale_at);
+      if (period === "today") return d.toDateString() === now.toDateString();
+      if (period === "week") {
+        const ago = new Date(now); ago.setDate(now.getDate() - 7);
+        return d >= ago;
+      }
+      if (period === "month") return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+      return true;
+    });
+  }
   if (q)
     filtered = filtered.filter(
       (c) =>
@@ -78,6 +93,23 @@ export default function DividasHoje() {
           <option value="client">Não-sócios</option>
           <option value="high">Dívida ≥ 50€</option>
         </select>
+        <div className="inline-flex rounded-lg border border-slate-800 bg-slate-950/60 p-1" data-testid="dividas-period-filter">
+          {[
+            { v: "today", l: "Hoje" },
+            { v: "week", l: "Semana" },
+            { v: "month", l: "Mês" },
+            { v: "all", l: "Sempre" },
+          ].map((p) => (
+            <button
+              key={p.v}
+              data-testid={`dividas-period-${p.v}`}
+              onClick={() => setPeriod(p.v)}
+              className={`px-3 py-1.5 rounded-md text-xs font-bold uppercase tracking-wider transition-colors ${
+                period === p.v ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"
+              }`}
+            >{p.l}</button>
+          ))}
+        </div>
       </div>
 
       <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl overflow-hidden">

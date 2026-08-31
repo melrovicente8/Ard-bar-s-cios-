@@ -25,7 +25,7 @@ export default function Vender() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [viewMode, setViewMode] = useState("grid"); // grid | list
-  const [fastMode, setFastMode] = useState(false);
+  const [fastMode, setFastMode] = useState(true);
   const [topProducts, setTopProducts] = useState([]);
   const [houseOffers, setHouseOffers] = useState({}); // { product_id: true }
   const [lastSale, setLastSale] = useState(null); // for print receipt
@@ -43,6 +43,8 @@ export default function Vender() {
 
   useEffect(() => {
     load();
+    // Pré-carregar top produtos para o modo rápido (ativo por defeito)
+    api.get("/products/top?limit=8").then(({ data }) => setTopProducts(data)).catch(() => setTopProducts([]));
     // eslint-disable-next-line
   }, []);
 
@@ -115,7 +117,8 @@ export default function Vender() {
     const dateStr = new Date(sale.created_at).toLocaleString("pt-PT");
     const itemsHtml = sale.items.map((it) => {
       const houseTag = it.is_house_account ? ' <span style="color:#b45309;font-size:10px">(oferta da casa)</span>' : "";
-      return `<div class="row"><span>${it.quantity}× ${it.product_name}${houseTag}</span><span>${euro(it.subtotal)}</span></div>`;
+      const unit = it.unit_price || (it.subtotal / it.quantity);
+      return `<div class="row"><span>${it.quantity}× ${it.product_name}${houseTag} <span class="muted">(${euro(unit)}/un.)</span></span><span>${euro(it.subtotal)}</span></div>`;
     }).join("");
     // Quota status for sócios
     let quotaLine = "";
@@ -148,6 +151,7 @@ ${itemsHtml}
 <hr/>
 <div class="row big"><span>TOTAL</span><span>${euro(sale.total)}</span></div>
 ${sale.points_earned ? `<div class="row"><span>Pontos ganhos</span><span>+${sale.points_earned}</span></div>` : ""}
+${client ? `<div class="row"><span>Saldo de pontos</span><strong>${client.points || 0} pts</strong></div>` : ""}
 <hr/>
 <div style="text-align:center" class="muted">Obrigado pela preferência</div>
 <div style="text-align:center;margin-top:14px"><button onclick="window.print()">Imprimir</button></div>
