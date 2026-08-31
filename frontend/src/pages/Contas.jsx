@@ -52,6 +52,19 @@ export default function Contas() {
       <tr><td>Encomendas a fornecedores</td><td class="right">${data.counts.orders}</td><td class="right neg"><strong>${euro(data.expenses.supplier_orders)}</strong></td></tr>
       <tr><td>Despesas mensais</td><td class="right">${data.counts.expenses}</td><td class="right neg"><strong>${euro(data.expenses.supplier_expenses)}</strong></td></tr>
       <tr><td><strong>TOTAL DESPESAS</strong></td><td></td><td class="right neg"><strong>${euro(data.expenses.total)}</strong></td></tr>`;
+    // Detalhe de despesas com fornecedor e nº factura
+    const expDetailRows = [
+      ...data.details.orders.map((o) => ({ ...o, _kind: "Encomenda", _desc: o.items.map((it) => `${it.quantity}× ${it.product_name}`).join(", "), _supplier: o.supplier_name || "—", _invoice: o.invoice_ref || "—", _amount: o.total })),
+      ...data.details.expenses.map((e) => ({ ...e, _kind: "Despesa", _desc: e.description, _supplier: e.supplier_name || "—", _invoice: e.note || "—", _amount: e.amount })),
+    ].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)).map((r) => `
+      <tr>
+        <td>${new Date(r.created_at).toLocaleDateString("pt-PT")}</td>
+        <td>${r._kind}</td>
+        <td>${r._supplier}</td>
+        <td>${r._desc}</td>
+        <td>${r._invoice}</td>
+        <td class="right neg">${euro(r._amount)}</td>
+      </tr>`).join("");
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Contas · ${data.club_name}</title>
 <style>
   body{font-family:Arial;color:#0f172a;margin:24px;font-size:13px}
@@ -81,6 +94,11 @@ export default function Contas() {
   <table><thead><tr><th>Origem</th><th class="right">Qtd</th><th class="right">Valor</th></tr></thead><tbody>${linesIncome}</tbody></table>
   <h2>DEVE (Despesas)</h2>
   <table><thead><tr><th>Origem</th><th class="right">Qtd</th><th class="right">Valor</th></tr></thead><tbody>${linesExp}</tbody></table>
+  <h2>Detalhe de despesas</h2>
+  <table>
+    <thead><tr><th>Data</th><th>Tipo</th><th>Fornecedor</th><th>Descrição</th><th>Nº Factura</th><th class="right">Valor</th></tr></thead>
+    <tbody>${expDetailRows || `<tr><td colspan="6" style="text-align:center;color:#666;padding:20px">Sem despesas no período</td></tr>`}</tbody>
+  </table>
   <div class="balance">
     <span class="lbl">Saldo do período</span>
     <span class="val ${data.balance >= 0 ? "pos" : "neg"}">${data.balance >= 0 ? "+" : ""}${euro(data.balance)}</span>

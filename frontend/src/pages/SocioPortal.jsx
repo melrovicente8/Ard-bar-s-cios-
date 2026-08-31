@@ -51,6 +51,11 @@ export default function SocioPortal() {
   const [showRequest, setShowRequest] = useState(false);
   const [products, setProducts] = useState([]);
   const [reqCart, setReqCart] = useState({});
+  // Chat comunidade
+  const [showChat, setShowChat] = useState(false);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatText, setChatText] = useState("");
+  const [chatSending, setChatSending] = useState(false);
 
   useEffect(() => {
     api.get("/club/info").then((r) => setClub(r.data)).catch(() => {});
@@ -218,6 +223,31 @@ export default function SocioPortal() {
     setShowRequest(true);
   };
 
+  const loadChat = async () => {
+    try {
+      const { data } = await api.get("/chat/messages?limit=100");
+      setChatMessages(data);
+      setShowChat(true);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const sendChat = async (e) => {
+    e.preventDefault();
+    if (!chatText.trim()) return;
+    setChatSending(true);
+    try {
+      const { data: msg } = await api.post("/chat/messages", { message: chatText });
+      setChatMessages((prev) => [...prev, msg]);
+      setChatText("");
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    } finally {
+      setChatSending(false);
+    }
+  };
+
   const submitRequest = async () => {
     const items = Object.entries(reqCart).filter(([, q]) => q > 0).map(([product_id, quantity]) => ({ product_id, quantity }));
     if (!items.length) return toast.error("Adiciona pelo menos um item");
@@ -275,7 +305,7 @@ export default function SocioPortal() {
     }
   };
 
-  const printReceipt = (p) => {
+  const printReceipt = async (p) => {
     // Encontrar vendas que este pagamento cobriu (heurística: vendas pendentes antes da data, FIFO)
     const earlierSales = sales.filter((s) => s.created_at <= p.created_at).sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
     let cover = p.total_credited || p.amount;
@@ -285,6 +315,15 @@ export default function SocioPortal() {
       const applied = Math.min(cover, s.total);
       cover -= applied;
       covered.push({ sale: s, applied });
+    }
+    // Estado das cotas
+    let quotaLine = "";
+    if (c.is_member || c.member_number) {
+      try {
+        const { fetchQuotaStatus } = await import("../lib/quotaStatus");
+        const qs = await fetchQuotaStatus(c.id);
+        if (qs) quotaLine = `<div class="row"><span>Estado de cotas</span><strong style="color:${qs.color}">${qs.label}</strong></div>`;
+      } catch { /* ignore */ }
     }
     const w = window.open("", "_blank", "width=420,height=640");
     if (!w) return toast.error("Permite popups para imprimir");
@@ -309,9 +348,11 @@ export default function SocioPortal() {
   <h2>RECIBO DE PAGAMENTO</h2>
   <div class="muted">${new Date(p.created_at).toLocaleString("pt-PT")}</div>
   ${p.user_email ? `<div class="muted">Registado por: ${p.user_email}</div>` : ""}
+  ${p.tx_number ? `<div class="muted">Transação Nº ${p.tx_number}</div>` : ""}
   <hr/>
   <div class="row"><span>Sócio</span><strong>${c.name}</strong></div>
   ${c.member_number ? `<div class="row"><span>Nº</span><strong>${c.member_number}</strong></div>` : ""}
+  ${quotaLine ? `<hr/>${quotaLine}` : ""}
   ${itemsHtml}
   <hr/>
   <div class="row"><span>Em numerário</span><span>${euro(p.amount || 0)}</span></div>
@@ -572,6 +613,13 @@ export default function SocioPortal() {
                 className="text-xs px-3 py-1.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 flex items-center gap-1.5"
               >
                 <Plus size={13} weight="bold" /> Pedir consumo
+              </button>
+              <button
+                data-testid="socio-chat-btn"
+                onClick={loadChat}
+                className="text-xs px-3 py-1.5 rounded-md bg-sky-500/15 text-sky-300 border border-sky-500/30 hover:bg-sky-500/25 flex items-center gap-1.5"
+              >
+                <ChatCircle size={13} weight="duotone" /> Chat comunidade
               </button>
               <button
                 data-testid="socio-messages-btn"
@@ -1059,6 +1107,54 @@ export default function SocioPortal() {
                 Enviar pedido
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showChat && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setShowChat(false)} data-testid="socio-chat-modal">
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg p-6 max-h-[85vh] flex flex-col">
+            <div className="flex items-center gap-2 mb-3">
+              <ChatCircle size={22} weight="duotone" className="text-sky-400" />
+              <h3 className="font-outfit text-xl font-semibold">Chat comunidade</h3>
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-2 mb-3 pr-1" data-testid="socio-chat-messages">
+              {chatMessages.length === 0 ? (
+                <div className="text-center text-slate-500 py-6 text-sm">Sem mensagens. Sê o primeiro!</div>
+              ) : chatMessages.map((m) => {
+                const isMe = m.user_id === c.id;
+                return (
+                  <div key={m.id} className={`flex ${isMe ? "justify-end" : "justify-start"}`}>
+                    <div className={`max-w-[75%] rounded-lg px-3 py-2 ${
+                      isMe ? "bg-amber-500 text-slate-950" : m.user_type === "socio" ? "bg-fuchsia-500/15 text-slate-200 border border-fuchsia-500/20" : "bg-slate-800 text-slate-200"
+                    }`}>
+                      {!isMe && (
+                        <div className="text-[10px] font-bold mb-0.5">
+                          {m.user_name} <span className="text-slate-500">· {m.user_role === "socio" ? "Sócio" : m.user_role}</span>
+                        </div>
+                      )}
+                      <div className="text-sm whitespace-pre-wrap break-words">{m.message}</div>
+                      <div className={`text-[9px] mt-0.5 ${isMe ? "text-slate-700" : "text-slate-500"}`}>
+                        {new Date(m.created_at).toLocaleString("pt-PT", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" })}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <form onSubmit={sendChat} className="flex gap-2">
+              <input
+                data-testid="socio-chat-input"
+                value={chatText}
+                onChange={(e) => setChatText(e.target.value)}
+                placeholder="Escreve uma mensagem..."
+                className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+              />
+              <button type="submit" disabled={chatSending || !chatText.trim()} data-testid="socio-chat-send" className="bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold rounded-lg px-4 py-2 text-sm">
+                Enviar
+              </button>
+            </form>
+            <button onClick={() => setShowChat(false)} className="mt-2 w-full px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium text-sm">Fechar</button>
           </div>
         </div>
       )}

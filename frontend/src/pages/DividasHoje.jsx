@@ -7,6 +7,7 @@ export default function DividasHoje() {
   const [debtors, setDebtors] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all"); // all | socio | client | high
 
   useEffect(() => {
     (async () => {
@@ -20,14 +21,17 @@ export default function DividasHoje() {
   }, []);
 
   const q = search.trim().toLowerCase();
-  const filtered = q
-    ? debtors.filter(
-        (c) =>
-          c.name.toLowerCase().includes(q) ||
-          (c.member_number || "").toLowerCase().includes(q) ||
-          (c.contact || "").toLowerCase().includes(q)
-      )
-    : debtors;
+  let filtered = debtors;
+  if (filter === "socio") filtered = filtered.filter((c) => c.is_member);
+  else if (filter === "client") filtered = filtered.filter((c) => !c.is_member);
+  else if (filter === "high") filtered = filtered.filter((c) => c.balance >= 50);
+  if (q)
+    filtered = filtered.filter(
+      (c) =>
+        c.name.toLowerCase().includes(q) ||
+        (c.member_number || "").toLowerCase().includes(q) ||
+        (c.contact || "").toLowerCase().includes(q)
+    );
 
   const totalDebt = debtors.reduce((s, c) => s + Math.max(c.balance || 0, 0), 0);
   const totalSocios = debtors.filter((c) => c.is_member).length;
@@ -52,15 +56,28 @@ export default function DividasHoje() {
         <Stat label="Dos quais sócios" value={totalSocios} accent="text-green-300" />
       </div>
 
-      <div className="relative mb-5 max-w-md">
-        <MagnifyingGlass size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
-        <input
-          data-testid="dividas-search"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Procurar..."
-          className="w-full bg-slate-900/80 border border-slate-800 rounded-lg pl-11 pr-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-        />
+      <div className="flex flex-wrap items-center gap-3 mb-5">
+        <div className="relative flex-1 max-w-md">
+          <MagnifyingGlass size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
+          <input
+            data-testid="dividas-search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Procurar..."
+            className="w-full bg-slate-900/80 border border-slate-800 rounded-lg pl-11 pr-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+          />
+        </div>
+        <select
+          data-testid="dividas-filter"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          className="bg-slate-900/80 border border-slate-800 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+        >
+          <option value="all">Todos</option>
+          <option value="socio">Sócios</option>
+          <option value="client">Não-sócios</option>
+          <option value="high">Dívida ≥ 50€</option>
+        </select>
       </div>
 
       <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl overflow-hidden">

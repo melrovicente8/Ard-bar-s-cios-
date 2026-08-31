@@ -818,8 +818,10 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
         })
 
     # update client balance, total spent, points and pending value
+    # Oferta da casa: o valor dos itens assinalados é zero para o cliente no POS,
+    # mas é descontado na conta corrente (saldo) e entra como despesa do bar.
     set_ops: dict = {}
-    inc_ops = {"balance": total, "total_spent": total, "points": points_earned}
+    inc_ops = {"balance": total + house_total, "total_spent": total + house_total, "points": points_earned}
     if is_member:
         set_ops["points_pending_value"] = new_pending
     op = {"$inc": inc_ops}
@@ -1161,6 +1163,21 @@ async def docs_daily_log(date: Optional[str] = None, user: dict = Depends(get_cu
     }
 
 
+# ---------- Daily Actas ----------
+@api_router.get("/daily-actas")
+async def list_daily_actas(limit: int = 90, user: dict = Depends(get_current_user)):
+    items = await db.daily_actas.find({}, {"_id": 0, "sales": 0, "payments": 0, "expenses": 0, "audits": 0}).sort("date", -1).limit(min(max(limit, 1), 365)).to_list(365)
+    return items
+
+@api_router.get("/daily-actas/{date}")
+async def get_daily_acta(date: str, user: dict = Depends(get_current_user)):
+    doc = await db.daily_actas.find_one({"date": date}, {"_id": 0})
+    if not doc:
+        # Fallback: gerar on-the-fly a partir do daily-log
+        return await docs_daily_log(date, user)
+    return doc
+
+
 # ---------- Points history ----------
 @api_router.get("/clients/{client_id}/points-history")
 async def client_points_history(client_id: str, user: dict = Depends(get_current_user)):
@@ -1212,8 +1229,10 @@ async def approve_consumption_request(req_id: str, user: dict = Depends(get_curr
     is_member = bool(client_doc.get("is_member"))
     old_pending = float(client_doc.get("points_pending_value", 0)) if is_member else 0.0
     points_earned, new_pending = _compute_points_with_rollover(client_doc, req["total"])
+    tx_no = await _next_tx_number()
     sale_doc = {
         "id": sale_id,
+        "tx_number": tx_no,
         "client_id": req["client_id"],
         "client_name": req["client_name"],
         "items": req["items"],
@@ -1749,6 +1768,81 @@ async def club_info():
         "mbway_phone": os.environ.get("CLUB_MBWAY_PHONE", ""),
         "quota_monthly_value": QUOTA_MONTHLY_VALUE,
     }
+
+# ---------- Bar status (aberto/fechado) ----------
+@api_router.get("/bar-status")
+async def get_bar_status(user: dict = Depends(get_current_user)):
+    doc = await db.settings.find_one({"_id": "bar_status"}, {"_id": 0})
+    if not doc:
+        return {"open": True, "changed_at": None, "changed_by": None}
+    return doc
+
+@api_router.post("/bar-status/toggle")
+async def toggle_bar_status(user: dict = Depends(get_current_user)):
+    doc = await db.settings.find_one({"_id": "bar_status"})
+    currently_open = doc.get("open", True) if doc else True
+    new_state = not currently_open
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.settings.update_one(
+        {"_id": "bar_status"},
+        {"$set": {"open": new_state, "changed_at": now_iso, "changed_by": user["email"]}},
+        upsert=True,
+    )
+    await _audit("bar_status_toggle", user["email"], summary=f"Bar {'ABERTO' if new_state else 'FECHADO'}")
+    return {"open": new_state, "changed_at": now_iso, "changed_by": user["email"]}
+
+# ---------- Chat comunidade ----------
+async def get_current_user_or_socio(request: Request) -> dict:
+    """Aceita auth de staff (access_token) ou sócio (socio_token)."""
+    token = request.cookies.get("access_token") or request.cookies.get("socio_token")
+    if not token:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[7:]
+    if not token:
+        raise HTTPException(status_code=401, detail="Não autenticado")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") == "access":
+            user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
+            if user:
+                return {"id": user["id"], "name": user["name"], "role": user.get("role", "user"), "_type": "staff"}
+        elif payload.get("type") == "socio":
+            c = await db.clients.find_one({"id": payload["sub"]}, {"_id": 0, "pin_hash": 0})
+            if c:
+                return {"id": c["id"], "name": c["name"], "role": "socio", "_type": "socio", "member_number": c.get("member_number")}
+    except Exception:
+        pass
+    raise HTTPException(status_code=401, detail="Não autenticado")
+
+class ChatMessageIn(BaseModel):
+    message: str
+
+@api_router.get("/chat/messages")
+async def list_chat_messages(limit: int = 100, before: Optional[str] = None, user: dict = Depends(get_current_user_or_socio)):
+    q: dict = {}
+    if before:
+        q["created_at"] = {"$lt": before}
+    items = await db.chat_messages.find(q, {"_id": 0}).sort("created_at", -1).limit(min(max(limit, 1), 200)).to_list(200)
+    return list(reversed(items))
+
+@api_router.post("/chat/messages")
+async def send_chat_message(body: ChatMessageIn, user: dict = Depends(get_current_user_or_socio)):
+    text = body.message.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Mensagem vazia")
+    msg = {
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "user_name": user["name"],
+        "user_role": user.get("role", "user"),
+        "user_type": user.get("_type", "staff"),
+        "message": text,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.chat_messages.insert_one(msg)
+    msg.pop("_id", None)
+    return msg
 
 # ---------- Quotas (cotas mensais) ----------
 MONTHS_PT = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
@@ -2381,8 +2475,10 @@ async def socio_pay_with_points(body: SocioPayPointsIn, socio: dict = Depends(ge
     if euros > debt + 1e-9:
         raise HTTPException(status_code=400, detail=f"Valor a pagar ({euros:.2f} €) excede a dívida ({debt:.2f} €)")
     pid = str(uuid.uuid4())
+    tx_no = await _next_tx_number()
     pay = {
         "id": pid,
+        "tx_number": tx_no,
         "client_id": socio["id"],
         "client_name": socio["name"],
         "amount": float(euros),
@@ -2849,6 +2945,55 @@ async def on_startup():
     if sup_fix:
         await db.counters.update_one({"_id": "supplier_code"}, {"$set": {"seq": seq}}, upsert=True)
         logging.getLogger(__name__).info(f"Backfill fornecedores: {sup_fix} códigos F atribuídos")
+
+    # Iniciar background task da ata diária automática
+    asyncio.create_task(_daily_acta_task())
+
+async def _daily_acta_task():
+    """Background task: às 00:00 (Europe/Lisbon) guarda um snapshot da ata diária."""
+    while True:
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("Europe/Lisbon")
+        except Exception:
+            tz = timezone.utc
+        now = datetime.now(tz)
+        # Próxima meia-noite
+        tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        wait_secs = (tomorrow - now).total_seconds()
+        await asyncio.sleep(max(wait_secs, 1))
+        # Gerar e guardar a ata do dia que acabou
+        try:
+            yesterday = (datetime.now(tz) - timedelta(days=1)).strftime("%Y-%m-%d")
+            existing = await db.daily_actas.find_one({"date": yesterday}, {"_id": 0})
+            if not existing:
+                start = yesterday + "T00:00:00"
+                end = yesterday + "T23:59:59"
+                sales = await db.sales.find({"created_at": {"$gte": start, "$lte": end}}, {"_id": 0}).sort("created_at", 1).to_list(5000)
+                payments = await db.payments.find({"created_at": {"$gte": start, "$lte": end}}, {"_id": 0}).sort("created_at", 1).to_list(5000)
+                expenses = await db.supplier_expenses.find({"created_at": {"$gte": start, "$lte": end}}, {"_id": 0}).sort("created_at", 1).to_list(2000)
+                audits = await db.audit_log.find({"at": {"$gte": start, "$lte": end}}, {"_id": 0}).sort("at", 1).to_list(5000)
+                acta = {
+                    "id": str(uuid.uuid4()),
+                    "date": yesterday,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "sales": sales,
+                    "payments": payments,
+                    "expenses": expenses,
+                    "audits": audits,
+                    "totals": {
+                        "sales": round(sum(float(s.get("total", 0)) for s in sales), 2),
+                        "payments": round(sum(float(p.get("total_credited", p.get("amount", 0))) for p in payments), 2),
+                        "expenses": round(sum(float(e.get("amount", 0)) for e in expenses), 2),
+                        "sales_count": len(sales),
+                        "payments_count": len(payments),
+                    },
+                }
+                await db.daily_actas.insert_one(acta)
+                logging.getLogger(__name__).info(f"Acta diária automática gerada para {yesterday}")
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Erro ao gerar acta diária: {e}")
+
 
 @app.on_event("shutdown")
 async def on_shutdown():

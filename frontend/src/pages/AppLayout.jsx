@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useNotifications } from "../lib/useNotifications";
+import api from "../lib/api";
 import {
   ChartLineUp,
   Storefront,
@@ -25,6 +26,7 @@ import {
   X as XIcon,
   Clock,
   Bell,
+  ChatsCircle,
 } from "@phosphor-icons/react";
 
 const ROLE_LABEL = {
@@ -57,6 +59,7 @@ const navGroups = [
       { to: "/mbway", label: "MBWay", icon: DeviceMobile, testid: "nav-mbway", roles: ["admin", "tesoureiro", "funcionario"] },
       { to: "/pedidos", label: "Pedidos sócio", icon: ShoppingCart, testid: "nav-pedidos", roles: ["admin", "tesoureiro", "funcionario"] },
       { to: "/mensagens", label: "Mensagens", icon: ChatCircle, testid: "nav-mensagens", roles: ["admin", "tesoureiro", "funcionario"] },
+      { to: "/chat", label: "Chat comunidade", icon: ChatsCircle, testid: "nav-chat", roles: ["admin", "tesoureiro", "funcionario"] },
     ],
   },
   {
@@ -78,12 +81,24 @@ export default function AppLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [clock, setClock] = useState(() => new Date());
   const notifs = useNotifications();
+  const [barOpen, setBarOpen] = useState(null);
 
   React.useEffect(() => { setMobileOpen(false); }, [location.pathname]);
   useEffect(() => {
     const id = setInterval(() => setClock(new Date()), 1000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    api.get("/bar-status").then(({ data }) => setBarOpen(data.open)).catch(() => {});
+  }, []);
+
+  const toggleBar = async () => {
+    try {
+      const { data } = await api.post("/bar-status/toggle");
+      setBarOpen(data.open);
+    } catch { /* ignore */ }
+  };
 
   const onLogout = async () => {
     await logout();
@@ -223,6 +238,21 @@ export default function AppLayout() {
             <Clock size={16} weight="duotone" className="text-amber-400" />
             <span className="tabular-nums">{clock.toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
           </div>
+
+          {/* Bar aberto/fechado */}
+          <button
+            data-testid="topbar-bar-status"
+            onClick={toggleBar}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-bold transition-colors ${
+              barOpen
+                ? "bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+                : "bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
+            }`}
+            title={barOpen ? "Bar aberto — clicar para fechar" : "Bar fechado — clicar para abrir"}
+          >
+            <Storefront size={16} weight="fill" />
+            <span className="hidden sm:inline">{barOpen ? "Aberto" : "Fechado"}</span>
+          </button>
 
           {/* Notifications — right side */}
           <div className="ml-auto flex items-center gap-1 md:gap-1.5">

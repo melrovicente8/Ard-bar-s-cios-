@@ -25,6 +25,7 @@ import Transacao from "./pages/Transacao";
 import Documentacao from "./pages/Documentacao";
 import SocioLogin from "./pages/SocioLogin";
 import SocioPortal from "./pages/SocioPortal";
+import ChatComunidade from "./pages/ChatComunidade";
 
 function Protected({ children }) {
   const { user } = useAuth();
@@ -113,6 +114,7 @@ function App() {
                 />
                 <Route path="mensagens" element={<Mensagens />} />
                 <Route path="pedidos" element={<Pedidos />} />
+                <Route path="chat" element={<ChatComunidade />} />
                 <Route path="transacoes/:tx_number" element={<Transacao />} />
                 <Route path="documentacao" element={<AdminOnly><Documentacao /></AdminOnly>} />
               </Route>

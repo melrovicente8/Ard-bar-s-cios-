@@ -413,10 +413,15 @@ ${sale.points_earned ? `<div class="row"><span>Pontos ganhos</span><span>+${sale
                     data-testid={`fast-product-${p.id}`}
                     disabled={p.quantity <= 0}
                     onClick={() => add(p)}
-                    className={`flex-shrink-0 w-28 text-left bg-slate-900/60 border border-amber-500/40 rounded-xl p-2 hover:border-amber-500/70 transition-colors ${
+                    className={`flex-shrink-0 w-28 text-left bg-slate-900/60 border border-amber-500/40 rounded-xl p-2 hover:border-amber-500/70 transition-colors relative ${
                       p.quantity <= 0 ? "opacity-50 cursor-not-allowed" : ""
                     }`}
                   >
+                    {inCart(p.id) > 0 && (
+                      <div className="absolute top-1 right-1 w-6 h-6 rounded-full bg-amber-500 text-slate-950 text-[10px] font-bold flex items-center justify-center z-10">
+                        {inCart(p.id)}
+                      </div>
+                    )}
                     <div className="w-full h-16 bg-slate-950 rounded-lg flex items-center justify-center mb-1.5 overflow-hidden">
                       {p.image_url ? (
                         <img src={p.image_url} alt={p.name} className="w-full h-full object-cover" />
