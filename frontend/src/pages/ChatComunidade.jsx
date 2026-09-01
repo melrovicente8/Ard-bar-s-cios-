@@ -76,6 +76,19 @@ export default function ChatComunidade() {
           ) : (
             messages.map((m) => {
               const isMe = m.user_id === user?.id;
+              const isSystem = m.user_type === "system" || m.is_system;
+              if (isSystem) {
+                return (
+                  <div key={m.id} className="flex justify-center">
+                    <div className="max-w-[90%] rounded-lg px-4 py-2 bg-amber-500/10 border border-amber-500/30 text-center">
+                      <div className="text-sm font-bold text-amber-300 whitespace-pre-wrap break-words">{m.message}</div>
+                      <div className="text-[9px] mt-0.5 text-amber-500/60">
+                        {new Date(m.created_at).toLocaleString("pt-PT", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" })}
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
               return (
                 <div key={m.id} className={`flex ${isMe ? "justify-end" : "justify-start"}`}>
                   <div className={`max-w-[75%] rounded-lg px-3 py-2 ${

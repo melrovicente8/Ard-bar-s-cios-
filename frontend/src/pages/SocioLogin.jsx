@@ -65,7 +65,7 @@ export default function SocioLogin() {
               Entrar com nº de sócio
             </h1>
             <p className="text-sm text-slate-400 mt-2">
-              Pede o teu PIN à direção. Consulta a tua conta, atualiza dados e paga por MBWay.
+              O PIN por defeito é o teu nº de sócio com 5 dígitos (zeros à esquerda). Ex: sócio nº 88 → PIN 00088.
             </p>
           </div>
 
@@ -119,7 +119,7 @@ export default function SocioLogin() {
           </button>
 
           <p className="text-xs text-slate-500 text-center">
-            Não tens PIN? Pede na receção do clube ou ao tesoureiro.
+            PIN por defeito = nº de sócio com 5 dígitos. Podes alterá-lo após entrar.
           </p>
         </form>
       </div>

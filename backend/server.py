@@ -1799,6 +1799,19 @@ async def toggle_bar_status(user: dict = Depends(get_current_user)):
         upsert=True,
     )
     await _audit("bar_status_toggle", user["email"], summary=f"Bar {'ABERTO' if new_state else 'FECHADO'}")
+    # Enviar notificação automática para o chat da comunidade
+    chat_msg = "BAR ABERTO — Estamos à vossa espera!" if new_state else "BAR ENCERRADO — Voltamos amanhã!"
+    sys_msg = {
+        "id": str(uuid.uuid4()),
+        "user_id": "system",
+        "user_name": "Sistema",
+        "user_role": "system",
+        "user_type": "system",
+        "message": chat_msg,
+        "created_at": now_iso,
+        "is_system": True,
+    }
+    await db.chat_messages.insert_one(sys_msg)
     return {"open": new_state, "changed_at": now_iso, "changed_by": user["email"]}
 
 # ---------- Chat comunidade ----------
@@ -1969,11 +1982,21 @@ async def pay_quotas(body: QuotaPayIn, user: dict = Depends(get_current_user)):
 async def socio_login(body: SocioLoginIn, response: Response):
     mn = body.member_number.strip()
     c = await db.clients.find_one({"member_number": mn}, {"_id": 0})
+    # Se não encontrou, tentar sem zeros à esquerda (ex: "00088" → "88")
+    if not c:
+        mn_stripped = mn.lstrip("0") or "0"
+        if mn_stripped != mn:
+            c = await db.clients.find_one({"member_number": mn_stripped}, {"_id": 0})
+    # Se ainda não encontrou, tentar com zeros à esquerda (ex: "88" → "00088")
+    if not c:
+        mn_padded = mn.zfill(5)
+        if mn_padded != mn:
+            c = await db.clients.find_one({"member_number": mn_padded}, {"_id": 0})
     if not c or not c.get("pin_hash"):
         raise HTTPException(status_code=401, detail="Nº de sócio ou PIN inválidos")
     if not verify_password(body.pin, c["pin_hash"]):
         raise HTTPException(status_code=401, detail="Nº de sócio ou PIN inválidos")
-    token = create_socio_token(c["id"], mn)
+    token = create_socio_token(c["id"], c.get("member_number", mn))
     response.set_cookie(
         key="socio_token", value=token, httponly=True, secure=True,
         samesite="none", max_age=60 * 60 * 24 * 30, path="/",
