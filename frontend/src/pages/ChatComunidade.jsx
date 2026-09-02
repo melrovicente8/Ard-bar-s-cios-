@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import api from "../lib/api";
-import { ChatCircle, PaperPlaneTilt } from "@phosphor-icons/react";
+import { ChatCircle, PaperPlaneTilt, ArrowSquareOut } from "@phosphor-icons/react";
 import { useAuth } from "../context/AuthContext";
 
 const ROLE_LABEL = {
@@ -58,9 +59,21 @@ export default function ChatComunidade() {
     <div className="p-6 md:p-8 animate-in flex flex-col" style={{ height: "calc(100vh - 4rem)" }} data-testid="chat-page">
       <div className="flex items-center gap-3 mb-4">
         <ChatCircle size={28} weight="duotone" className="text-amber-400" />
-        <div>
+        <div className="flex-1">
           <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">Comunidade</div>
           <h1 className="font-outfit text-2xl sm:text-3xl font-bold tracking-tight">Chat Comunidade</h1>
+        </div>
+        {/* Link + QR code para o portal do sócio */}
+        <div className="flex items-center gap-3 bg-slate-900/60 border border-slate-800 rounded-xl px-3 py-2">
+          <div className="hidden sm:block text-right">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400/80">Portal do Sócio</div>
+            <a href={`${window.location.origin}/socio`} target="_blank" rel="noopener noreferrer" className="text-xs text-sky-400 hover:text-sky-300 flex items-center gap-1 justify-end">
+              Abrir portal <ArrowSquareOut size={12} weight="bold" />
+            </a>
+          </div>
+          <div className="bg-white p-1.5 rounded-lg" title="Ler para aceder ao portal do sócio">
+            <QRCodeSVG value={`${window.location.origin}/socio`} size={56} />
+          </div>
         </div>
       </div>
 

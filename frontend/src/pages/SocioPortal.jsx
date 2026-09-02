@@ -21,7 +21,9 @@ import {
   ChatCircle,
   Camera,
   Plus,
+  QrCode,
 } from "@phosphor-icons/react";
+import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
 
 export default function SocioPortal() {
@@ -51,6 +53,7 @@ export default function SocioPortal() {
   const [showRequest, setShowRequest] = useState(false);
   const [products, setProducts] = useState([]);
   const [reqCart, setReqCart] = useState({});
+  const [barStatus, setBarStatus] = useState(null);
   // Chat comunidade
   const [showChat, setShowChat] = useState(false);
   const [chatMessages, setChatMessages] = useState([]);
@@ -224,6 +227,11 @@ export default function SocioPortal() {
       } catch { setProducts([]); }
     }
     setReqCart({});
+    // Verificar estado do bar (auto-fecho às 2h30, corte de pedidos às 3h)
+    try {
+      const { data } = await api.get("/bar-status");
+      setBarStatus(data);
+    } catch { setBarStatus(null); }
     setShowRequest(true);
   };
 
@@ -1010,6 +1018,21 @@ export default function SocioPortal() {
             </div>
             <p className="text-xs text-slate-400 mb-3">O pedido vai para o staff validar. Quando aprovado, é lançado na tua conta.</p>
 
+            {/* Aviso: bar fechado mas pedidos ainda aceites (2h30–3h00) */}
+            {barStatus && barStatus.warning && (
+              <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2" data-testid="bar-closed-warning">
+                <Clock size={16} weight="duotone" className="mt-0.5 shrink-0 text-amber-400" />
+                <div className="text-xs text-amber-200">{barStatus.warning}</div>
+              </div>
+            )}
+            {/* Bar encerrado — pedidos bloqueados (após 3h) */}
+            {barStatus && !barStatus.ordering_allowed && (
+              <div className="mb-3 flex items-start gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2" data-testid="bar-blocked-notice">
+                <Clock size={16} weight="duotone" className="mt-0.5 shrink-0 text-rose-400" />
+                <div className="text-xs text-rose-200">O bar está encerrado. Não é possível fazer pedidos depois das 3h.</div>
+              </div>
+            )}
+
             {/* Carrinho actual (com +/- e remover) */}
             {Object.entries(reqCart).filter(([, q]) => q > 0).length > 0 && (
               <div className="mb-3 bg-slate-950 border border-amber-500/30 rounded-lg p-2 max-h-40 overflow-y-auto" data-testid="req-cart-list">
@@ -1087,7 +1110,7 @@ export default function SocioPortal() {
             </div>
             <div className="flex gap-2">
               <button type="button" onClick={() => setShowRequest(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700">Cancelar</button>
-              <button data-testid="req-submit" onClick={submitRequest} disabled={!Object.keys(reqCart).length} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold">Enviar pedido</button>
+              <button data-testid="req-submit" onClick={submitRequest} disabled={!Object.keys(reqCart).length || (barStatus && !barStatus.ordering_allowed)} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold">Enviar pedido</button>
             </div>
           </div>
         </div>
@@ -1185,6 +1208,23 @@ export default function SocioPortal() {
                   </div>
                 );
               })}
+            </div>
+            {/* Link + QR code para partilhar o portal do sócio */}
+            <div className="flex items-center gap-3 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 mb-2">
+              <div className="bg-white p-1 rounded" title="Ler para aceder ao portal do sócio">
+                <QRCodeSVG value={`${window.location.origin}/socio`} size={48} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400/80">Portal do Sócio</div>
+                <div className="text-xs text-slate-400 truncate">{window.location.origin}/socio</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => { navigator.clipboard?.writeText(`${window.location.origin}/socio`); toast.success("Link copiado!"); }}
+                className="text-xs px-2 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-amber-300 font-medium shrink-0"
+              >
+                Copiar
+              </button>
             </div>
             <form onSubmit={sendChat} className="flex gap-2">
               <input

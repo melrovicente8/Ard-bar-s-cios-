@@ -1801,13 +1801,92 @@ async def club_info():
         "quota_monthly_value": QUOTA_MONTHLY_VALUE,
     }
 
+# ---------- Auth helper: aceita staff ou sócio ----------
+async def get_current_user_or_socio(request: Request) -> dict:
+    """Aceita auth de staff (access_token) ou sócio (socio_token)."""
+    token = request.cookies.get("access_token") or request.cookies.get("socio_token")
+    if not token:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[7:]
+    if not token:
+        raise HTTPException(status_code=401, detail="Não autenticado")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") == "access":
+            user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
+            if user:
+                return {"id": user["id"], "name": user["name"], "role": user.get("role", "user"), "_type": "staff"}
+        elif payload.get("type") == "socio":
+            c = await db.clients.find_one({"id": payload["sub"]}, {"_id": 0, "pin_hash": 0})
+            if c:
+                return {"id": c["id"], "name": c["name"], "role": "socio", "_type": "socio", "member_number": c.get("member_number")}
+    except Exception:
+        pass
+    raise HTTPException(status_code=401, detail="Não autenticado")
+
 # ---------- Bar status (aberto/fechado) ----------
+# Auto-fecho às 2h30 (hora local PT); sócios podem pedir até às 3h com aviso.
+BAR_AUTO_CLOSE_MIN = 2 * 60 + 30   # 02:30
+BAR_ORDER_CUTOFF_MIN = 3 * 60      # 03:00
+BAR_MORNING_RESET_MIN = 6 * 60     # 06:00 — depois disto o toggle manual volta a vigorar
+
+def _bar_time_flags(now_local):
+    """Retorna (auto_closed, ordering_blocked) com base na hora local."""
+    t = now_local.hour * 60 + now_local.minute
+    auto_closed = BAR_AUTO_CLOSE_MIN <= t < BAR_MORNING_RESET_MIN
+    ordering_blocked = auto_closed and t >= BAR_ORDER_CUTOFF_MIN
+    return auto_closed, ordering_blocked
+
+def _pt_now():
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Europe/Lisbon"))
+    except Exception:
+        return datetime.now(timezone.utc)
+
 @api_router.get("/bar-status")
-async def get_bar_status(user: dict = Depends(get_current_user)):
+async def get_bar_status(requester: dict = Depends(get_current_user_or_socio)):
+    """Estado do bar (aberto/fechado). Acessível por staff e sócios."""
     doc = await db.settings.find_one({"_id": "bar_status"}, {"_id": 0})
-    if not doc:
-        return {"open": True, "changed_at": None, "changed_by": None}
-    return doc
+    manual_open = doc.get("open", True) if doc else True
+    now_local = _pt_now()
+    auto_closed, ordering_blocked = _bar_time_flags(now_local)
+
+    # Lazy auto-close: se o bar ainda está aberto mas passou das 2h30, fechar automaticamente
+    if auto_closed and manual_open:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await db.settings.update_one(
+            {"_id": "bar_status"},
+            {"$set": {"open": False, "changed_at": now_iso, "changed_by": "auto"}},
+            upsert=True,
+        )
+        chat_msg = "BAR ENCERRADO — Voltamos amanhã!"
+        sys_msg = {
+            "id": str(uuid.uuid4()),
+            "user_id": "system",
+            "user_name": "Sistema",
+            "user_role": "system",
+            "user_type": "system",
+            "message": chat_msg,
+            "created_at": now_iso,
+            "is_system": True,
+        }
+        await db.chat_messages.insert_one(sys_msg)
+        manual_open = False
+
+    effective_open = manual_open and not auto_closed
+    ordering_allowed = effective_open or (auto_closed and not ordering_blocked)
+
+    return {
+        "open": effective_open,
+        "manual_open": manual_open,
+        "ordering_allowed": ordering_allowed,
+        "auto_closed": auto_closed,
+        "warning": "O bar já fechou — o pedido pode não ser atendido." if (auto_closed and not ordering_blocked) else None,
+        "changed_at": doc.get("changed_at") if doc else None,
+        "changed_by": doc.get("changed_by") if doc else None,
+    }
 
 @api_router.post("/bar-status/toggle")
 async def toggle_bar_status(user: dict = Depends(get_current_user)):
@@ -1834,32 +1913,20 @@ async def toggle_bar_status(user: dict = Depends(get_current_user)):
         "is_system": True,
     }
     await db.chat_messages.insert_one(sys_msg)
-    return {"open": new_state, "changed_at": now_iso, "changed_by": user["email"]}
+    # Recalcular estado efectivo com flags de tempo
+    now_local = _pt_now()
+    auto_closed, ordering_blocked = _bar_time_flags(now_local)
+    effective_open = new_state and not auto_closed
+    return {
+        "open": effective_open,
+        "manual_open": new_state,
+        "ordering_allowed": effective_open or (auto_closed and not ordering_blocked),
+        "auto_closed": auto_closed,
+        "changed_at": now_iso,
+        "changed_by": user["email"],
+    }
 
 # ---------- Chat comunidade ----------
-async def get_current_user_or_socio(request: Request) -> dict:
-    """Aceita auth de staff (access_token) ou sócio (socio_token)."""
-    token = request.cookies.get("access_token") or request.cookies.get("socio_token")
-    if not token:
-        auth = request.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            token = auth[7:]
-    if not token:
-        raise HTTPException(status_code=401, detail="Não autenticado")
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        if payload.get("type") == "access":
-            user = await db.users.find_one({"id": payload["sub"]}, {"_id": 0, "password_hash": 0})
-            if user:
-                return {"id": user["id"], "name": user["name"], "role": user.get("role", "user"), "_type": "staff"}
-        elif payload.get("type") == "socio":
-            c = await db.clients.find_one({"id": payload["sub"]}, {"_id": 0, "pin_hash": 0})
-            if c:
-                return {"id": c["id"], "name": c["name"], "role": "socio", "_type": "socio", "member_number": c.get("member_number")}
-    except Exception:
-        pass
-    raise HTTPException(status_code=401, detail="Não autenticado")
-
 class ChatMessageIn(BaseModel):
     message: str
 
@@ -2349,6 +2416,11 @@ async def socio_list_products(socio: dict = Depends(get_current_socio)):
 async def socio_consumption_request(body: SocioConsumptionReqIn, socio: dict = Depends(get_current_socio)):
     if not body.items:
         raise HTTPException(status_code=400, detail="Sem itens")
+    # Verificar se o bar permite pedidos (auto-fecho às 2h30, corte às 3h)
+    now_local = _pt_now()
+    auto_closed, ordering_blocked = _bar_time_flags(now_local)
+    if auto_closed and ordering_blocked:
+        raise HTTPException(status_code=403, detail="O bar está encerrado. Não é possível fazer pedidos depois das 3h.")
     pids = [it.product_id for it in body.items]
     prods = await db.products.find({"id": {"$in": pids}}, {"_id": 0}).to_list(len(pids))
     pmap = {p["id"]: p for p in prods}
