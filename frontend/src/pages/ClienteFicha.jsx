@@ -46,7 +46,7 @@ export default function ClienteFicha() {
   const [showPay, setShowPay] = useState(false);
   const [payForm, setPayForm] = useState({ amount: "", points_used: 0, note: "", keep_change_as_credit: false, tip: 0, tip_change: false, is_house_offer: false });
   const [paySelectedSales, setPaySelectedSales] = useState({}); // {sale_id: true}
-  const [payHouseOffers, setPayHouseOffers] = useState({}); // {sale_id: true} — oferta da casa por venda
+  const [payHouseOffers, setPayHouseOffers] = useState({}); // {sale_id: {item_index: quantity}} — oferta da casa por item
   const [notifyPayment, setNotifyPayment] = useState(null);
   const [showEdit, setShowEdit] = useState(false);
   const [editForm, setEditForm] = useState({
@@ -82,6 +82,8 @@ export default function ClienteFicha() {
   const [quotas, setQuotas] = useState(null); // {year, quotas:[12]}
   const [quotaYear, setQuotaYear] = useState(new Date().getFullYear());
   const [quotaSelection, setQuotaSelection] = useState({}); // {month: true}
+  const [quotaReverseSelection, setQuotaReverseSelection] = useState({}); // {month: true} — estorno de cotas pagas
+  const quotaStatus = quotas ? computeQuotaStatus(quotas) : null;
   // Foto / data nascimento (admin/tesoureiro)
   const [showProfileExtra, setShowProfileExtra] = useState(false);
   const [profileForm, setProfileForm] = useState({ birthday: "", photo_data: "" });
@@ -142,6 +144,21 @@ ${(c.member_number && quotas) ? `<div class="row"><span>Estado de cotas</span><s
       const { data } = await api.post("/quotas/pay", { client_id: id, year: quotaYear, months });
       toast.success(`${months.length} cota(s) pagas · transação Nº ${data?.payment?.tx_number || ""}`);
       if (data?.payment) printQuotaReceipt(data.payment, months);
+      await loadQuotas(quotaYear);
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const reverseQuotas = async () => {
+    const months = Object.entries(quotaReverseSelection).filter(([, v]) => v).map(([m]) => Number(m));
+    if (!months.length) return toast.error("Seleciona pelo menos um mês pago para estornar");
+    if (!confirm(`Confirmar estorno de ${months.length} cota(s) pagas?`)) return;
+    try {
+      await api.post("/quotas/reverse", { client_id: id, year: quotaYear, months });
+      toast.success(`${months.length} cota(s) estornada(s)`);
+      setQuotaReverseSelection({});
       await loadQuotas(quotaYear);
       await load();
     } catch (e) {
@@ -216,21 +233,36 @@ ${(c.member_number && quotas) ? `<div class="row"><span>Estado de cotas</span><s
     e.preventDefault();
     try {
       const selectedIds = Object.entries(paySelectedSales).filter(([, v]) => v).map(([k]) => k);
-      const houseOfferIds = Object.entries(payHouseOffers).filter(([, v]) => v).map(([k]) => k);
+      // Construir lista de itens de oferta da casa (por item, não por venda inteira)
+      const houseOfferItems = [];
+      for (const [sid, items] of Object.entries(payHouseOffers)) {
+        if (!items) continue;
+        for (const [idx, qty] of Object.entries(items)) {
+          if (qty > 0) houseOfferItems.push({ sale_id: sid, item_index: Number(idx), quantity: qty });
+        }
+      }
+      // Calcular valor abatido pela oferta da casa (para cálculo do tip)
+      const houseOfferAmount = houseOfferItems.reduce((sum, hoi) => {
+        const s = sales.find((x) => x.id === hoi.sale_id);
+        if (!s || !s.items[hoi.item_index]) return sum;
+        const item = s.items[hoi.item_index];
+        const unit = item.unit_price || (item.subtotal / item.quantity);
+        return sum + unit * hoi.quantity;
+      }, 0);
       const tipValue = payForm.tip_change
         ? Math.max(Number(payForm.amount || 0) - (selectedIds.length
             ? Object.entries(paySelectedSales).filter(([, v]) => v).reduce((s, [sid]) => s + (sales.find((x) => x.id === sid)?.total || 0), 0)
-            : Math.max(c.balance || 0, 0)) - (Number(payForm.points_used || 0) / 5), 0)
+            : Math.max(c.balance || 0, 0)) - houseOfferAmount - (Number(payForm.points_used || 0) / 5), 0)
         : Number(payForm.tip || 0);
       const cashAmount = parseFloat(payForm.amount || 0);
       const pointsUsed = Number(payForm.points_used || 0);
-      // Oferta da casa: dá baixa das vendas assinaladas a zero (despesa do bar)
-      if (houseOfferIds.length) {
+      // Oferta da casa: dá baixa dos itens assinalados (despesa do bar)
+      if (houseOfferItems.length) {
         await api.post("/payments", {
           client_id: id,
           amount: 0,
-          sale_ids: houseOfferIds,
           is_house_offer: true,
+          house_offer_items: houseOfferItems,
           note: payForm.note ? `Oferta da casa · ${payForm.note}` : "Oferta da casa",
         });
       }
@@ -249,7 +281,7 @@ ${(c.member_number && quotas) ? `<div class="row"><span>Estado de cotas</span><s
         });
         payment = pay;
       }
-      toast.success(houseOfferIds.length && !hasNormalPayment ? "Oferta da casa registada" : "Pagamento registado");
+      toast.success(houseOfferItems.length && !hasNormalPayment ? "Oferta da casa registada" : "Pagamento registado");
       setShowPay(false);
       setPaySelectedSales({});
       setPayHouseOffers({});
@@ -987,27 +1019,36 @@ ${quotaLine ? `<hr/>${quotaLine}` : ""}
           })()}
           <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-4">
             {quotas.quotas.map((q) => {
-              const paid = q.status === "paid";
+              const isPaid = q.status === "paid";
               const selected = !!quotaSelection[q.month];
+              const revSelected = !!quotaReverseSelection[q.month];
               return (
                 <button
                   key={q.month}
                   type="button"
-                  disabled={paid || !canEditAny}
+                  disabled={(!canEditAny && !isPaid) || (isPaid && !canEditAll)}
                   data-testid={`quota-${q.month}`}
-                  onClick={() => setQuotaSelection({ ...quotaSelection, [q.month]: !selected })}
+                  onClick={() => {
+                    if (isPaid && canEditAll) {
+                      setQuotaReverseSelection({ ...quotaReverseSelection, [q.month]: !revSelected });
+                    } else if (!isPaid && canEditAny) {
+                      setQuotaSelection({ ...quotaSelection, [q.month]: !selected });
+                    }
+                  }}
                   className={`px-2 py-2 rounded-lg text-xs font-medium border transition-colors text-left ${
-                    paid
-                      ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30 cursor-default"
+                    isPaid
+                      ? revSelected
+                        ? "bg-rose-500/20 text-rose-300 border-rose-500/50"
+                        : "bg-emerald-500/15 text-emerald-300 border-emerald-500/30 " + (canEditAll ? "cursor-pointer hover:border-rose-500/40" : "cursor-default")
                       : selected
                       ? "bg-amber-500/25 text-amber-200 border-amber-500/60"
                       : "bg-slate-950 text-slate-300 border-slate-800 hover:border-amber-500/40"
-                  } ${!canEditAny && !paid ? "opacity-60" : ""}`}
+                  } ${(!canEditAny && !isPaid) || (isPaid && !canEditAll) ? "opacity-60" : ""}`}
                 >
                   <div className="text-[10px] uppercase font-bold tracking-wider opacity-70">{q.label}</div>
                   <div className="mt-0.5 flex items-center justify-between">
                     <span className="text-[11px]">{euro(q.amount)}</span>
-                    {paid ? <Check size={12} weight="bold" /> : null}
+                    {isPaid ? (revSelected ? <XIcon size={12} weight="bold" /> : <Check size={12} weight="bold" />) : null}
                   </div>
                 </button>
               );
@@ -1027,6 +1068,22 @@ ${quotaLine ? `<hr/>${quotaLine}` : ""}
                 disabled={Object.values(quotaSelection).filter(Boolean).length === 0}
                 className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold text-sm"
               >Pagar selecionadas</button>
+            </div>
+          )}
+          {canEditAll && quotas.quotas.some((q) => q.status === "paid") && (
+            <div className="flex items-center justify-between gap-2 mt-3 pt-3 border-t border-slate-800/60">
+              <span className="text-xs text-rose-400/80">
+                {Object.values(quotaReverseSelection).filter(Boolean).length > 0
+                  ? `${Object.values(quotaReverseSelection).filter(Boolean).length} cota(s) selecionada(s) para estorno`
+                  : "Clica numa cota paga para selecionar estorno"}
+              </span>
+              <button
+                type="button"
+                data-testid="quotas-reverse-btn"
+                onClick={reverseQuotas}
+                disabled={Object.values(quotaReverseSelection).filter(Boolean).length === 0}
+                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm"
+              >Estornar selecionadas</button>
             </div>
           )}
         </div>
@@ -1313,29 +1370,61 @@ ${quotaLine ? `<hr/>${quotaLine}` : ""}
                         </div>
                       </div>
                       <ul className="text-slate-300 mt-0.5 pl-6">
-                        {s.items.map((it, i) => (
-                          <li key={i} className="flex items-center justify-between">
-                            <span><span className="text-slate-500">{it.quantity}×</span> {it.product_name}</span>
-                            <span className="text-slate-500">{euro(it.subtotal)}</span>
-                          </li>
-                        ))}
+                        {s.items.map((it, i) => {
+                          const offerQty = payHouseOffers[s.id]?.[i] || 0;
+                          const unit = it.unit_price || (it.subtotal / it.quantity);
+                          return (
+                            <li key={i} className="flex items-center justify-between">
+                              <span className="flex items-center gap-2">
+                                <label className="flex items-center gap-1 cursor-pointer" data-testid={`pay-house-${s.id}-${i}`}>
+                                  <input
+                                    type="checkbox"
+                                    checked={offerQty > 0}
+                                    onChange={(e) => {
+                                      const next = { ...payHouseOffers };
+                                      if (!next[s.id]) next[s.id] = {};
+                                      if (e.target.checked) {
+                                        next[s.id][i] = it.quantity;
+                                        // alerta de cotas em atraso
+                                        if (quotaStatus && quotaStatus.label !== "Cotas regularizadas") {
+                                          toast.warning(`Atenção: ${c.name} tem ${quotaStatus.label.toLowerCase()}!`);
+                                        }
+                                      } else {
+                                        delete next[s.id][i];
+                                      }
+                                      if (Object.keys(next[s.id] || {}).length === 0) delete next[s.id];
+                                      setPayHouseOffers(next);
+                                    }}
+                                    className="w-3 h-3 accent-amber-400"
+                                  />
+                                  {it.quantity > 1 && offerQty > 0 && (
+                                    <select
+                                      value={offerQty}
+                                      onChange={(ev) => {
+                                        const next = { ...payHouseOffers };
+                                        const q = Number(ev.target.value);
+                                        if (q > 0) next[s.id][i] = q;
+                                        else { delete next[s.id][i]; if (!Object.keys(next[s.id]||{}).length) delete next[s.id]; }
+                                        setPayHouseOffers(next);
+                                      }}
+                                      className="bg-slate-950 border border-slate-800 rounded text-[10px] text-amber-300 px-1 py-0.5"
+                                    >
+                                      {Array.from({ length: it.quantity }, (_, n) => (
+                                        <option key={n+1} value={n+1}>{n+1} un.</option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </label>
+                                <span><span className="text-slate-500">{it.quantity}×</span> {it.product_name}</span>
+                              </span>
+                              <span className="text-slate-500">
+                                {offerQty > 0 && <span className="text-amber-400/80 text-[10px] mr-1">oferta {euro(unit * offerQty)}</span>}
+                                {euro(it.subtotal)}
+                              </span>
+                            </li>
+                          );
+                        })}
                       </ul>
-                      <label className="flex items-center gap-1.5 mt-1 pl-6 cursor-pointer" data-testid={`pay-house-${s.id}`}>
-                        <input
-                          type="checkbox"
-                          checked={!!payHouseOffers[s.id]}
-                          onChange={(e) => {
-                            const next = { ...payHouseOffers, [s.id]: e.target.checked };
-                            if (e.target.checked) {
-                              // se marcar oferta da casa, desmarcar do pagamento normal
-                              const ns = { ...paySelectedSales }; delete ns[s.id]; setPaySelectedSales(ns);
-                            }
-                            setPayHouseOffers(next);
-                          }}
-                          className="w-3 h-3 accent-amber-400"
-                        />
-                        <span className="text-[10px] text-amber-400/80 font-medium">Oferta da casa (baixa a zero)</span>
-                      </label>
                     </label>
                     );
                   })}
@@ -1671,8 +1760,8 @@ ${quotaLine ? `<hr/>${quotaLine}` : ""}
                         onChange={(e) => setEditForm({ ...editForm, is_member: e.target.checked })}
                         className="w-4 h-4 accent-green-500"
                       />
-                      <span className="text-xs font-medium text-slate-200">Sócio com cotas pagas</span>
-                      <span className="text-[10px] text-amber-400/70 ml-1">(disponibiliza cotas)</span>
+                      <span className="text-xs font-medium text-slate-200">Sócio</span>
+                      <span className="text-[10px] text-amber-400/70 ml-1">(cotas disponíveis com nº de sócio)</span>
                     </label>
                   </div>
                   <div>

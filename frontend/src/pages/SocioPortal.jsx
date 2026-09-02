@@ -56,6 +56,10 @@ export default function SocioPortal() {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatText, setChatText] = useState("");
   const [chatSending, setChatSending] = useState(false);
+  // Proposta de sócio
+  const [showProposal, setShowProposal] = useState(false);
+  const [proposalForm, setProposalForm] = useState({ name: "", morada: "", localidade: "", telemovel: "", email: "", birthday: "", nif: "", accept: false });
+  const [proposalSending, setProposalSending] = useState(false);
 
   useEffect(() => {
     api.get("/club/info").then((r) => setClub(r.data)).catch(() => {});
@@ -289,6 +293,34 @@ export default function SocioPortal() {
     reader.readAsDataURL(file);
   };
 
+  const submitProposal = async (e) => {
+    e.preventDefault();
+    if (!proposalForm.name.trim()) return toast.error("Nome é obrigatório");
+    if (!proposalForm.localidade.trim()) return toast.error("Localidade é obrigatória");
+    if (!proposalForm.telemovel.trim()) return toast.error("Telemóvel é obrigatório");
+    if (!proposalForm.accept) return toast.error("Tens de aceitar o regulamento interno");
+    setProposalSending(true);
+    try {
+      await api.post("/socio/membership-proposal", {
+        name: proposalForm.name.trim(),
+        morada: proposalForm.morada.trim(),
+        localidade: proposalForm.localidade.trim(),
+        telemovel: proposalForm.telemovel.trim(),
+        email: proposalForm.email.trim(),
+        birthday: proposalForm.birthday,
+        nif: proposalForm.nif.trim(),
+        client_id: c.id,
+      });
+      toast.success("Proposta enviada! A administração irá receber o teu pedido. Cotas anuais (12€) por MBWay em processamento.");
+      setShowProposal(false);
+      refresh();
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    } finally {
+      setProposalSending(false);
+    }
+  };
+
   const submitQuotas = async () => {
     if (!selectedMonths.length) return toast.error("Seleciona pelo menos um mês");
     try {
@@ -407,14 +439,26 @@ export default function SocioPortal() {
                 <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight" data-testid="socio-name">
                   Olá, {c.name.split(" ")[0]}!
                 </h1>
-                {c.is_member ? (
-                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-green-500/15 text-green-300 border border-green-500/30 flex items-center gap-1.5">
-                    <Medal size={14} weight="fill" /> Sócio nº {c.member_number} · Cotas pagas
-                  </span>
+                {c.member_number ? (
+                  c.is_member ? (
+                    <span className="px-3 py-1 rounded-full text-xs font-bold bg-green-500/15 text-green-300 border border-green-500/30 flex items-center gap-1.5">
+                      <Medal size={14} weight="fill" /> Sócio nº {c.member_number} · Cotas pagas
+                    </span>
+                  ) : (
+                    <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
+                      <Medal size={14} /> Sócio nº {c.member_number} · Por regularizar
+                    </span>
+                  )
                 ) : (
-                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
-                    <Medal size={14} /> Sócio nº {c.member_number} · Por regularizar
-                  </span>
+                  <button
+                    onClick={() => {
+                      setProposalForm({ ...proposalForm, name: c.name || "", telemovel: c.contact || "", email: c.email || "" });
+                      setShowProposal(true);
+                    }}
+                    className="px-3 py-1 rounded-full text-xs font-bold bg-green-500/15 text-green-300 border border-green-500/30 hover:bg-green-500/25 flex items-center gap-1.5"
+                  >
+                    <Medal size={14} /> Propor-me como sócio
+                  </button>
                 )}
               </div>
               <p className="text-sm text-slate-400 mt-1">
@@ -1228,6 +1272,54 @@ export default function SocioPortal() {
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {/* Modal: Proposta de sócio */}
+      {showProposal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setShowProposal(false)} data-testid="proposal-modal">
+          <form onSubmit={submitProposal} onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto space-y-4">
+            <div className="flex items-center gap-2 mb-2">
+              <Medal size={22} weight="duotone" className="text-green-400" />
+              <h3 className="font-outfit text-xl font-semibold">Proposta de Sócio</h3>
+            </div>
+            <p className="text-xs text-slate-400">Preenche o formulário. A proposta será enviada para a administração e pagas as cotas anuais (12€) por MBWay.</p>
+            <Field label="Nome" required>
+              <input data-testid="proposal-name" type="text" required value={proposalForm.name} onChange={(e) => setProposalForm({ ...proposalForm, name: e.target.value })} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500/50" />
+            </Field>
+            <Field label="Morada">
+              <input data-testid="proposal-morada" type="text" value={proposalForm.morada} onChange={(e) => setProposalForm({ ...proposalForm, morada: e.target.value })} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500/50" />
+            </Field>
+            <Field label="Localidade" required>
+              <input data-testid="proposal-localidade" type="text" required value={proposalForm.localidade} onChange={(e) => setProposalForm({ ...proposalForm, localidade: e.target.value })} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500/50" />
+            </Field>
+            <Field label="Telemóvel" required>
+              <input data-testid="proposal-telemovel" type="tel" required value={proposalForm.telemovel} onChange={(e) => setProposalForm({ ...proposalForm, telemovel: e.target.value })} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500/50" />
+            </Field>
+            <Field label="Email">
+              <input data-testid="proposal-email" type="email" value={proposalForm.email} onChange={(e) => setProposalForm({ ...proposalForm, email: e.target.value })} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500/50" />
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Data de nascimento">
+                <input data-testid="proposal-birthday" type="date" value={proposalForm.birthday} onChange={(e) => setProposalForm({ ...proposalForm, birthday: e.target.value })} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500/50" />
+              </Field>
+              <Field label="NIF">
+                <input data-testid="proposal-nif" type="text" value={proposalForm.nif} onChange={(e) => setProposalForm({ ...proposalForm, nif: e.target.value })} className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-green-500/50" />
+              </Field>
+            </div>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input data-testid="proposal-accept" type="checkbox" required checked={proposalForm.accept} onChange={(e) => setProposalForm({ ...proposalForm, accept: e.target.checked })} className="w-4 h-4 mt-0.5 accent-green-500" />
+              <span className="text-xs text-slate-300">Aceito as condições descritas no regulamento interno da associação. <span className="text-green-400/70">(consulte a associação)</span></span>
+            </label>
+            <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-3 flex items-center gap-2">
+              <DeviceMobile size={16} weight="bold" className="text-amber-400" />
+              <span className="text-xs text-amber-300">Pagar cotas anuais 12€ por MBWay</span>
+            </div>
+            <div className="flex gap-3 pt-2">
+              <button type="button" onClick={() => setShowProposal(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Cancelar</button>
+              <button data-testid="proposal-submit-btn" type="submit" disabled={proposalSending} className="flex-1 px-4 py-2.5 rounded-lg bg-green-600 hover:bg-green-500 text-white font-bold disabled:opacity-50">Enviar proposta</button>
+            </div>
+          </form>
         </div>
       )}
     </div>

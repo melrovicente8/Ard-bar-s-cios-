@@ -34,7 +34,7 @@ api_router = APIRouter(prefix="/api")
 JWT_ALGORITHM = "HS256"
 JWT_SECRET = os.environ["JWT_SECRET"]
 CLUB_NAME = os.environ.get("CLUB_NAME", "ARD Nespereira")
-QUOTA_MONTHLY_VALUE = float(os.environ.get("QUOTA_MONTHLY_VALUE", "5.00"))
+QUOTA_MONTHLY_VALUE = float(os.environ.get("QUOTA_MONTHLY_VALUE", "1.00"))
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
 
@@ -123,6 +123,11 @@ class SaleEditIn(BaseModel):
     client_id: Optional[str] = None  # se fornecido, transfere a venda para este cliente
     items: Optional[List[SaleItemIn]] = None  # se fornecido, substitui todos os itens
 
+class HouseOfferItemIn(BaseModel):
+    sale_id: str
+    item_index: int  # índice do item em sale.items
+    quantity: int    # nº de unidades a oferecer
+
 class PaymentIn(BaseModel):
     client_id: str
     amount: float
@@ -132,6 +137,7 @@ class PaymentIn(BaseModel):
     tip: float = 0.0  # gratificação (parte do amount que NÃO abate à dívida — receita extra)
     sale_ids: Optional[List[str]] = None  # se fornecido, paga apenas estas vendas em específico
     is_house_offer: bool = False  # oferta da casa: dá baixa da dívida a zero (despesa do bar)
+    house_offer_items: Optional[List[HouseOfferItemIn]] = None  # oferta por item específico
 
 class PaymentUpdate(BaseModel):
     amount: Optional[float] = None
@@ -1312,7 +1318,23 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
     # ---- Oferta da casa: dá baixa da dívida a zero, sem numerário ----
     if body.is_house_offer:
-        if body.sale_ids:
+        if body.house_offer_items:
+            # Oferta por item específico (parcial)
+            sale_ids_clean = []
+            written_off = 0.0
+            for hoi in body.house_offer_items:
+                sale = await db.sales.find_one(
+                    {"id": hoi.sale_id, "client_id": body.client_id},
+                    {"_id": 0, "items": 1},
+                )
+                if sale and 0 <= hoi.item_index < len(sale.get("items", [])):
+                    item = sale["items"][hoi.item_index]
+                    unit_price = float(item.get("unit_price") or (item.get("subtotal", 0) / max(item.get("quantity", 1), 1)))
+                    written_off += round(unit_price * hoi.quantity, 2)
+                    if hoi.sale_id not in sale_ids_clean:
+                        sale_ids_clean.append(hoi.sale_id)
+            written_off = round(written_off, 2)
+        elif body.sale_ids:
             target_sales = await db.sales.find(
                 {"id": {"$in": body.sale_ids}, "client_id": body.client_id},
                 {"_id": 0, "id": 1, "total": 1},
@@ -1977,6 +1999,129 @@ async def pay_quotas(body: QuotaPayIn, user: dict = Depends(get_current_user)):
     sale.pop("_id", None)
     pay.pop("_id", None)
     return {"sale": sale, "payment": pay}
+
+class QuotaReverseIn(BaseModel):
+    client_id: str
+    year: int
+    months: List[int]
+
+@api_router.post("/quotas/reverse")
+async def reverse_quotas(body: QuotaReverseIn, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    """Estorna cotas pagas: marca como unpaid, reverte pagamento e venda associados."""
+    if not body.months:
+        raise HTTPException(status_code=400, detail="Sem meses selecionados")
+    c = await db.clients.find_one({"id": body.client_id})
+    if not c:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    quotas_to_reverse = await db.quotas.find(
+        {"client_id": body.client_id, "year": body.year, "month": {"$in": body.months}, "status": "paid"},
+        {"_id": 0},
+    ).to_list(20)
+    if not quotas_to_reverse:
+        raise HTTPException(status_code=400, detail="Nenhuma cota paga encontrada para estornar")
+    refunded = 0.0
+    reversed_payments = []
+    for q in quotas_to_reverse:
+        # Reverter pagamento associado
+        pay_id = q.get("payment_id")
+        sale_id = q.get("sale_id")
+        if pay_id:
+            pay = await db.payments.find_one({"id": pay_id}, {"_id": 0})
+            if pay:
+                total_credited = float(pay.get("total_credited", pay.get("amount", 0)))
+                refunded += round(total_credited / max(len(quotas_to_reverse), 1), 2)
+                reversed_payments.append(pay_id)
+                await db.clients.update_one({"id": body.client_id}, {"$inc": {"balance": total_credited / max(len(quotas_to_reverse), 1)}})
+                await db.payments.delete_one({"id": pay_id})
+        # Apagar venda de quota
+        if sale_id:
+            await db.sales.delete_one({"id": sale_id})
+        # Marcar cota como unpaid
+        await db.quotas.update_one(
+            {"client_id": body.client_id, "year": body.year, "month": q["month"]},
+            {"$set": {"status": "unpaid", "paid_at": None, "sale_id": None, "payment_id": None}},
+        )
+    # Reverter total_spent
+    total = QUOTA_MONTHLY_VALUE * len(quotas_to_reverse)
+    await db.clients.update_one({"id": body.client_id}, {"$inc": {"total_spent": -total}})
+    await _audit("quota_reverse", user["email"], entity="client", entity_id=body.client_id,
+                summary=f"Estorno de {len(quotas_to_reverse)} cota(s) · {c['name']} · {total:.2f} €")
+    return {"ok": True, "reversed": len(quotas_to_reverse), "refunded": round(refunded, 2)}
+
+class MembershipProposalIn(BaseModel):
+    name: str
+    morada: str = ""
+    localidade: str
+    telemovel: str
+    email: str = ""
+    birthday: str = ""
+    nif: str = ""
+    client_id: Optional[str] = None  # se vier do portal (logado)
+
+@api_router.post("/socio/membership-proposal")
+async def submit_membership_proposal(body: MembershipProposalIn, request: Request):
+    """Proposta de sócio: cria mensagem para administração e pedido MBWay de 12€."""
+    if not body.name.strip() or not body.localidade.strip() or not body.telemovel.strip():
+        raise HTTPException(status_code=400, detail="Nome, localidade e telemóvel são obrigatórios")
+    # Tentar obter client_id se já está autenticado como sócio
+    client_id = body.client_id
+    client_name = body.name.strip()
+    if not client_id:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            try:
+                payload = jwt.decode(auth[7:], JWT_SECRET, algorithms=["HS256"])
+                if payload.get("scope") == "socio":
+                    client_id = payload.get("sub")
+                    c = await db.clients.find_one({"id": client_id}, {"_id": 0})
+                    if c:
+                        client_name = c.get("name", client_name)
+            except Exception:
+                pass
+    # Criar mensagem para administração
+    msg_text = (
+        f"PROPOSTA DE SÓCIO\n"
+        f"Nome: {body.name.strip()}\n"
+        f"Morada: {body.morada.strip() or '—'}\n"
+        f"Localidade: {body.localidade.strip()}\n"
+        f"Telemóvel: {body.telemovel.strip()}\n"
+        f"Email: {body.email.strip() or '—'}\n"
+        f"Data de nascimento: {body.birthday.strip() or '—'}\n"
+        f"NIF: {body.nif.strip() or '—'}\n"
+        f"Aceita o regulamento interno da associação."
+    )
+    doc = {
+        "id": str(uuid.uuid4()),
+        "client_id": client_id or "proposta-externa",
+        "client_name": client_name,
+        "member_number": None,
+        "subject": "Proposta de Sócio",
+        "message": msg_text,
+        "status": "open",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "replied_at": None,
+        "replied_by": None,
+        "reply": None,
+        "kind": "membership_proposal",
+    }
+    await db.socio_messages.insert_one(doc)
+    # Criar pedido MBWay de 12€ (cotas anuais)
+    mb_rec = {
+        "id": str(uuid.uuid4()),
+        "client_id": client_id or "proposta-externa",
+        "client_name": client_name,
+        "amount": 12.0,
+        "mbway_phone": body.telemovel.strip(),
+        "note": "Cotas anuais (12€) — Proposta de sócio",
+        "status": "pending",
+        "kind": "quota_annual",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "confirmed_at": None,
+        "confirmed_by": None,
+    }
+    await db.mbway_payments.insert_one(mb_rec)
+    doc.pop("_id", None)
+    return {"message": doc, "mbway": {"id": mb_rec["id"], "amount": 12.0}}
 
 @api_router.post("/socio/login")
 async def socio_login(body: SocioLoginIn, response: Response):

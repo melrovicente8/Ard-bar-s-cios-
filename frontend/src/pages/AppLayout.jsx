@@ -205,7 +205,7 @@ export default function AppLayout() {
       </aside>
 
       {/* Main */}
-      <main className="flex-1 overflow-x-hidden flex flex-col min-w-0">
+      <main className="flex-1 overflow-x-clip flex flex-col min-w-0">
         <div className="sticky top-0 z-20 bg-slate-950/80 backdrop-blur-xl border-b border-slate-900 px-3 md:px-6 py-2.5 flex items-center gap-1.5 md:gap-2" data-testid="topbar">
           <button
             data-testid="mobile-menu-btn"
