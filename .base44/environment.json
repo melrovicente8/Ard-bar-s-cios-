@@ -1,0 +1,12 @@
+{
+  "previewPort": 3000,
+  "healthPath": "/",
+  "startCommand": "docker compose -f docker-compose.base44.yml up -d",
+  "secrets": [
+    {
+      "name": "RESEND_API_KEY",
+      "description": "Chave opcional da Resend para envio de emails (obter em https://resend.com/api-keys). A app arranca e funciona sem ela; o envio de email apenas regista 'não configurado'.",
+      "requiredAtBoot": false
+    }
+  ]
+}
