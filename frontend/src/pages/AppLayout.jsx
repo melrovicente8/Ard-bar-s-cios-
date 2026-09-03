@@ -1,6 +1,7 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import api, { euro, formatApiErrorDetail } from "../lib/api";
 import {
   ChartLineUp,
   Storefront,
@@ -21,51 +22,124 @@ import {
   ChatCircle,
   Book,
   List,
+  ListDashes,
+  Ticket,
   X as XIcon,
+  Storefront as BarIcon,
 } from "@phosphor-icons/react";
+import { toast } from "sonner";
 
 const ROLE_LABEL = {
   admin: "Administrador",
   tesoureiro: "Tesoureiro",
+  presidente: "Pres. da Assembleia",
   funcionario: "Funcionário",
 };
+
+const STAFF_ROLES = ["admin", "tesoureiro", "presidente"];
 
 const navGroups = [
   {
     section: null,
     items: [
-      { to: "/", label: "Dashboard", icon: ChartLineUp, testid: "nav-dashboard", roles: ["admin", "tesoureiro", "funcionario"] },
-      { to: "/dividas", label: "Dívidas hoje", icon: Wallet, testid: "nav-dividas", roles: ["admin", "tesoureiro", "funcionario"] },
-      { to: "/vender", label: "Vender", icon: Storefront, testid: "nav-sell", roles: ["admin", "tesoureiro", "funcionario"] },
+      { to: "/", label: "Dashboard", icon: ChartLineUp, testid: "nav-dashboard", roles: [...STAFF_ROLES, "funcionario"] },
+      { to: "/dividas", label: "Dívidas hoje", icon: Wallet, testid: "nav-dividas", roles: [...STAFF_ROLES, "funcionario"] },
+      { to: "/vender", label: "Vender", icon: Storefront, testid: "nav-sell", roles: [...STAFF_ROLES, "funcionario"] },
+      { to: "/bilhetes", label: "Bilhetes", icon: Ticket, testid: "nav-bilhetes", roles: [...STAFF_ROLES, "funcionario"] },
     ],
   },
   {
     section: "Stock",
     items: [
-      { to: "/stock", label: "Stock", icon: Package, testid: "nav-stock", roles: ["admin", "tesoureiro", "funcionario"] },
-      { to: "/fornecedores", label: "Fornecedores", icon: Truck, testid: "nav-fornecedores", roles: ["admin", "tesoureiro"] },
+      { to: "/stock", label: "Stock", icon: Package, testid: "nav-stock", roles: [...STAFF_ROLES, "funcionario"] },
+      { to: "/fornecedores", label: "Fornecedores", icon: Truck, testid: "nav-fornecedores", roles: STAFF_ROLES },
     ],
   },
   {
     section: "Clientes",
     items: [
-      { to: "/clientes", label: "Clientes", icon: Users, testid: "nav-clients", roles: ["admin", "tesoureiro", "funcionario"] },
+      { to: "/clientes", label: "Clientes", icon: Users, testid: "nav-clients", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/socios", label: "Sócios", icon: IdentificationCard, testid: "nav-socios", roles: ["admin"] },
-      { to: "/mbway", label: "MBWay", icon: DeviceMobile, testid: "nav-mbway", roles: ["admin", "tesoureiro", "funcionario"] },
-      { to: "/pedidos", label: "Pedidos sócio", icon: ShoppingCart, testid: "nav-pedidos", roles: ["admin", "tesoureiro", "funcionario"] },
-      { to: "/mensagens", label: "Mensagens", icon: ChatCircle, testid: "nav-mensagens", roles: ["admin", "tesoureiro", "funcionario"] },
+      { to: "/mbway", label: "MBWay", icon: DeviceMobile, testid: "nav-mbway", roles: [...STAFF_ROLES, "funcionario"] },
+      { to: "/pedidos", label: "Pedidos sócio", icon: ShoppingCart, testid: "nav-pedidos", roles: [...STAFF_ROLES, "funcionario"] },
+      { to: "/mensagens", label: "Mensagens", icon: ChatCircle, testid: "nav-mensagens", roles: [...STAFF_ROLES, "funcionario"] },
     ],
   },
   {
     section: "Administração",
     items: [
       { to: "/equipa", label: "Equipa", icon: UsersThree, testid: "nav-equipa", roles: ["admin"] },
-      { to: "/contas", label: "Contas", icon: Bank, testid: "nav-contas", roles: ["admin", "tesoureiro"] },
-      { to: "/historico", label: "Histórico", icon: ClockCounterClockwise, testid: "nav-historico", roles: ["admin", "tesoureiro"] },
+      { to: "/contas", label: "Contas", icon: Bank, testid: "nav-contas", roles: STAFF_ROLES },
+      { to: "/historico", label: "Histórico", icon: ClockCounterClockwise, testid: "nav-historico", roles: STAFF_ROLES },
+      { to: "/transacoes", label: "Transações", icon: ListDashes, testid: "nav-transacoes", roles: STAFF_ROLES },
       { to: "/documentacao", label: "Documentação", icon: Book, testid: "nav-documentacao", roles: ["admin"] },
     ],
   },
 ];
+
+function BarStatusButton() {
+  const [bar, setBar] = useState(null); // {open, cash_in_drawer}
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  const load = () => {
+    api.get("/bar-status").then(({ data }) => setBar(data)).catch(() => {});
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  const toggle = async () => {
+    const next = !bar?.open;
+    try {
+      const { data } = await api.post("/bar-status", { open: next });
+      setBar(data);
+      toast.success(
+        `Bar ${data.open ? "ABERTO" : "FECHADO"} · valor em caixa: ${euro(data.cash_in_drawer)} (consta na ata)`
+      );
+      setConfirmOpen(false);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  if (!bar) return null;
+  const isOpen = !!bar.open;
+  return (
+    <>
+      <button
+        data-testid="bar-status-btn"
+        onClick={() => setConfirmOpen(true)}
+        title={`Bar ${isOpen ? "aberto" : "fechado"} — valor em caixa ${euro(bar.cash_in_drawer)}`}
+        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold border transition-colors ${
+          isOpen
+            ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25"
+            : "bg-rose-500/15 text-rose-300 border-rose-500/30 hover:bg-rose-500/25"
+        }`}
+      >
+        <BarIcon size={14} weight="duotone" /> Bar {isOpen ? "aberto" : "fechado"} · <span className="font-mono">{euro(bar.cash_in_drawer)}</span>
+      </button>
+      {confirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setConfirmOpen(false)} data-testid="bar-status-modal">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-sm p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-amber-400/80">Estado do bar</div>
+            <h3 className="font-outfit text-xl font-semibold mt-1 mb-3">{isOpen ? "Fechar o bar?" : "Abrir o bar?"}</h3>
+            <div className="bg-slate-950 border border-slate-800 rounded-lg p-4 mb-4 space-y-2 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400">Valor atual em caixa (esperado hoje)</span>
+                <span className="font-outfit text-xl font-bold text-amber-300">{euro(bar.cash_in_drawer)}</span>
+              </div>
+              <p className="text-[11px] text-slate-500">Este valor fica registado na ata diária e no audit log.</p>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setConfirmOpen(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700">Cancelar</button>
+              <button data-testid="bar-status-confirm" onClick={toggle} className={`flex-1 px-4 py-2.5 rounded-lg font-bold ${isOpen ? "bg-rose-500 hover:bg-rose-400 text-slate-950" : "bg-emerald-500 hover:bg-emerald-400 text-slate-950"}`}>
+                {isOpen ? "Fechar bar" : "Abrir bar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 
 export default function AppLayout() {
   const { user, logout } = useAuth();
@@ -208,6 +282,9 @@ export default function AppLayout() {
           >
             <House size={16} weight="duotone" />
           </button>
+          <div className="ml-auto flex items-center gap-2">
+            <BarStatusButton />
+          </div>
         </div>
         <div className="flex-1">
           <Outlet />

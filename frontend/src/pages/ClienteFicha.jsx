@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
+import { printReceipt as printReceiptA6 } from "../lib/receipt";
 import {
   ArrowLeft,
   CurrencyEur,
@@ -35,7 +36,7 @@ export default function ClienteFicha() {
   const { id } = useParams();
   const { user } = useAuth();
   const navigate = useNavigate();
-  const canEditAll = user?.role === "admin" || user?.role === "tesoureiro";
+  const canEditAll = user?.role === "admin" || user?.role === "tesoureiro" || user?.role === "presidente";
   const canEditAny = !!user;
   const canCancelSale = !!user; // funcionários até 24h (backend faz cumprir)
   const canEditSale = !!user;
@@ -386,124 +387,24 @@ export default function ClienteFicha() {
     if (!tx || !tx.tx_number) {
       return toast.error("Transação sem nº — não pode ser impressa individualmente");
     }
-    const w = window.open("", "_blank", "width=420,height=720");
-    if (!w) return toast.error("Permite popups");
-    const isSale = !!tx.items;
-    const dateStr = new Date(tx.created_at).toLocaleString("pt-PT");
-    const itemsHtml = isSale ? tx.items.map((it) => `<div class="row"><span>${it.quantity}× ${it.product_name}</span><span>${euro(it.subtotal)}</span></div>`).join("") : "";
-    const isPaid = !isSale;
-    const tendered = tx.tendered || tx.amount;
-    const credited = tx.total_credited || tx.amount;
-    const change = tx.change_returned || 0;
-    // Estatuto de sócio: cotas pagas até ao mês anterior
-    const clientHere = data?.client || {};
-    let socioLine = "";
-    if (clientHere.member_number) {
-      const nowD = new Date();
-      const yr = nowD.getFullYear();
-      const upToMonth = nowD.getMonth(); // mês anterior (0-based == mês atual seguinte no PT)
-      const paidUpTo = (quotas?.quotas || []).filter((q) => q.status === "paid" && q.month <= upToMonth).length;
-      const status = paidUpTo >= upToMonth && upToMonth > 0 ? "Cotas pagas" : "Cotas por regularizar";
-      socioLine = `<div class="row"><span>Sócio nº ${clientHere.member_number}</span><strong style="color:${status.includes('pagas') ? '#059669' : '#b45309'}">${status}</strong></div>`;
-    }
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Transação ${tx.tx_number}</title>
-<style>body{font-family:'Courier New',monospace;max-width:320px;margin:14px auto;padding:0 12px;font-size:13px;color:#000}
-h1{font-size:16px;text-align:center;margin:4px 0 0;letter-spacing:.18em}
-h2{font-size:11px;text-align:center;margin:0 0 14px;color:#444;letter-spacing:.25em}
-hr{border:0;border-top:1px dashed #000;margin:10px 0}
-.row{display:flex;justify-content:space-between;margin:4px 0}
-.big{font-size:20px;font-weight:bold}
-.muted{color:#555;font-size:11px}
-.txn{font-size:14px;font-weight:bold;background:#000;color:#fff;text-align:center;padding:4px;border-radius:3px;margin:8px 0}
-@media print{ body{margin:0} button{display:none} }
-</style></head><body>
-<h1>ARD · NESPEREIRA</h1>
-<h2>${isSale ? "VENDA" : "RECIBO DE PAGAMENTO"} · 2ª VIA${tx.house_offer ? " · OFERTA DA CASA" : ""}</h2>
-<div class="txn">TRANSAÇÃO Nº ${tx.tx_number}</div>
-${tx.house_offer ? '<div style="text-align:center;background:#a21caf;color:#fff;padding:4px;border-radius:3px;margin:6px 0;font-weight:bold">★ OFERTA DA CASA ★</div>' : ""}
-<div class="muted">${dateStr}</div>
-<div class="muted">Registado por: ${tx.user_email || "—"}</div>
-<hr/>
-<div class="row"><span>Cliente</span><strong>${tx.client_name}</strong></div>
-${socioLine}
-${isSale ? `<hr/>${itemsHtml}<hr/><div class="row big"><span>TOTAL</span><span>${euro(tx.total)}</span></div>${tx.points_earned ? `<div class="row"><span>Pontos ganhos</span><span>+${tx.points_earned}</span></div>` : ""}` : `<hr/>
-<div class="row"><span>Numerário entregue</span><span>${euro(tendered)}</span></div>
-${tx.points_used ? `<div class="row"><span>Pontos usados</span><span>${tx.points_used} pts</span></div>` : ""}
-<div class="row"><span>Valor da despesa</span><span>${euro(credited)}</span></div>
-${change > 0 ? `<div class="row"><span>Troco devolvido</span><span>${euro(change)}</span></div>` : ""}
-${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : ""}
-<hr/>
-<div class="row big"><span>${change > 0 ? "ABATIDO" : "TOTAL ABATIDO"}</span><span>${euro(credited)}</span></div>`}
-<hr/>
-<div style="text-align:center" class="muted">Obrigado pela preferência</div>
-<div style="text-align:center;margin-top:14px"><button onclick="window.print()">Imprimir</button></div>
-<script>setTimeout(()=>window.print(),300);</script>
-</body></html>`);
-    w.document.close();
+    const res = printReceiptA6(tx, {
+      client: data?.client,
+      quotaStatus: data?.client?.quota_status,
+      coveredSales: tx.sale_tx_numbers || [],
+      secondCopy: true,
+    });
+    if (!res.ok) toast.error("Permite popups");
   };
 
   const printReceipt = () => {
     if (!notifyPayment) return;
-    const w = window.open("", "_blank", "width=420,height=640");
-    if (!w) return toast.error("Permite popups para imprimir");
-    const dateStr = new Date(notifyPayment.created_at || Date.now()).toLocaleString("pt-PT");
-    // Vendas que estavam em aberto antes deste pagamento (snapshot atual de unpaid + vendas pagas recentemente)
-    const totalRecv = Number(notifyPayment.total_credited || notifyPayment.amount || 0);
-    let cover = totalRecv;
-    const saleRows = [];
-    salesAsc.slice().reverse().forEach((s) => {
-      // mostra vendas que este pagamento cobriu (parcial ou totalmente)
-      if (cover <= 0) return;
-      const applied = Math.min(cover, s.total);
-      cover -= applied;
-      saleRows.unshift({ sale: s, applied });
+    const res = printReceiptA6(notifyPayment, {
+      client: data?.client,
+      quotaStatus: data?.client?.quota_status,
+      coveredSales: notifyPayment.sale_tx_numbers || [],
+      secondCopy: false,
     });
-    const itemsHtml = saleRows.length === 0 ? "" : `<hr/>
-    <div class="muted">Itens abatidos por este pagamento:</div>
-    ${saleRows.map(({sale, applied}) => `
-      <div style="margin-top:6px">
-        <div class="row"><span class="muted">${new Date(sale.created_at).toLocaleDateString("pt-PT")}</span><span>${euro(sale.total)}</span></div>
-        ${sale.items.map((it) => `<div class="row" style="font-size:11px"><span>· ${it.quantity}× ${it.product_name}</span><span>${euro(it.subtotal)}</span></div>`).join("")}
-        ${applied < sale.total ? `<div class="row" style="font-size:10px;color:#888"><span>aplicado:</span><span>${euro(applied)}</span></div>` : ""}
-      </div>
-    `).join("")}`;
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Recibo</title>
-<style>
-  body{font-family:'Courier New',monospace;color:#000;max-width:320px;margin:14px auto;padding:0 12px;font-size:13px}
-  h1{font-size:16px;text-align:center;margin:4px 0 0;letter-spacing:.18em}
-  h2{font-size:11px;text-align:center;margin:0 0 14px;color:#444;letter-spacing:.25em}
-  hr{border:0;border-top:1px dashed #000;margin:10px 0}
-  .row{display:flex;justify-content:space-between;margin:4px 0}
-  .big{font-size:20px;font-weight:bold}
-  .center{text-align:center}
-  .muted{color:#555;font-size:11px}
-  @media print{ body{margin:0} button{display:none} }
-</style></head><body>
-  <h1>ARD · NESPEREIRA</h1>
-  <h2>RECIBO DE PAGAMENTO</h2>
-  ${notifyPayment.tx_number ? `<div style="font-size:14px;font-weight:bold;background:#000;color:#fff;text-align:center;padding:4px;border-radius:3px;margin:8px 0">TRANSAÇÃO Nº ${notifyPayment.tx_number}</div>` : ""}
-  <div class="muted">${dateStr}</div>
-  <div class="muted">Registado por: ${notifyPayment.user_email || "—"}</div>
-  <hr/>
-  <div class="row"><span>Cliente</span><strong>${c.name}</strong></div>
-  ${c.member_number ? `<div class="row"><span>Nº Sócio</span><strong>${c.member_number}</strong></div>` : ""}
-  ${itemsHtml}
-  <hr/>
-  <div class="row"><span>Numerário entregue</span><span>${euro(notifyPayment.tendered || notifyPayment.amount || 0)}</span></div>
-  ${notifyPayment.points_used ? `<div class="row"><span>Pontos descontados</span><span>${notifyPayment.points_used} pts (${euro((notifyPayment.points_value)||(notifyPayment.points_used/5))})</span></div>` : ""}
-  <div class="row"><span>Valor da despesa</span><span>${euro(notifyPayment.total_credited || notifyPayment.amount || 0)}</span></div>
-  ${(notifyPayment.change_returned || 0) > 0 ? `<div class="row"><span>Troco devolvido</span><span>${euro(notifyPayment.change_returned)}</span></div>` : ""}
-  ${notifyPayment.note ? `<div class="row"><span>Nota</span><span>${notifyPayment.note}</span></div>` : ""}
-  <hr/>
-  <div class="row big"><span>TOTAL ABATIDO</span><span>${euro(notifyPayment.total_credited || notifyPayment.amount || 0)}</span></div>
-  <div class="row"><span>Dívida actual</span><strong>${euro(Math.max(c.balance || 0, 0))}</strong></div>
-  <div class="row"><span>Pontos actuais</span><strong>${c.points || 0}</strong></div>
-  <hr/>
-  <div class="center muted">Obrigado pela preferência</div>
-  <div class="center" style="margin-top:14px"><button onclick="window.print()">Imprimir</button></div>
-  <script>setTimeout(()=>window.print(),300);</script>
-</body></html>`);
-    w.document.close();
+    if (!res.ok) toast.error("Permite popups para imprimir");
   };
 
   const printReport = async () => {
