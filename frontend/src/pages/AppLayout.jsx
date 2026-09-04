@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from "react";
-import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
+import { NavLink, Outlet, useNavigate, useLocation, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import {
+  Bell,
   ChartLineUp,
   Storefront,
   Package,
