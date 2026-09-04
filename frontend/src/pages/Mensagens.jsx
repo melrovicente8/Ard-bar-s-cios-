@@ -1,10 +1,15 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api, { formatApiErrorDetail } from "../lib/api";
-import { ChatCircle, PaperPlaneTilt, EnvelopeSimpleOpen, Plus } from "@phosphor-icons/react";
+import { ChatCircle, ChatCircleDots, PaperPlaneTilt, EnvelopeSimpleOpen, Plus } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import CommunityModeration from "../components/CommunityModeration";
+import { useAuth } from "../context/AuthContext";
 
 export default function Mensagens() {
+  const { user } = useAuth();
+  const canModerate = ["admin", "tesoureiro", "presidente"].includes(user?.role);
+  const [view, setView] = useState("socio"); // socio | community
   const [filter, setFilter] = useState("open");
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -76,15 +81,40 @@ export default function Mensagens() {
             <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">Mensagens de sócios</h1>
           </div>
         </div>
-        <button
-          data-testid="msg-send-btn"
-          onClick={() => setShowSend(true)}
-          className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg px-4 py-2.5 flex items-center gap-2"
-        >
-          <Plus size={16} weight="bold" /> Nova mensagem
-        </button>
+        {view === "socio" && (
+          <button
+            data-testid="msg-send-btn"
+            onClick={() => setShowSend(true)}
+            className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg px-4 py-2.5 flex items-center gap-2"
+          >
+            <Plus size={16} weight="bold" /> Nova mensagem
+          </button>
+        )}
       </div>
 
+      {canModerate && (
+        <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900/60 p-1 mb-5" data-testid="mensagens-view-tabs">
+          <button
+            data-testid="mensagens-view-socio"
+            onClick={() => setView("socio")}
+            className={`px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 ${view === "socio" ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"}`}
+          >
+            <ChatCircle size={13} weight="duotone" /> Mensagens de sócios
+          </button>
+          <button
+            data-testid="mensagens-view-community"
+            onClick={() => setView("community")}
+            className={`px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 ${view === "community" ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"}`}
+          >
+            <ChatCircleDots size={13} weight="duotone" /> Chat da comunidade
+          </button>
+        </div>
+      )}
+
+      {view === "community" ? (
+        <CommunityModeration />
+      ) : (
+      <>
       <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900/60 p-1 mb-5" data-testid="mensagens-filter">
         {[
           { v: "open", l: "Por responder" },
@@ -157,6 +187,9 @@ export default function Mensagens() {
             </div>
           ))}
         </div>
+      )}
+
+      </>
       )}
 
       {showSend && (

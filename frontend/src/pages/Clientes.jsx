@@ -89,6 +89,24 @@ export default function Clientes() {
       if (sortKey === "activity") {
         return (b.last_activity || "").localeCompare(a.last_activity || "");
       }
+      if (sortKey === "statute") {
+        // Sócios primeiro, depois por nome
+        const sa = a.is_member ? 0 : 1;
+        const sb = b.is_member ? 0 : 1;
+        return sa - sb || a.name.localeCompare(b.name, "pt");
+      }
+      if (sortKey === "contact") {
+        return (a.contact || "zzz").localeCompare(b.contact || "zzz", "pt");
+      }
+      if (sortKey === "debt") {
+        return Math.max(b.balance || 0, 0) - Math.max(a.balance || 0, 0);
+      }
+      if (sortKey === "total") {
+        return (b.total_spent || 0) - (a.total_spent || 0);
+      }
+      if (sortKey === "points") {
+        return (b.points || 0) - (a.points || 0);
+      }
       return a.name.localeCompare(b.name, "pt");
     });
 
@@ -152,6 +170,11 @@ export default function Clientes() {
           <option value="name">Nome (A-Z)</option>
           <option value="number">Nº sócio</option>
           <option value="activity">Últimos movimentos</option>
+          <option value="statute">Estatuto</option>
+          <option value="contact">Contacto</option>
+          <option value="debt">A pagar</option>
+          <option value="total">Total</option>
+          <option value="points">Pontos</option>
         </select>
         <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900/60 p-1" data-testid="clientes-view-toggle">
           {[

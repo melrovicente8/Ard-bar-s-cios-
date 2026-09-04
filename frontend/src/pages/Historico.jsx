@@ -157,6 +157,47 @@ export default function Historico() {
     w.document.close();
   };
 
+  const printAuditReport = () => {
+    if (!auditData.length) return toast.error("Sem registos para imprimir");
+    const w = window.open("", "_blank");
+    if (!w) return toast.error("Permite popups");
+    const rows = auditData.map((e) => {
+      const sale = e.sale || e.before;
+      const changes = e.changes || {};
+      const detail = [
+        e.summary,
+        sale ? `${sale.client_name || ""} · ${euro(sale.total || 0)} · ${(sale.items || []).map((it) => `${it.quantity}× ${it.product_name}`).join(", ")}` : "",
+        changes.total !== undefined ? `Total: ${euro(changes.total.before)} → ${euro(changes.total.after)}` : "",
+        changes.items ? `Itens: ${changes.items.before.join(", ")} → ${changes.items.after.join(", ")}` : "",
+      ].filter(Boolean).join(" — ");
+      return `<tr><td>${new Date(e.at).toLocaleString("pt-PT")}</td><td>${TYPE_LABEL[e.type] || e.type}</td><td>${e.by}</td><td>${detail}</td></tr>`;
+    }).join("");
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Audit log</title>
+<style>
+  body{font-family:Arial;color:#0f172a;margin:24px;font-size:12px}
+  header{border-bottom:3px solid #15803d;padding-bottom:12px;margin-bottom:16px}
+  .brand{font-size:20px;font-weight:800;color:#15803d;letter-spacing:.15em}
+  .sub{font-size:10px;letter-spacing:.3em;color:#666}
+  h1{font-size:16px;margin:6px 0}
+  table{width:100%;border-collapse:collapse;margin-top:8px}
+  th,td{padding:6px 8px;border-bottom:1px solid #e5e7eb;text-align:left;font-size:11px;vertical-align:top}
+  th{background:#f3f4f6;text-transform:uppercase;letter-spacing:.08em;font-size:10px}
+  .meta{font-size:11px;color:#555}
+  @media print{button{display:none}body{margin:10mm}}
+</style></head><body>
+  <header>
+    <div class="brand">${salesData?.club_name || "ARD Nespereira"}</div>
+    <div class="sub">AUDIT LOG · REGISTO DE OPERAÇÕES</div>
+    <h1>Período: ${filters.from || "início"} → ${filters.to || "hoje"}</h1>
+    <div class="meta">${filters.user_email ? "Utilizador: <strong>" + filters.user_email + "</strong> · " : ""}${auditData.length} registos · Emitido em ${new Date().toLocaleString("pt-PT")}</div>
+  </header>
+  <table><thead><tr><th>Data</th><th>Tipo</th><th>Utilizador</th><th>Detalhes</th></tr></thead><tbody>${rows}</tbody></table>
+  <p style="margin-top:18px;text-align:center"><button onclick="window.print()">Imprimir</button></p>
+  <script>setTimeout(()=>window.print(),300);</script>
+</body></html>`);
+    w.document.close();
+  };
+
   return (
     <div className="p-6 md:p-10 animate-in" data-testid="historico-page">
       <div className="flex items-center gap-3 mb-6">
@@ -325,6 +366,25 @@ export default function Historico() {
         </div>
       ) : (
         <div className="bg-slate-900/40 border border-slate-800 rounded-xl overflow-hidden">
+          <div className="px-5 py-4 flex items-center justify-between border-b border-slate-800/60 flex-wrap gap-2">
+            <div className="flex items-center gap-5 text-sm">
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Registos</div>
+                <div data-testid="audit-count" className="font-outfit text-2xl font-bold text-slate-100">{auditData.length}</div>
+              </div>
+              <div className="text-[11px] text-slate-500">
+                {filters.from || "início"} → {filters.to || "hoje"}{filters.user_email ? ` · ${filters.user_email}` : ""}
+              </div>
+            </div>
+            <button
+              data-testid="print-audit-report"
+              onClick={printAuditReport}
+              disabled={!auditData.length}
+              className="bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 rounded-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border border-slate-700"
+            >
+              <Printer size={14} weight="duotone" /> Imprimir
+            </button>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>

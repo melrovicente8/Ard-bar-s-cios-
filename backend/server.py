@@ -592,6 +592,7 @@ async def client_detail(client_id: str, user: dict = Depends(get_current_user)):
     if not c:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
     c["quota_status"] = await _quota_overall_status(client_id)
+    c["has_paid_prev_quota"] = bool(c["quota_status"] and c["quota_status"].get("status") == "paid")
     sales = await db.sales.find({"client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
     payments = await db.payments.find({"client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
     # Consumption breakdown
@@ -1506,6 +1507,24 @@ async def dashboard(user: dict = Depends(get_current_user)):
 
     recent_sales = await db.sales.find({}, {"_id": 0}).sort("created_at", -1).to_list(8)
 
+    # Resumo financeiro do mês corrente (Receitas vs Despesas = Saldo) — só gestão
+    fin_month = None
+    if user.get("role") in ("admin", "tesoureiro", "presidente"):
+        f_data = await _finance_summary(
+            datetime.now(timezone.utc).strftime("%Y-%m-01"),
+            datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        )
+        fin_month = {
+            "income": f_data["income"]["total"],
+            "expenses": f_data["expenses"]["total"],
+            "balance": f_data["balance"],
+            "counts": f_data["counts"],
+        }
+    # Dívidas antigas (sem pagamento há mais de X dias) — alerta automático
+    overdue = await _overdue_debtors(clients, OVERDUE_DEBT_DAYS)
+    # Aniversários dos próximos 7 dias
+    birthdays = _upcoming_birthdays(clients, 7)
+
     return {
         "products_count": len(products),
         "clients_count": clients_total,
@@ -1522,7 +1541,98 @@ async def dashboard(user: dict = Depends(get_current_user)):
         "low_stock": low_stock,
         "sales_last_7_days": last_7,
         "recent_sales": recent_sales,
+        "finance_month": fin_month,
+        "overdue_debts": {"days": OVERDUE_DEBT_DAYS, "count": len(overdue), "clients": overdue},
+        "birthdays": birthdays,
     }
+
+# ---------- Dívidas atrasadas / alertas ----------
+OVERDUE_DEBT_DAYS = 30  # notificar após X dias sem pagamento
+
+async def _overdue_debtors(clients: list, days: int) -> list:
+    """Clientes com saldo em dívida e sem pagamento há mais de `days` dias."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    out = []
+    for c in clients:
+        bal = float(c.get("balance", 0) or 0)
+        if bal <= 0:
+            continue
+        first_sale = await db.sales.find_one({"client_id": c["id"]}, sort=[("created_at", 1)], projection={"created_at": 1})
+        if not first_sale:
+            continue
+        last_pay = await db.payments.find_one({"client_id": c["id"]}, sort=[("created_at", -1)], projection={"created_at": 1})
+        ref = last_pay["created_at"] if last_pay else first_sale["created_at"]
+        if ref < cutoff:
+            out.append({
+                "id": c["id"], "name": c["name"], "contact": c.get("contact"),
+                "email": c.get("email"), "balance": bal,
+                "unpaid_since": ref, "days": (datetime.now(timezone.utc) - datetime.fromisoformat(ref)).days,
+            })
+    out.sort(key=lambda x: x["days"], reverse=True)
+    return out
+
+def _upcoming_birthdays(clients: list, window_days: int) -> list:
+    """Sócios com aniversário nos próximos `window_days` dias (ou hoje)."""
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Europe/Lisbon"))
+    except Exception:
+        now = datetime.now(timezone.utc)
+    out = []
+    for c in clients:
+        b = c.get("birthday")
+        if not b or not c.get("is_member"):
+            continue
+        try:
+            bdate = datetime.strptime(b[:10], "%Y-%m-%d")
+        except ValueError:
+            continue
+        this_year = now.replace(year=now.year, month=bdate.month, day=bdate.day)
+        # 29/Fev → 28/Fev em anos não bissextos
+        try:
+            next_b = this_year if this_year >= now.replace(hour=0, minute=0, second=0, microsecond=0) else this_year.replace(year=now.year + 1)
+        except ValueError:
+            next_b = this_year.replace(day=28)
+        if next_b < now.replace(hour=0, minute=0, second=0, microsecond=0):
+            try:
+                next_b = this_year.replace(year=now.year + 1)
+            except ValueError:
+                next_b = this_year.replace(year=now.year + 1, day=28)
+        days_left = (next_b - now.replace(hour=0, minute=0, second=0, microsecond=0)).days
+        if 0 <= days_left <= window_days:
+            out.append({
+                "id": c["id"], "name": c["name"], "member_number": c.get("member_number"),
+                "birthday": f"{bdate.day:02d}/{bdate.month:02d}", "days_left": days_left,
+            })
+    out.sort(key=lambda x: x["days_left"])
+    return out
+
+@api_router.get("/debts/overdue")
+async def get_overdue_debts(days: int = OVERDUE_DEBT_DAYS, user: dict = Depends(get_current_user)):
+    """Dívidas em atraso: sem pagamento há mais de `days` dias (para notificação)."""
+    days = max(int(days), 1)
+    clients = await db.clients.find({}, {"_id": 0, "pin_hash": 0}).to_list(5000)
+    return await _overdue_debtors(clients, days)
+
+@api_router.post("/debts/notify")
+async def notify_overdue_debt(client_id: str, user: dict = Depends(get_current_user)):
+    """Notifica por email um cliente com dívida em atraso (lembrete automático)."""
+    c = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
+    if not c:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    if not c.get("email"):
+        raise HTTPException(status_code=400, detail="Cliente sem email registado")
+    bal = max(float(c.get("balance", 0) or 0), 0)
+    sent = await send_email(
+        c["email"],
+        f"{CLUB_NAME} · lembrete de conta em aberto",
+        f"<p>Olá {c['name']},</p><p>Informamos que a sua conta tem um saldo em aberto de "
+        f"<strong>{bal:.2f} €</strong>.</p><p>Passe pelo bar para regularizar. Obrigado!<br/>{CLUB_NAME}</p>",
+    )
+    await _audit("debt_notify", user["email"], entity="client", entity_id=client_id,
+                 summary=f"Lembrete de dívida ({bal:.2f} €) enviado para {c['email']}")
+    return {"ok": True, "sent": sent,
+            "note": "Email enviado." if sent else "Resend não configurado — adiciona RESEND_API_KEY para ativar."}
 
 # ---------- Admin Directory ----------
 @api_router.get("/admin/clients")
@@ -1753,9 +1863,8 @@ async def _sync_quota_paid_status(client_id: str):
 
 async def _quota_overall_status(client_id: str) -> Optional[dict]:
     """Estado global das cotas de um sócio (regras da direção):
-    - 'paid'  → mês atual OU mês anterior pagos (e sem dívida do ano anterior)
-    - 'debt'  → deve cotas do ano anterior ao corrente
-    - 'pending' → caso intermédio (por regularizar)"""
+    - 'paid'  → apenas se o mês anterior estiver pago (em Janeiro, Dezembro do ano anterior)
+    - 'pending' → todo o resto ("Por regularizar") — nunca "Em dívida" até dezembro"""
     c = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
     if not c or not c.get("is_member"):
         return None
@@ -1764,23 +1873,21 @@ async def _quota_overall_status(client_id: str) -> Optional[dict]:
         now = datetime.now(ZoneInfo("Europe/Lisbon"))
     except Exception:
         now = datetime.now(timezone.utc)
-    year = now.year
-    prev_year = year - 1
-    # dívida do ano anterior (cotas emitidas e não pagas)
-    prev_docs = await db.quotas.find({"client_id": client_id, "year": prev_year, "status": {"$ne": "paid"}}, {"_id": 0}).to_list(20)
-    prev_open = any(not q.get("reversed") for q in prev_docs)
-    # mês atual / anterior do ano corrente
-    docs = {q["month"]: q for q in await db.quotas.find({"client_id": client_id, "year": year}, {"_id": 0}).to_list(20)}
-    cur_paid = docs.get(now.month, {}).get("status") == "paid"
-    prev_paid = now.month > 1 and docs.get(now.month - 1, {}).get("status") == "paid"
-    if prev_open:
-        return {"status": "debt", "label": "Em dívida", "detail": f"Existem cotas de {prev_year} por regularizar"}
-    if cur_paid or prev_paid:
-        return {"status": "paid", "label": "Cotas pagas", "detail": "Mês atual ou anterior pagos"}
-    unpaid_up_to_now = sum(1 for m in range(1, now.month + 1) if docs.get(m, {}).get("status") != "paid")
-    if unpaid_up_to_now > 3:
-        return {"status": "pending", "label": "Por regularizar", "detail": f"{unpaid_up_to_now} meses de {year} por pagar"}
-    return {"status": "pending", "label": "Por regularizar", "detail": "Cotas por regularizar"}
+    year, month = now.year, now.month
+    prev_year, prev_month = (year, month - 1) if month > 1 else (year - 1, 12)
+    all_docs = await db.quotas.find({"client_id": client_id}, {"_id": 0}).to_list(100)
+    by = {(q["year"], q["month"]): q for q in all_docs}
+    if by.get((prev_year, prev_month), {}).get("status") == "paid":
+        return {"status": "paid", "label": "Cotas pagas", "detail": f"{MONTHS_PT[prev_month-1]}/{prev_year} pago"}
+    unpaid_prev = sum(1 for q in all_docs if q["year"] == prev_year and q.get("status") != "paid" and not q.get("reversed"))
+    unpaid_cur = sum(1 for m in range(1, month + 1) if by.get((year, m), {}).get("status") != "paid")
+    bits = []
+    if unpaid_prev:
+        bits.append(f"{unpaid_prev} de {prev_year}")
+    if unpaid_cur:
+        bits.append(f"{unpaid_cur} de {year}")
+    detail = ("Cotas por regularizar: " + " + ".join(bits)) if bits else "Cotas por regularizar"
+    return {"status": "pending", "label": "Por regularizar", "detail": detail}
 
 @api_router.post("/quotas/pay")
 async def pay_quotas(body: QuotaPayIn, user: dict = Depends(get_current_user)):

@@ -46,6 +46,8 @@ export default function Fornecedores() {
   const [expenses, setExpenses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("suppliers"); // suppliers | orders | expenses
+  const [orderFilter, setOrderFilter] = useState("all"); // all | unpaid
+  const [expenseFilter, setExpenseFilter] = useState("all"); // all | open | paid
 
   const [showSupplier, setShowSupplier] = useState(null);
   const [supForm, setSupForm] = useState({ name: "", contact: "", email: "", nif: "", note: "" });
@@ -91,6 +93,11 @@ export default function Fornecedores() {
 
   const totalDebt = suppliers.reduce((s, x) => s + (x.outstanding || 0), 0);
   const expensesDebt = expenses.filter((x) => !x.paid).reduce((s, x) => s + (x.amount || 0), 0);
+  const visibleOrders = orderFilter === "unpaid" ? orders.filter((o) => !o.paid) : orders;
+  const visibleExpenses =
+    expenseFilter === "open" ? expenses.filter((x) => !x.paid)
+    : expenseFilter === "paid" ? expenses.filter((x) => x.paid)
+    : expenses;
 
   const openNewSupplier = () => {
     setSupForm({ name: "", contact: "", email: "", nif: "", note: "" });
@@ -380,10 +387,27 @@ export default function Fornecedores() {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <StatBox label="Fornecedores" value={suppliers.length} />
-        <StatBox label="Dívida encomendas" value={euro(totalDebt)} accent="text-rose-300" />
-        <StatBox label="Despesas em aberto" value={euro(expensesDebt)} accent="text-fuchsia-300" />
-        <StatBox label="Encomendas" value={orders.length} />
+        <StatBox label="Fornecedores" value={suppliers.length} testid="stat-fornecedores" onClick={() => setTab("suppliers")} />
+        <StatBox
+          label="Dívida encomendas"
+          value={euro(totalDebt)}
+          accent="text-rose-300"
+          testid="stat-divida-encomendas"
+          onClick={() => { setTab("orders"); setOrderFilter("unpaid"); }}
+        />
+        <StatBox
+          label="Despesas em aberto"
+          value={euro(expensesDebt)}
+          accent="text-fuchsia-300"
+          testid="stat-despesas-abertas"
+          onClick={() => { setTab("expenses"); setExpenseFilter("open"); }}
+        />
+        <StatBox
+          label="Encomendas"
+          value={orders.length}
+          testid="stat-encomendas"
+          onClick={() => { setTab("orders"); setOrderFilter("all"); }}
+        />
       </div>
 
       <div className="flex gap-2 mb-5 flex-wrap">
@@ -887,8 +911,13 @@ const Field = ({ label, children }) => (
   </div>
 );
 
-const StatBox = ({ label, value, accent = "text-slate-200" }) => (
-  <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-4">
+const StatBox = ({ label, value, accent = "text-slate-200", onClick, testid }) => (
+  <div
+    onClick={onClick}
+    data-testid={testid}
+    className={`bg-slate-900/40 backdrop-blur-xl border rounded-xl p-4 ${onClick ? "border-amber-500/30 hover:border-amber-500/60 hover:bg-slate-900/70 cursor-pointer transition-colors" : "border-slate-800"}`}
+    title={onClick ? "Ver detalhe" : undefined}
+  >
     <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">{label}</div>
     <div className={`mt-2 font-outfit text-2xl font-bold ${accent}`}>{value}</div>
   </div>

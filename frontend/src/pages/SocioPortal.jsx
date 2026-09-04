@@ -19,10 +19,12 @@ import {
   CalendarBlank,
   BookOpen,
   ChatCircle,
+  ChatCircleDots,
   Camera,
   Plus,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import CommunityChat from "../components/CommunityChat";
 
 export default function SocioPortal() {
   const { data, logout, refresh } = useSocio();
@@ -47,6 +49,8 @@ export default function SocioPortal() {
   const [showMessages, setShowMessages] = useState(false);
   const [myMessages, setMyMessages] = useState([]);
   const [newMsg, setNewMsg] = useState({ subject: "", message: "" });
+  // Chat da comunidade
+  const [showCommunity, setShowCommunity] = useState(false);
   // Pedido de consumo
   const [showRequest, setShowRequest] = useState(false);
   const [products, setProducts] = useState([]);
@@ -581,6 +585,13 @@ export default function SocioPortal() {
                 <ChatCircle size={13} weight="duotone" /> Mensagens
               </button>
               <button
+                data-testid="socio-community-btn"
+                onClick={() => setShowCommunity(true)}
+                className="text-xs px-3 py-1.5 rounded-md bg-teal-500/15 text-teal-300 border border-teal-500/30 hover:bg-teal-500/25 flex items-center gap-1.5"
+              >
+                <ChatCircleDots size={13} weight="duotone" /> Comunidade
+              </button>
+              <button
                 data-testid="socio-profile-extra-btn"
                 onClick={() => setShowProfileExtra(true)}
                 disabled={!!(c.birthday && c.photo_data)}
@@ -898,6 +909,19 @@ export default function SocioPortal() {
               ))}
             </div>
             <button onClick={() => setShowMessages(false)} className="mt-3 w-full px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700">Fechar</button>
+          </div>
+        </div>
+      )}
+
+      {showCommunity && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setShowCommunity(false)} data-testid="socio-community-modal">
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg p-6 max-h-[90vh] flex flex-col">
+            <div className="flex items-center gap-2 mb-3">
+              <ChatCircleDots size={22} weight="duotone" className="text-teal-400" />
+              <h3 className="font-outfit text-xl font-semibold">Chat da comunidade</h3>
+            </div>
+            <CommunityChat me={c} />
+            <button onClick={() => setShowCommunity(false)} className="mt-3 w-full px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700">Fechar</button>
           </div>
         </div>
       )}
