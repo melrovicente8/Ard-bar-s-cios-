@@ -508,10 +508,31 @@ export default function Fornecedores() {
       )}
       {tab === "orders" && (
         <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl overflow-hidden">
+          <div className="flex items-center justify-between flex-wrap gap-2 px-4 pt-4" data-testid="orders-filter">
+            <div className="inline-flex rounded-lg border border-slate-800 bg-slate-950/60 p-1">
+              {[
+                { v: "all", l: "Todas" },
+                { v: "unpaid", l: "Em dívida" },
+              ].map((opt) => (
+                <button
+                  key={opt.v}
+                  data-testid={`orders-filter-${opt.v}`}
+                  onClick={() => setOrderFilter(opt.v)}
+                  className={`px-3 py-1.5 rounded-md text-xs font-bold uppercase tracking-wider ${orderFilter === opt.v ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"}`}
+                >{opt.l}</button>
+              ))}
+            </div>
+            <div className="text-xs text-slate-500">{visibleOrders.length} de {orders.length} encomenda(s)</div>
+          </div>
           {orders.length === 0 ? (
             <div className="p-12 text-center">
               <Package size={40} className="mx-auto text-slate-700 mb-3" weight="duotone" />
               <p className="text-slate-400">Sem encomendas registadas.</p>
+            </div>
+          ) : visibleOrders.length === 0 ? (
+            <div className="p-12 text-center">
+              <Package size={40} className="mx-auto text-slate-700 mb-3" weight="duotone" />
+              <p className="text-slate-400">Sem encomendas neste filtro.</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -529,7 +550,7 @@ export default function Fornecedores() {
                   </tr>
                 </thead>
                 <tbody>
-                  {orders.map((o) => (
+                  {visibleOrders.map((o) => (
                     <tr key={o.id} data-testid={`order-row-${o.id}`} className="border-t border-slate-800/60 hover:bg-slate-900/60">
                       <td className="px-5 py-3 text-slate-400 text-xs">{new Date(o.created_at).toLocaleString("pt-PT")}</td>
                       <td className="px-5 py-3 text-slate-200">{o.supplier_name}</td>
@@ -571,10 +592,32 @@ export default function Fornecedores() {
       )}
       {tab === "expenses" && (
         <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl overflow-hidden">
+          <div className="flex items-center justify-between flex-wrap gap-2 px-4 pt-4" data-testid="expenses-filter">
+            <div className="inline-flex rounded-lg border border-slate-800 bg-slate-950/60 p-1">
+              {[
+                { v: "all", l: "Todas" },
+                { v: "open", l: "Em aberto" },
+                { v: "paid", l: "Pagas" },
+              ].map((opt) => (
+                <button
+                  key={opt.v}
+                  data-testid={`expenses-filter-${opt.v}`}
+                  onClick={() => setExpenseFilter(opt.v)}
+                  className={`px-3 py-1.5 rounded-md text-xs font-bold uppercase tracking-wider ${expenseFilter === opt.v ? "bg-fuchsia-500 text-slate-950" : "text-slate-400 hover:text-white"}`}
+                >{opt.l}</button>
+              ))}
+            </div>
+            <div className="text-xs text-slate-500">{visibleExpenses.length} de {expenses.length} despesa(s)</div>
+          </div>
           {expenses.length === 0 ? (
             <div className="p-12 text-center">
               <Receipt size={40} className="mx-auto text-slate-700 mb-3" weight="duotone" />
               <p className="text-slate-400">Sem despesas registadas. Adiciona contratos como luz, água, internet, renda.</p>
+            </div>
+          ) : visibleExpenses.length === 0 ? (
+            <div className="p-12 text-center">
+              <Receipt size={40} className="mx-auto text-slate-700 mb-3" weight="duotone" />
+              <p className="text-slate-400">Sem despesas neste filtro.</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -591,7 +634,7 @@ export default function Fornecedores() {
                   </tr>
                 </thead>
                 <tbody>
-                  {expenses.map((e) => (
+                  {visibleExpenses.map((e) => (
                     <tr key={e.id} data-testid={`expense-row-${e.id}`} className="border-t border-slate-800/60 hover:bg-slate-900/60">
                       <td className="px-5 py-3 font-medium text-slate-100">{e.description}</td>
                       <td className="px-5 py-3 text-slate-400">{e.supplier_name || "—"}</td>

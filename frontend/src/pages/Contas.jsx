@@ -3,6 +3,8 @@ import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { Bank, Printer, ArrowDown, ArrowUp, Equals } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
+const MONTHS_PT = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+
 export default function Contas() {
   const today = new Date().toISOString().slice(0, 10);
   const monthStart = today.slice(0, 7) + "-01";
@@ -40,19 +42,29 @@ export default function Contas() {
     else if (p === "all") setRange({ from: "", to: "" });
   };
 
-  const printReport = () => {
-    if (!data) return;
+  const openFinanceDoc = (d, fromLabel, toLabel, subtitle) => {
     const w = window.open("", "_blank");
-    if (!w) return toast.error("Permite popups");
+    if (!w) { toast.error("Permite popups"); return; }
     const linesIncome = `
-      <tr><td>Consumo no bar</td><td class="right">${data.counts.sales} vendas</td><td class="right pos"><strong>${euro(data.income.consumption)}</strong></td></tr>
-      <tr><td>Cotas de sócios</td><td class="right">${data.counts.quotas}</td><td class="right pos"><strong>${euro(data.income.quotas)}</strong></td></tr>
-      <tr><td><strong>TOTAL RECEITAS</strong></td><td></td><td class="right pos"><strong>${euro(data.income.total)}</strong></td></tr>`;
+      <tr><td>Consumo no bar</td><td class="right">${d.counts.sales} vendas</td><td class="right pos"><strong>${euro(d.income.consumption)}</strong></td></tr>
+      <tr><td>Cotas de sócios</td><td class="right">${d.counts.quotas}</td><td class="right pos"><strong>${euro(d.income.quotas)}</strong></td></tr>
+      <tr><td><strong>TOTAL RECEITAS</strong></td><td></td><td class="right pos"><strong>${euro(d.income.total)}</strong></td></tr>`;
     const linesExp = `
-      <tr><td>Encomendas a fornecedores</td><td class="right">${data.counts.orders}</td><td class="right neg"><strong>${euro(data.expenses.supplier_orders)}</strong></td></tr>
-      <tr><td>Despesas mensais</td><td class="right">${data.counts.expenses}</td><td class="right neg"><strong>${euro(data.expenses.supplier_expenses)}</strong></td></tr>
-      <tr><td><strong>TOTAL DESPESAS</strong></td><td></td><td class="right neg"><strong>${euro(data.expenses.total)}</strong></td></tr>`;
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Contas · ${data.club_name}</title>
+      <tr><td>Encomendas a fornecedores</td><td class="right">${d.counts.orders}</td><td class="right neg"><strong>${euro(d.expenses.supplier_orders)}</strong></td></tr>
+      <tr><td>Despesas mensais</td><td class="right">${d.counts.expenses}</td><td class="right neg"><strong>${euro(d.expenses.supplier_expenses)}</strong></td></tr>
+      <tr><td><strong>TOTAL DESPESAS</strong></td><td></td><td class="right neg"><strong>${euro(d.expenses.total)}</strong></td></tr>`;
+    const incDetail = [...(d.details?.sales || []), ...(d.details?.quotas || [])]
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+      .map((s) => `<tr><td>${new Date(s.created_at).toLocaleDateString("pt-PT")}</td><td>${s.source === "quota" ? "Cota" : "Consumo"}</td><td>${s.client_name}</td><td>${(s.items || []).map((it) => `${it.quantity}× ${it.product_name}`).join(", ")}</td><td class="right pos"><strong>${euro(s.total)}</strong></td></tr>`)
+      .join("");
+    const expDetail = [
+      ...(d.details?.orders || []).map((o) => ({ ...o, _kind: "Encomenda", _desc: (o.items || []).map((it) => `${it.quantity}× ${it.product_name}`).join(", ") })),
+      ...(d.details?.expenses || []).map((x) => ({ ...x, _kind: "Despesa", _desc: x.description })),
+    ]
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+      .map((r) => `<tr><td>${new Date(r.created_at).toLocaleDateString("pt-PT")}</td><td>${r._kind}</td><td>${r.supplier_name || "—"}</td><td>${r._desc}</td><td class="right neg"><strong>${euro(r.total || r.amount)}</strong></td></tr>`)
+      .join("");
+    w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>${subtitle} · ${d.club_name}</title>
 <style>
   body{font-family:Arial;color:#0f172a;margin:24px;font-size:13px}
   header{border-bottom:3px solid #15803d;padding-bottom:14px;margin-bottom:18px}
@@ -72,23 +84,43 @@ export default function Contas() {
   @media print{button{display:none}body{margin:12mm}}
 </style></head><body>
   <header>
-    <div class="brand">${data.club_name}</div>
-    <div class="sub">RELATÓRIO DE CONTAS · DEVE / HAVER</div>
-    <h1>Período: ${range.from || "início"} → ${range.to || "hoje"}</h1>
-    <div style="font-size:11px;color:#555">Emitido em ${new Date(data.generated_at).toLocaleString("pt-PT")}</div>
+    <div class="brand">${d.club_name}</div>
+    <div class="sub">${subtitle}</div>
+    <h1>Período: ${fromLabel} → ${toLabel}</h1>
+    <div style="font-size:11px;color:#555">Emitido em ${new Date(d.generated_at).toLocaleString("pt-PT")}</div>
   </header>
   <h2>HAVER (Receitas)</h2>
   <table><thead><tr><th>Origem</th><th class="right">Qtd</th><th class="right">Valor</th></tr></thead><tbody>${linesIncome}</tbody></table>
   <h2>DEVE (Despesas)</h2>
   <table><thead><tr><th>Origem</th><th class="right">Qtd</th><th class="right">Valor</th></tr></thead><tbody>${linesExp}</tbody></table>
+  <h2>Detalhe · Receitas</h2>
+  <table><thead><tr><th>Data</th><th>Tipo</th><th>Cliente</th><th>Detalhes</th><th class="right">Valor</th></tr></thead><tbody>${incDetail || `<tr><td colspan="5" style="text-align:center;color:#666;padding:14px">Sem registos no período</td></tr>`}</tbody></table>
+  <h2>Detalhe · Despesas</h2>
+  <table><thead><tr><th>Data</th><th>Tipo</th><th>Fornecedor</th><th>Descrição</th><th class="right">Valor</th></tr></thead><tbody>${expDetail || `<tr><td colspan="5" style="text-align:center;color:#666;padding:14px">Sem registos no período</td></tr>`}</tbody></table>
   <div class="balance">
     <span class="lbl">Saldo do período</span>
-    <span class="val ${data.balance >= 0 ? "pos" : "neg"}">${data.balance >= 0 ? "+" : ""}${euro(data.balance)}</span>
+    <span class="val ${d.balance >= 0 ? "pos" : "neg"}">${d.balance >= 0 ? "+" : ""}${euro(d.balance)}</span>
   </div>
   <p style="margin-top:18px;text-align:center"><button onclick="window.print()">Imprimir</button></p>
   <script>setTimeout(()=>window.print(),300);</script>
 </body></html>`);
     w.document.close();
+  };
+
+  const printReport = () => {
+    if (!data) return;
+    openFinanceDoc(data, range.from || "início", range.to || "hoje", "RELATÓRIO DE CONTAS · DEVE / HAVER");
+  };
+
+  const printMonthly = async () => {
+    try {
+      const from = today.slice(0, 7) + "-01";
+      const { data: m } = await api.get("/reports/finance", { params: { date_from: from, date_to: today } });
+      const monthName = MONTHS_PT[Number(today.slice(5, 7)) - 1];
+      openFinanceDoc(m, from, today, `RELATÓRIO MENSAL · ${monthName} ${today.slice(0, 4)}`);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
   };
 
   return (
@@ -146,6 +178,9 @@ export default function Contas() {
           ))}
           <button data-testid="contas-print" onClick={printReport} disabled={!data} className="text-xs px-3 py-1.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1.5">
             <Printer size={13} weight="duotone" /> Imprimir
+          </button>
+          <button data-testid="contas-print-monthly" onClick={printMonthly} className="text-xs px-3 py-1.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 flex items-center gap-1.5">
+            <Printer size={13} weight="duotone" /> PDF mensal
           </button>
         </div>
       </div>

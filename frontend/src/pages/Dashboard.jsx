@@ -18,6 +18,7 @@ import {
   ChatCircle,
   DeviceMobile,
   Coffee,
+  Cake,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -294,7 +295,8 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Low stock */}
+        {/* Alertas: stock baixo + aniversários */}
+        <div className="flex flex-col gap-6">
         <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-6" data-testid="low-stock-panel">
           <div className="flex items-center justify-between mb-4">
             <div>
@@ -329,6 +331,45 @@ export default function Dashboard() {
               ))}
             </ul>
           )}
+        </div>
+
+        {/* Aniversários dos próximos 7 dias */}
+        <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-6" data-testid="birthdays-panel">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">
+                Próximos 7 dias
+              </div>
+              <h3 className="font-outfit text-xl font-semibold mt-1">
+                Aniversários
+              </h3>
+            </div>
+            <Cake size={22} className="text-amber-400" weight="duotone" />
+          </div>
+          {(data.birthdays || []).length === 0 ? (
+            <div className="text-sm text-slate-500 py-8 text-center">
+              Sem aniversários próximos
+            </div>
+          ) : (
+            <ul className="space-y-2 max-h-64 overflow-y-auto">
+              {(data.birthdays || []).map((b) => (
+                <li
+                  key={b.id}
+                  data-testid={`birthday-item-${b.id}`}
+                  className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-amber-500/5 border border-amber-500/10"
+                >
+                  <Link to={`/clientes/${b.id}`} className="text-sm font-medium text-slate-200 hover:text-amber-400">
+                    {b.name}
+                    {b.member_number ? <span className="text-slate-500"> · nº {b.member_number}</span> : null}
+                  </Link>
+                  <span className={`px-2.5 py-1 rounded-full text-xs font-bold border whitespace-nowrap ${b.days_left === 0 ? "bg-amber-500/15 text-amber-300 border-amber-500/30" : "bg-slate-800/60 text-slate-300 border-slate-700/50"}`}>
+                    {b.birthday}{b.days_left === 0 ? " · hoje 🎂" : ` · em ${b.days_left}d`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
         </div>
       </div>
 
