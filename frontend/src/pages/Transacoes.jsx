@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { ListDashes, Printer, FileXls, FunnelSimple, MagnifyingGlass } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -16,7 +16,13 @@ const KIND_CLASS = {
 export default function Transacoes() {
   const today = new Date().toISOString().slice(0, 10);
   const monthStart = today.slice(0, 7) + "-01";
-  const [filters, setFilters] = useState({ from: monthStart, to: today, kind: "", q: "" });
+  const [searchParams] = useSearchParams();
+  const [filters, setFilters] = useState(() => ({
+    from: searchParams.get("from") || monthStart,
+    to: searchParams.get("to") || today,
+    kind: searchParams.get("kind") || "",
+    q: "",
+  }));
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
 

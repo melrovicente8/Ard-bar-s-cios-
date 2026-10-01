@@ -1898,9 +1898,9 @@ async def pay_quotas(body: QuotaPayIn, user: dict = Depends(get_current_user)):
     c = await db.clients.find_one({"id": body.client_id})
     if not c:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
-    already = await db.quotas.find({"client_id": body.client_id, "year": body.year, "month": {"$in": body.months}, "status": "paid"}, {"_id": 0}).to_list(20)
+    already = await db.quotas.find({"client_id": body.client_id, "year": body.year, "month": {"$in": body.months}, "status": {"$in": ["paid", "billed"]}, "reversed": {"$ne": True}}, {"_id": 0}).to_list(20)
     if already:
-        raise HTTPException(status_code=400, detail=f"Já pagos: {', '.join(MONTHS_PT[a['month']-1] for a in already)}")
+        raise HTTPException(status_code=400, detail=f"Já lançadas na conta corrente: {', '.join(MONTHS_PT[a['month']-1] for a in already)}")
     total = QUOTA_MONTHLY_VALUE * len(body.months)
     sale_id = str(uuid.uuid4())
     tx_no = await _next_tx_number()
@@ -2435,9 +2435,9 @@ async def socio_pay_quotas(body: SocioQuotaPayIn, socio: dict = Depends(get_curr
     """Sócio pede para pagar cotas via MBWay — cria pedido pendente para staff confirmar."""
     if not body.months:
         raise HTTPException(status_code=400, detail="Sem meses selecionados")
-    already = await db.quotas.find({"client_id": socio["id"], "year": body.year, "month": {"$in": body.months}, "status": "paid"}, {"_id": 0}).to_list(20)
+    already = await db.quotas.find({"client_id": socio["id"], "year": body.year, "month": {"$in": body.months}, "status": {"$in": ["paid", "billed"]}, "reversed": {"$ne": True}}, {"_id": 0}).to_list(20)
     if already:
-        raise HTTPException(status_code=400, detail=f"Já pagos: {', '.join(MONTHS_PT[a['month']-1] for a in already)}")
+        raise HTTPException(status_code=400, detail=f"Já lançadas na conta corrente: {', '.join(MONTHS_PT[a['month']-1] for a in already)}")
     total = QUOTA_MONTHLY_VALUE * len(body.months)
     rec = {
         "id": str(uuid.uuid4()),
@@ -3124,8 +3124,26 @@ async def set_bar_status(body: BarStatusIn, user: dict = Depends(get_current_use
 @api_router.get("/bar-status")
 async def get_bar_status(user: dict = Depends(get_current_user)):
     doc = await db.club_state.find_one({"_id": "bar"}, {"_id": 0})
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Europe/Lisbon"))
+    except Exception:
+        now = datetime.now(timezone.utc)
+    # Fecho automático: se o bar estiver aberto entre as 02:00 e as 05:00 (hora de Lisboa), fecha e registra na ata
+    auto_closed = False
+    if doc and doc.get("open") and 2 <= now.hour < 5:
+        cash = await _expected_cash_today()
+        doc = {
+            "open": False,
+            "changed_at": now.isoformat(),
+            "changed_by": "auto",
+            "cash_in_drawer": cash,
+        }
+        await db.club_state.find_one_and_replace({"_id": "bar"}, {"_id": "bar", **doc}, upsert=True)
+        await _audit("bar_auto_close", user["email"], summary=f"Bar FECHADO automaticamente às 02:00 · valor em caixa: {cash:.2f} €")
+        auto_closed = True
     cash = await _expected_cash_today()
-    return {"open": bool(doc and doc.get("open")), "changed_at": doc.get("changed_at") if doc else None, "changed_by": doc.get("changed_by") if doc else None, "cash_in_drawer": cash}
+    return {"open": bool(doc and doc.get("open")), "changed_at": doc.get("changed_at") if doc else None, "changed_by": doc.get("changed_by") if doc else None, "cash_in_drawer": cash, "auto_closed": auto_closed}
 
 @api_router.get("/ata/daily")
 async def ata_daily(date: Optional[str] = None, user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):

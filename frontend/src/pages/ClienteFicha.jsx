@@ -100,7 +100,7 @@ export default function ClienteFicha() {
     if (!months.length) return toast.error("Seleciona pelo menos um mês");
     try {
       await api.post("/quotas/pay", { client_id: id, year: quotaYear, months });
-      toast.success(`${months.length} cota(s) pagas`);
+      toast.success(`${months.length} cota(s) lançadas na conta corrente`);
       await loadQuotas(quotaYear);
       await load();
     } catch (e) {
@@ -383,6 +383,11 @@ export default function ClienteFicha() {
     }
   };
 
+  const coveredSalesDocs = (tx) =>
+    (tx.sale_tx_numbers || [])
+      .map((n) => (data?.sales || []).find((s) => s.tx_number === n))
+      .filter(Boolean);
+
   const printTransaction = (tx) => {
     if (!tx || !tx.tx_number) {
       return toast.error("Transação sem nº — não pode ser impressa individualmente");
@@ -391,6 +396,7 @@ export default function ClienteFicha() {
       client: data?.client,
       quotaStatus: data?.client?.quota_status,
       coveredSales: tx.sale_tx_numbers || [],
+      coveredSalesDocs: coveredSalesDocs(tx),
       secondCopy: true,
     });
     if (!res.ok) toast.error("Permite popups");
@@ -402,6 +408,7 @@ export default function ClienteFicha() {
       client: data?.client,
       quotaStatus: data?.client?.quota_status,
       coveredSales: notifyPayment.sale_tx_numbers || [],
+      coveredSalesDocs: coveredSalesDocs(notifyPayment),
       secondCopy: false,
     });
     if (!res.ok) toast.error("Permite popups para imprimir");
@@ -865,26 +872,30 @@ export default function ClienteFicha() {
           <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-4">
             {quotas.quotas.map((q) => {
               const paid = q.status === "paid";
+              const billed = q.status === "billed";
               const selected = !!quotaSelection[q.month];
               return (
                 <button
                   key={q.month}
                   type="button"
-                  disabled={paid || !canEditAll}
+                  disabled={paid || billed || !canEditAll}
                   data-testid={`quota-${q.month}`}
+                  title={billed ? "Já lançada na conta corrente — paga-se pelo balcão/MBWay" : undefined}
                   onClick={() => setQuotaSelection({ ...quotaSelection, [q.month]: !selected })}
                   className={`px-2 py-2 rounded-lg text-xs font-medium border transition-colors text-left ${
                     paid
                       ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30 cursor-default"
+                      : billed
+                      ? "bg-sky-500/10 text-sky-300 border-sky-500/30 cursor-default"
                       : selected
                       ? "bg-amber-500/25 text-amber-200 border-amber-500/60"
                       : "bg-slate-950 text-slate-300 border-slate-800 hover:border-amber-500/40"
-                  } ${!canEditAll && !paid ? "opacity-60" : ""}`}
+                  } ${!canEditAll && !paid && !billed ? "opacity-60" : ""}`}
                 >
                   <div className="text-[10px] uppercase font-bold tracking-wider opacity-70">{q.label}</div>
                   <div className="mt-0.5 flex items-center justify-between">
                     <span className="text-[11px]">{euro(q.amount)}</span>
-                    {paid ? <Check size={12} weight="bold" /> : null}
+                    {paid ? <Check size={12} weight="bold" /> : billed ? <span className="text-[9px] font-bold text-sky-400">na conta</span> : null}
                   </div>
                 </button>
               );
@@ -903,7 +914,7 @@ export default function ClienteFicha() {
                 onClick={submitQuotaPayment}
                 disabled={Object.values(quotaSelection).filter(Boolean).length === 0}
                 className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold text-sm"
-              >Pagar selecionadas</button>
+              >Lançar na conta corrente</button>
             </div>
           )}
         </div>

@@ -34,6 +34,14 @@ export function printReceipt(tx, extras = {}) {
   const credited = tx.total_credited || tx.amount || 0;
   const change = tx.change_returned || 0;
   const tip = tx.tip || 0;
+  const coveredDocs = extras.coveredSalesDocs || [];
+  const coveredItemsHtml = coveredDocs.length
+    ? `<hr/><div class="muted">Itens das vendas abatidas:</div>${coveredDocs.map((s) => `
+        <div style="margin-top:6px">
+          <div class="row"><span class="muted">#${s.tx_number} · ${new Date(s.created_at).toLocaleDateString("pt-PT")}</span><span>${euro(s.total)}</span></div>
+          ${(s.items || []).map((it) => `<div class="row" style="font-size:11px"><span>&nbsp;&nbsp;· ${it.quantity}× ${it.product_name}</span><span>${euro(it.subtotal)}</span></div>`).join("")}
+        </div>`).join("")}`
+    : "";
   const pointsBalance = client.points != null ? client.points : null;
   const balanceOwed = client.balance != null ? Math.max(client.balance, 0) : null;
   const quotaColor = { paid: "#059669", pending: "#b45309", debt: "#b91c1c" };
@@ -69,6 +77,7 @@ ${tx.points_used ? `<div class="row"><span>Pontos usados</span><span>${tx.points
 ${change > 0 ? `<div class="row"><span>Troco devolvido</span><span>${euro(change)}</span></div>` : ""}
 ${tip > 0 ? `<div class="row"><span>Gratificação (caixa)</span><span>${euro(tip)}</span></div>` : ""}
 ${covered.length ? `<div class="row"><span>Vendas cobertas</span><span>${covered.map((n) => "#" + n).join(", ")}</span></div>` : ""}
+${coveredItemsHtml}
 ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : ""}
 <hr/>
 <div class="row big"><span>TOTAL ABATIDO</span><span>${euro(credited)}</span></div>`}

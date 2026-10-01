@@ -14,9 +14,6 @@ import {
   CalendarBlank,
   Eye,
   EyeSlash,
-  Bell,
-  ChatCircle,
-  DeviceMobile,
   Coffee,
   Cake,
 } from "@phosphor-icons/react";
@@ -31,6 +28,8 @@ import {
 } from "recharts";
 
 const MASK = "••••";
+
+const isoDate = (d) => d.toISOString().slice(0, 10);
 
 const StatCard = ({ icon: Icon, label, value, accent, testid, to, masked = false, unmaskedDefault = false }) => {
   const [revealed, setRevealed] = useState(unmaskedDefault);
@@ -102,7 +101,6 @@ export default function Dashboard() {
   const canSeeStockValue = user?.role === "admin" || user?.role === "tesoureiro";
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [pending, setPending] = useState({ requests: 0, messages: 0, mbway: 0 });
   const greeting = useGreeting(user?.name || user?.email || "");
 
   const load = async () => {
@@ -114,25 +112,8 @@ export default function Dashboard() {
     }
   };
 
-  const loadPending = async () => {
-    try {
-      const [r, m, mb] = await Promise.all([
-        api.get("/consumption-requests", { params: { status_filter: "pending" } }).catch(() => ({ data: [] })),
-        api.get("/socio-messages", { params: { status_filter: "open" } }).catch(() => ({ data: [] })),
-        api.get("/mbway-payments").catch(() => ({ data: [] })),
-      ]);
-      const pendingMb = (mb.data || []).filter((x) => x.status === "pending").length;
-      setPending({ requests: (r.data || []).length, messages: (m.data || []).length, mbway: pendingMb });
-    } catch {
-      // ignore
-    }
-  };
-
   useEffect(() => {
     load();
-    loadPending();
-    const t = setInterval(loadPending, 15000);
-    return () => clearInterval(t);
   }, []);
 
   if (loading)
@@ -158,23 +139,7 @@ export default function Dashboard() {
               {getPresidentMessage()}
             </p>
           </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            {pending.requests > 0 && (
-              <Link to="/pedidos" data-testid="alert-requests" className="px-3 py-2 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs font-bold flex items-center gap-1.5 animate-pulse">
-                <Bell size={13} weight="fill" /> {pending.requests} pedido(s) por validar
-              </Link>
-            )}
-            {pending.mbway > 0 && (
-              <Link to="/mbway" data-testid="alert-mbway" className="px-3 py-2 rounded-full bg-sky-500/20 border border-sky-500/40 text-sky-200 text-xs font-bold flex items-center gap-1.5 animate-pulse">
-                <DeviceMobile size={13} weight="fill" /> {pending.mbway} MBWay
-              </Link>
-            )}
-            {pending.messages > 0 && (
-              <Link to="/mensagens" data-testid="alert-messages" className="px-3 py-2 rounded-full bg-fuchsia-500/20 border border-fuchsia-500/40 text-fuchsia-200 text-xs font-bold flex items-center gap-1.5 animate-pulse">
-                <ChatCircle size={13} weight="fill" /> {pending.messages} mensagem(s)
-              </Link>
-            )}
-          </div>
+          <div className="flex items-center gap-2 flex-wrap" />
         </div>
         {greeting.closingWarning && (
           <div className="mt-4 px-4 py-3 rounded-lg bg-rose-500/15 border border-rose-500/40 text-rose-200 text-sm font-bold flex items-center gap-2" data-testid="closing-warning">
@@ -190,7 +155,7 @@ export default function Dashboard() {
           label="Vendas hoje"
           value={euro(data.today_sales_total)}
           accent="bg-amber-500/10 text-amber-500"
-          to="/vender"
+          to={`/transacoes?kind=sale&from=${isoDate(new Date())}&to=${isoDate(new Date())}`}
           unmaskedDefault
         />
         <StatCard
@@ -199,7 +164,7 @@ export default function Dashboard() {
           label="Vendas semana"
           value={euro(data.week_sales_total || 0)}
           accent="bg-amber-500/10 text-amber-400"
-          to="/vender"
+          to={`/transacoes?kind=sale&from=${isoDate(new Date(Date.now() - 7 * 86400000))}&to=${isoDate(new Date())}`}
           masked
         />
         <StatCard
@@ -208,7 +173,7 @@ export default function Dashboard() {
           label="Vendas mês"
           value={euro(data.month_sales_total || 0)}
           accent="bg-amber-500/10 text-amber-300"
-          to="/vender"
+          to={`/transacoes?kind=sale&from=${isoDate(new Date(Date.now() - 30 * 86400000))}&to=${isoDate(new Date())}`}
           masked
         />
         <StatCard

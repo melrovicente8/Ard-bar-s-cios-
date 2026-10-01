@@ -29,6 +29,7 @@ import {
   Storefront as BarIcon,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import HeaderAlerts from "../components/HeaderAlerts";
 
 const ROLE_LABEL = {
   admin: "Administrador",
@@ -83,9 +84,17 @@ function BarStatusButton() {
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const load = () => {
-    api.get("/bar-status").then(({ data }) => setBar(data)).catch(() => {});
+    api.get("/bar-status").then(({ data }) => {
+      setBar(data);
+      if (data.auto_closed) toast.error("O bar fechou automaticamente às 2h da manhã");
+    }).catch(() => {});
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 60000);
+    return () => clearInterval(t);
+    /* eslint-disable-next-line */
+  }, []);
 
   const toggle = async () => {
     const next = !bar?.open;
@@ -186,6 +195,14 @@ export default function AppLayout() {
                 Nespereira · Bar
               </div>
             </div>
+            <Link
+              to="/socio/login"
+              data-testid="socio-app-link"
+              title="App do sócio"
+              className="ml-1 p-1.5 rounded-md bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 flex items-center"
+            >
+              <DeviceMobile size={14} weight="duotone" />
+            </Link>
           </div>
           <button
             onClick={() => setMobileOpen(false)}
@@ -284,6 +301,7 @@ export default function AppLayout() {
             <House size={16} weight="duotone" />
           </button>
           <div className="ml-auto flex items-center gap-2">
+            <HeaderAlerts />
             <BarStatusButton />
           </div>
         </div>

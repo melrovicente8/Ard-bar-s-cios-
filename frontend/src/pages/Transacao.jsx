@@ -16,6 +16,15 @@ export default function Transacao() {
     setLoading(true);
     api.get(`/transactions/${tx_number}`)
       .then(async ({ data }) => {
+        // recibos de pagamento: buscar as vendas cobertas (com os itens vendidos)
+        if (!data.items && (data.sale_tx_numbers || []).length) {
+          const docs = await Promise.all(
+            data.sale_tx_numbers.map((n) =>
+              api.get(`/transactions/${n}`).then((r) => r.data).catch(() => null)
+            )
+          );
+          data.covered_docs = docs.filter(Boolean);
+        }
         setTx(data);
         // dados do cliente para o recibo (saldo de pontos + conta corrente + cotas)
         if (data.client_id) {
@@ -35,6 +44,7 @@ export default function Transacao() {
       client,
       quotaStatus: client?.quota_status,
       coveredSales: tx.sale_tx_numbers || (tx.sale_ids ? [] : []),
+      coveredSalesDocs: tx.covered_docs || [],
       secondCopy: true,
     });
     if (!res.ok) toast.error("Permite popups");
