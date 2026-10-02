@@ -1799,7 +1799,7 @@ class QuotaPayIn(BaseModel):
     months: List[int]
     payment_method: str = "cash"  # cash | mbway
 
-async def _quota_months_from_sale(sale: dict) -> tuple:
+def _quota_months_from_sale(sale: dict) -> tuple:
     """Extrai (year, [months]) de uma venda de cotas."""
     months = []
     year = None
@@ -1951,31 +1951,63 @@ class QuotaReverseIn(BaseModel):
 
 @api_router.post("/quotas/reverse")
 async def reverse_quotas(body: QuotaReverseIn, user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
-    """Extorna cotas PAGAS: devolve o valor ao sócio em CONTA CORRENTE (crédito a favor)."""
+    """Extorna cotas PAGAS (devolve o valor em CONTA CORRENTE) e DESLANÇA cotas lançadas na conta
+    (remove a venda de cota e a cobrança da conta corrente)."""
     if not body.months:
         raise HTTPException(status_code=400, detail="Sem meses selecionados")
     c = await db.clients.find_one({"id": body.client_id})
     if not c:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
     credited = 0.0
+    unbilled = 0.0
     reversed_months = []
+    unbilled_months = []
     for m in body.months:
         q = await db.quotas.find_one({"client_id": body.client_id, "year": body.year, "month": m})
-        if not q or q.get("status") != "paid":
+        if not q or q.get("reversed"):
             continue
-        await db.quotas.update_one(
-            {"client_id": body.client_id, "year": body.year, "month": m},
-            {"$set": {"status": "open", "reversed": True, "reversed_at": datetime.now(timezone.utc).isoformat(), "reversed_by": user["email"]}},
-        )
-        credited += float(q.get("amount", QUOTA_MONTHLY_VALUE))
-        reversed_months.append(m)
-    if not reversed_months:
-        raise HTTPException(status_code=400, detail="Nenhum dos meses está pago (extorno aplica-se a cotas pagas)")
-    # crédito ao sócio em conta corrente
-    await db.clients.update_one({"id": body.client_id}, {"$inc": {"balance": -credited, "total_spent": -credited}})
+        amount = float(q.get("amount", QUOTA_MONTHLY_VALUE))
+        if q.get("status") == "paid":
+            await db.quotas.update_one(
+                {"client_id": body.client_id, "year": body.year, "month": m},
+                {"$set": {"status": "open", "reversed": True, "reversed_at": datetime.now(timezone.utc).isoformat(), "reversed_by": user["email"]}},
+            )
+            credited += amount
+            reversed_months.append(m)
+        elif q.get("status") == "billed":
+            # deslançar: remove o item da venda de cotas (ou a venda inteira) e abate da conta corrente
+            sale_id = q.get("sale_id")
+            if sale_id:
+                sale = await db.sales.find_one({"id": sale_id})
+                if sale:
+                    remaining = [it for it in sale.get("items", []) if it.get("product_id") != f"quota-{body.year}-{m:02d}"]
+                    removed = sum(float(it.get("subtotal", 0)) for it in sale.get("items", []) if it.get("product_id") == f"quota-{body.year}-{m:02d}")
+                    if remaining:
+                        await db.sales.update_one({"id": sale_id}, {"$set": {"items": remaining, "total": round(sum(float(it.get("subtotal", 0)) for it in remaining), 2)}})
+                    else:
+                        await db.sales.delete_one({"id": sale_id})
+                    unbilled += removed if removed else amount
+                else:
+                    unbilled += amount
+            else:
+                unbilled += amount
+            await db.quotas.update_one(
+                {"client_id": body.client_id, "year": body.year, "month": m},
+                {"$set": {"status": "open", "reversed": True, "reversed_at": datetime.now(timezone.utc).isoformat(), "reversed_by": user["email"]}, "$unset": {"sale_id": ""}},
+            )
+            unbilled_months.append(m)
+    if not reversed_months and not unbilled_months:
+        raise HTTPException(status_code=400, detail="Nenhum dos meses está pago ou lançado na conta (extorno aplica-se a cotas pagas/lançadas)")
+    # crédito ao sócio em conta corrente (cotas pagas) · abate da cobrança (cotas lançadas)
+    await db.clients.update_one({"id": body.client_id}, {"$inc": {"balance": -(credited + unbilled), "total_spent": -(credited + unbilled)}})
+    bits = []
+    if reversed_months:
+        bits.append(f"extorno pago de {credited:.2f} € ({', '.join(MONTHS_PT[m-1] for m in reversed_months)})")
+    if unbilled_months:
+        bits.append(f"deslançadas da conta corrente {unbilled:.2f} € ({', '.join(MONTHS_PT[m-1] for m in unbilled_months)})")
     await _audit("quota_reverse", user["email"], entity="client", entity_id=body.client_id,
-                 summary=f"Extorno de cotas {body.year} ({', '.join(MONTHS_PT[m-1] for m in reversed_months)}) · crédito de {credited:.2f} € em conta corrente")
-    return {"ok": True, "credited": credited, "months": reversed_months}
+                 summary=f"Cotas {body.year}: " + " · ".join(bits))
+    return {"ok": True, "credited": credited, "unbilled": unbilled, "months": reversed_months + unbilled_months}
 
 @api_router.post("/socio/login")
 async def socio_login(body: SocioLoginIn, response: Response):
@@ -3368,6 +3400,7 @@ def _mask_profanity(text: str) -> str:
 
 class CommunityMessageIn(BaseModel):
     message: str
+    reply_to: Optional[str] = None
 
 @api_router.post("/community/messages")
 async def post_community_message(body: CommunityMessageIn, socio: dict = Depends(get_current_socio)):
@@ -3376,6 +3409,11 @@ async def post_community_message(body: CommunityMessageIn, socio: dict = Depends
         raise HTTPException(status_code=400, detail="Mensagem vazia")
     masked = _mask_profanity(msg[:2000])
     was_masked = masked != msg
+    parent = None
+    if body.reply_to:
+        parent = await db.community_messages.find_one({"id": body.reply_to, "status": "visible"}, {"_id": 0, "id": 1, "client_id": 1})
+        if not parent:
+            raise HTTPException(status_code=404, detail="Mensagem original não encontrada")
     doc = {
         "id": str(uuid.uuid4()),
         "client_id": socio["id"],
@@ -3383,6 +3421,7 @@ async def post_community_message(body: CommunityMessageIn, socio: dict = Depends
         "member_number": socio.get("member_number"),
         "message": masked,
         "original_masked": was_masked,
+        "reply_to": body.reply_to if body.reply_to else None,
         "status": "visible",  # visible | hidden
         "reports": [],
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -3394,6 +3433,9 @@ async def post_community_message(body: CommunityMessageIn, socio: dict = Depends
 @api_router.get("/community/messages")
 async def get_community_messages(socio: dict = Depends(get_current_socio)):
     items = await db.community_messages.find({"status": "visible"}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    visible_ids = {m["id"] for m in items}
+    # respostas a mensagens ocultas/eliminadas não aparecem
+    items = [m for m in items if not m.get("reply_to") or m["reply_to"] in visible_ids]
     last_seen = await db.clients.find_one({"id": socio["id"]}, {"community_last_seen": 1, "_id": 0}) or {}
     unseen = sum(1 for m in items if (last_seen.get("community_last_seen") or "") < m["created_at"])
     return {"messages": items, "unseen": unseen}

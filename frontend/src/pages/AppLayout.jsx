@@ -117,14 +117,24 @@ function BarStatusButton() {
       <button
         data-testid="bar-status-btn"
         onClick={() => setConfirmOpen(true)}
-        title={`Bar ${isOpen ? "aberto" : "fechado"} — valor em caixa ${euro(bar.cash_in_drawer)}`}
-        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold border transition-colors ${
+        title={`Bar ${isOpen ? "aberto" : "fechado"} — clique no interruptor para ${isOpen ? "fechar" : "abrir"} · valor em caixa ${euro(bar.cash_in_drawer)}`}
+        className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-bold border transition-colors ${
           isOpen
             ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25"
             : "bg-rose-500/15 text-rose-300 border-rose-500/30 hover:bg-rose-500/25"
         }`}
       >
-        <BarIcon size={14} weight="duotone" /> Bar {isOpen ? "aberto" : "fechado"} · <span className="font-mono">{euro(bar.cash_in_drawer)}</span>
+        <BarIcon size={14} weight="duotone" />
+        <span className="hidden md:inline">Bar {isOpen ? "aberto" : "fechado"}</span>
+        <span className="font-mono font-normal text-[11px] opacity-80">{euro(bar.cash_in_drawer)}</span>
+        <span
+          data-testid="bar-status-switch"
+          className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${isOpen ? "bg-emerald-500" : "bg-slate-600"}`}
+        >
+          <span
+            className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${isOpen ? "translate-x-4" : "translate-x-0.5"}`}
+          />
+        </span>
       </button>
       {confirmOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setConfirmOpen(false)} data-testid="bar-status-modal">

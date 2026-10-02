@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { ClockCounterClockwise, Printer, FunnelSimple, MagnifyingGlass } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -13,10 +13,19 @@ const STATUS_CLASS = {
 const TYPE_LABEL = { sale_cancel: "Venda cancelada", sale_edit: "Venda editada" };
 
 export default function Historico() {
-  const [tab, setTab] = useState("sales"); // sales | audit
+  const [searchParams] = useSearchParams();
+  const [tab, setTab] = useState(searchParams.get("tab") === "audit" ? "audit" : "sales"); // sales | audit
   const today = new Date().toISOString().slice(0, 10);
   const monthStart = today.slice(0, 7) + "-01";
-  const [filters, setFilters] = useState({ from: monthStart, to: today, user_email: "", client_id: "", status: "" });
+  // Filtros podem vir por URL (ex.: ficha do cliente → detalhe de vendas desse cliente)
+  const urlPreset = searchParams.get("preset");
+  const [filters, setFilters] = useState({
+    from: urlPreset === "all" ? "" : (searchParams.get("from") || monthStart),
+    to: urlPreset === "all" ? "" : (searchParams.get("to") || today),
+    user_email: searchParams.get("user_email") || "",
+    client_id: searchParams.get("client_id") || "",
+    status: searchParams.get("status") || "",
+  });
   const [salesData, setSalesData] = useState(null);
   const [auditData, setAuditData] = useState([]);
   const [users, setUsers] = useState([]);

@@ -125,6 +125,11 @@ export default function CommunityModeration() {
                       Linguagem filtrada
                     </span>
                   )}
+                  {m.reply_to && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/15 text-sky-300 border border-sky-500/30">
+                      Resposta
+                    </span>
+                  )}
                 </div>
               </div>
               <p className="text-sm text-slate-300 whitespace-pre-wrap">{m.message}</p>

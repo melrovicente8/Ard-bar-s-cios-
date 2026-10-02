@@ -280,15 +280,23 @@ export default function SocioPortal() {
   };
 
   const printReceipt = (p) => {
-    // Encontrar vendas que este pagamento cobriu (heurística: vendas pendentes antes da data, FIFO)
-    const earlierSales = sales.filter((s) => s.created_at <= p.created_at).sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
-    let cover = p.total_credited || p.amount;
-    const covered = [];
-    for (const s of earlierSales) {
-      if (cover <= 0) break;
-      const applied = Math.min(cover, s.total);
-      cover -= applied;
-      covered.push({ sale: s, applied });
+    // Vendas que este pagamento cobriu: usa os sale_ids registados pelo backend;
+    // só como fallback (pagamentos antigos sem sale_ids) aplica FIFO sobre vendas anteriores.
+    let covered = [];
+    if (p.sale_ids && p.sale_ids.length) {
+      covered = p.sale_ids
+        .map((sid) => sales.find((s) => s.id === sid))
+        .filter(Boolean)
+        .map((sale) => ({ sale, applied: sale.total }));
+    } else {
+      const earlierSales = sales.filter((s) => s.created_at <= p.created_at).sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+      let cover = p.total_credited || p.amount;
+      for (const s of earlierSales) {
+        if (cover <= 0) break;
+        const applied = Math.min(cover, s.total);
+        cover -= applied;
+        covered.push({ sale: s, applied });
+      }
     }
     const w = window.open("", "_blank", "width=420,height=640");
     if (!w) return toast.error("Permite popups para imprimir");

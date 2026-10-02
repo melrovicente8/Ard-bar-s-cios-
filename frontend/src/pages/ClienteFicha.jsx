@@ -108,6 +108,22 @@ export default function ClienteFicha() {
     }
   };
 
+  const reverseQuotaPayment = async () => {
+    const months = Object.entries(quotaSelection).filter(([, v]) => v).map(([m]) => Number(m));
+    if (!months.length) return toast.error("Seleciona pelo menos um mês");
+    if (!window.confirm(`Extornar ${months.length} cota(s) de ${quotaYear}? O valor sai/volta para a conta corrente do sócio.`)) return;
+    try {
+      const { data: res } = await api.post("/quotas/reverse", { client_id: id, year: quotaYear, months });
+      const total = (res.credited || 0) + (res.unbilled || 0);
+      toast.success(`Extorno concluído · ${euro(total)} movido(s) na conta corrente`);
+      setQuotaSelection({});
+      await loadQuotas(quotaYear);
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
   const openProfileExtra = () => {
     const c = data.client;
     setProfileForm({ birthday: c.birthday || "", photo_data: "" });
@@ -878,19 +894,19 @@ export default function ClienteFicha() {
                 <button
                   key={q.month}
                   type="button"
-                  disabled={paid || billed || !canEditAll}
+                  disabled={!canEditAll}
                   data-testid={`quota-${q.month}`}
-                  title={billed ? "Já lançada na conta corrente — paga-se pelo balcão/MBWay" : undefined}
+                  title={billed ? "Lançada na conta corrente — podes selecionar para extornar" : paid ? "Paga — podes selecionar para extornar" : undefined}
                   onClick={() => setQuotaSelection({ ...quotaSelection, [q.month]: !selected })}
                   className={`px-2 py-2 rounded-lg text-xs font-medium border transition-colors text-left ${
                     paid
-                      ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30 cursor-default"
+                      ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:border-emerald-400/60"
                       : billed
-                      ? "bg-sky-500/10 text-sky-300 border-sky-500/30 cursor-default"
+                      ? "bg-sky-500/10 text-sky-300 border-sky-500/30 hover:border-sky-400/60"
                       : selected
                       ? "bg-amber-500/25 text-amber-200 border-amber-500/60"
                       : "bg-slate-950 text-slate-300 border-slate-800 hover:border-amber-500/40"
-                  } ${!canEditAll && !paid && !billed ? "opacity-60" : ""}`}
+                  } ${selected && (paid || billed) ? "ring-2 ring-amber-400/70" : ""}`}
                 >
                   <div className="text-[10px] uppercase font-bold tracking-wider opacity-70">{q.label}</div>
                   <div className="mt-0.5 flex items-center justify-between">
@@ -901,22 +917,39 @@ export default function ClienteFicha() {
               );
             })}
           </div>
-          {canEditAll && (
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs text-slate-400">
-                {Object.values(quotaSelection).filter(Boolean).length > 0
-                  ? `${Object.values(quotaSelection).filter(Boolean).length} mês(es) selecionados · ${euro(Object.entries(quotaSelection).filter(([, v]) => v).length * (quotas.quotas[0]?.amount || 0))}`
-                  : "Seleciona meses por pagar"}
-              </span>
-              <button
-                type="button"
-                data-testid="quotas-pay-btn"
-                onClick={submitQuotaPayment}
-                disabled={Object.values(quotaSelection).filter(Boolean).length === 0}
-                className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold text-sm"
-              >Lançar na conta corrente</button>
-            </div>
-          )}
+          {canEditAll && (() => {
+            const selMonths = Object.entries(quotaSelection).filter(([, v]) => v).map(([m]) => Number(m));
+            const byMonth = Object.fromEntries(quotas.quotas.map((q) => [q.month, q]));
+            const billable = selMonths.filter((m) => (byMonth[m]?.status || "open") === "open");
+            const reversible = selMonths.filter((m) => byMonth[m] && (byMonth[m].status === "paid" || byMonth[m].status === "billed"));
+            return (
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="text-xs text-slate-400">
+                  {selMonths.length > 0
+                    ? `${selMonths.length} mês(es) selecionados · ${euro(selMonths.length * (quotas.quotas[0]?.amount || 0))}`
+                    : "Seleciona meses por pagar"}
+                </span>
+                <div className="flex items-center gap-2">
+                  {reversible.length > 0 && (
+                    <button
+                      type="button"
+                      data-testid="quotas-reverse-btn"
+                      onClick={reverseQuotaPayment}
+                      title="Extorna cotas pagas (crédito) e deslança cotas na conta corrente"
+                      className="px-4 py-2 rounded-lg bg-rose-500/15 text-rose-300 border border-rose-500/40 hover:bg-rose-500/25 font-bold text-sm"
+                    >Extornar {reversible.length} cota(s)</button>
+                  )}
+                  <button
+                    type="button"
+                    data-testid="quotas-pay-btn"
+                    onClick={submitQuotaPayment}
+                    disabled={billable.length === 0}
+                    className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold text-sm"
+                  >Lançar na conta corrente</button>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
