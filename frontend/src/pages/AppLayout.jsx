@@ -27,6 +27,7 @@ import {
   Ticket,
   X as XIcon,
   Storefront as BarIcon,
+  Gift,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import HeaderAlerts from "../components/HeaderAlerts";
@@ -74,6 +75,7 @@ const navGroups = [
       { to: "/contas", label: "Contas", icon: Bank, testid: "nav-contas", roles: STAFF_ROLES },
       { to: "/historico", label: "Histórico", icon: ClockCounterClockwise, testid: "nav-historico", roles: STAFF_ROLES },
       { to: "/transacoes", label: "Transações", icon: ListDashes, testid: "nav-transacoes", roles: STAFF_ROLES },
+      { to: "/ofertas", label: "Ofertas casa", icon: Gift, testid: "nav-ofertas", roles: STAFF_ROLES },
       { to: "/documentacao", label: "Documentação", icon: Book, testid: "nav-documentacao", roles: ["admin"] },
     ],
   },

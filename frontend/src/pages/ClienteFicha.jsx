@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { printReceipt as printReceiptA6 } from "../lib/receipt";
+import PaymentModal from "../components/PaymentModal";
 import {
   ArrowLeft,
   CurrencyEur,
@@ -44,8 +45,7 @@ export default function ClienteFicha() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showPay, setShowPay] = useState(false);
-  const [payForm, setPayForm] = useState({ amount: "", points_used: 0, note: "", keep_change_as_credit: false, tip: 0, tip_change: false });
-  const [paySelectedSales, setPaySelectedSales] = useState({}); // {sale_id: true}
+  const [payPrefill, setPayPrefill] = useState(null); // pré-seleção de itens para o modal de pagamento
   const [notifyPayment, setNotifyPayment] = useState(null);
   const [showEdit, setShowEdit] = useState(false);
   const [editForm, setEditForm] = useState({
@@ -193,7 +193,6 @@ export default function ClienteFicha() {
     try {
       const { data } = await api.get(`/clients/${id}`);
       setData(data);
-      setPayForm({ amount: "", points_used: 0, note: "", keep_change_as_credit: false });
     } finally {
       setLoading(false);
     }
@@ -203,35 +202,6 @@ export default function ClienteFicha() {
     load();
     // eslint-disable-next-line
   }, [id]);
-
-  const submitPay = async (e) => {
-    e.preventDefault();
-    try {
-      const selectedIds = Object.entries(paySelectedSales).filter(([, v]) => v).map(([k]) => k);
-      const tipValue = payForm.tip_change
-        ? Math.max(Number(payForm.amount || 0) - (selectedIds.length
-            ? Object.entries(paySelectedSales).filter(([, v]) => v).reduce((s, [sid]) => s + (sales.find((x) => x.id === sid)?.total || 0), 0)
-            : Math.max(c.balance || 0, 0)) - (Number(payForm.points_used || 0) / 5), 0)
-        : Number(payForm.tip || 0);
-      const { data: payment } = await api.post("/payments", {
-        client_id: id,
-        amount: parseFloat(payForm.amount || 0),
-        points_used: Number(payForm.points_used || 0),
-        note: payForm.note || null,
-        keep_change_as_credit: !!payForm.keep_change_as_credit,
-        tip: tipValue || 0,
-        sale_ids: selectedIds.length ? selectedIds : null,
-      });
-      toast.success("Pagamento registado");
-      setShowPay(false);
-      setPaySelectedSales({});
-      await load();
-      // Open notify modal
-      setNotifyPayment(payment);
-    } catch (e) {
-      toast.error(formatApiErrorDetail(e.response?.data?.detail));
-    }
-  };
 
   const reversePayment = async (p) => {
     if (!window.confirm(`Estornar pagamento de ${euro(p.total_credited || p.amount)}?`)) return;
@@ -1019,8 +989,12 @@ export default function ClienteFicha() {
                         <button
                           data-testid={`pay-sale-btn-${s.id}`}
                           onClick={() => {
-                            setPaySelectedSales({ [s.id]: true });
-                            setPayForm({ amount: String(s.total.toFixed(2)), points_used: 0, note: `Venda #${s.tx_number || ""}`.trim(), keep_change_as_credit: false, tip: 0, tip_change: false });
+                            const items = {};
+                            (s.items || []).filter((it) => !it.is_house_account).forEach((it) => {
+                              items[`${s.id}||${it.product_name}`] = { pay: it.quantity, offer: 0 };
+                            });
+                            const amt = (s.items || []).filter((it) => !it.is_house_account).reduce((a, it) => a + (it.unit_price || 0) * it.quantity, 0);
+                            setPayPrefill({ items, form: { amount: amt.toFixed(2), points_used: 0, note: `Venda #${s.tx_number || ""}`.trim(), keep_change_as_credit: false, tip: 0, tip_change: false } });
                             setShowPay(true);
                           }}
                           title="Registar pagamento desta venda"
@@ -1168,276 +1142,18 @@ export default function ClienteFicha() {
       </div>
 
       {showPay && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
-          onClick={() => setShowPay(false)}
-        >
-          <div
-            className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-6"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-amber-400/80">Caixa do bar</div>
-            <h3 className="font-outfit text-xl font-semibold mb-5 mt-1">Registar pagamento</h3>
-
-            {/* Valor em aberto */}
-            <div className="bg-rose-500/5 border border-rose-500/20 rounded-lg p-4 mb-4 flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-rose-300/80">Valor em aberto</span>
-              <span data-testid="payment-open-amount" className="font-outfit text-2xl font-bold text-rose-300">{euro(debt)}</span>
-            </div>
-
-            {/* Itens consumidos em aberto (descrição) */}
-            {unpaidSales.length > 0 && (
-              <details className="mb-4 bg-slate-950 border border-slate-800 rounded-lg" data-testid="payment-items-breakdown" open>
-                <summary className="cursor-pointer px-3 py-2 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400 hover:text-amber-400 list-none flex items-center justify-between">
-                  <span>O que está em dívida</span>
-                  <span className="text-slate-500 normal-case tracking-normal">{unpaidSales.length} venda(s) por pagar · marca as que vais cobrar</span>
-                </summary>
-                <div className="px-3 pb-3 flex items-center gap-2 text-[10px]">
-                  <button type="button" data-testid="pay-select-all" onClick={() => { const o = {}; unpaidSales.forEach((s) => { o[s.id] = true; }); setPaySelectedSales(o); }} className="px-2 py-1 rounded bg-amber-500/15 text-amber-300 hover:bg-amber-500/25">Selecionar tudo</button>
-                  <button type="button" data-testid="pay-select-none" onClick={() => setPaySelectedSales({})} className="px-2 py-1 rounded bg-slate-800 text-slate-300 hover:bg-slate-700">Limpar</button>
-                  <span className="ml-auto text-slate-500">{Object.values(paySelectedSales).filter(Boolean).length} selecionada(s)</span>
-                </div>
-                <div className="max-h-44 overflow-y-auto px-3 pb-3 space-y-2 text-xs">
-                  {unpaidSales.slice(0, 20).map((s) => {
-                    const selected = !!paySelectedSales[s.id];
-                    return (
-                    <label key={s.id} data-testid={`pay-sale-${s.id}`} className={`block border-t border-slate-800/60 pt-2 cursor-pointer rounded ${selected ? "bg-amber-500/5" : ""}`}>
-                      <div className="flex items-center justify-between text-slate-400 text-[10px]">
-                        <span className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            data-testid={`pay-sale-check-${s.id}`}
-                            checked={selected}
-                            onChange={(e) => setPaySelectedSales({ ...paySelectedSales, [s.id]: e.target.checked })}
-                            className="w-3.5 h-3.5 accent-amber-400"
-                          />
-                          {new Date(s.created_at).toLocaleString("pt-PT")}
-                          {s.tx_number && <span className="font-mono text-slate-500">#{s.tx_number}</span>}
-                        </span>
-                        <div className="flex items-center gap-1.5">
-                          <strong className="text-amber-400">{euro(s.total)}</strong>
-                          {canEditSale && (
-                            <button
-                              type="button"
-                              data-testid={`payment-edit-sale-${s.id}`}
-                              onClick={(ev) => { ev.preventDefault(); setShowPay(false); openEditSale(s); }}
-                              title="Editar itens / transferir"
-                              className="p-1 rounded-md bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
-                            >
-                              <PencilSimple size={10} weight="bold" />
-                            </button>
-                          )}
-                          {canCancelSale && (
-                            <button
-                              type="button"
-                              data-testid={`payment-cancel-sale-${s.id}`}
-                              onClick={(ev) => { ev.preventDefault(); cancelSale(s); }}
-                              title="Eliminar venda"
-                              className="p-1 rounded-md bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
-                            >
-                              <Trash size={10} weight="bold" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      <ul className="text-slate-300 mt-0.5 pl-6">
-                        {s.items.map((it, i) => {
-                          const isHouseItem = !!it.is_house_account;
-                          const fullValue = (it.unit_price || 0) * (it.quantity || 0);
-                          return (
-                            <li key={i} className="flex items-center justify-between gap-2">
-                              <span className="flex items-center gap-1.5 flex-wrap">
-                                <span className="text-slate-500">{it.quantity}×</span>
-                                {it.product_name}
-                                <span className="text-slate-500 text-[10px]">({euro(it.unit_price || 0)}/un)</span>
-                                {isHouseItem && (
-                                  <span className="px-1 py-0.5 rounded text-[9px] font-bold bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-500/30">OFERTA DA CASA</span>
-                                )}
-                              </span>
-                              {isHouseItem ? (
-                                <span className="flex items-center gap-1">
-                                  <span className="text-slate-600 line-through text-[10px]">{euro(fullValue)}</span>
-                                  <span className="text-fuchsia-300 font-bold">0,00 €</span>
-                                </span>
-                              ) : (
-                                <span className="text-slate-500">{euro(it.subtotal)}</span>
-                              )}
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </label>
-                    );
-                  })}
-                </div>
-              </details>
-            )}
-
-            <form onSubmit={submitPay} className="space-y-4">
-              <div>
-                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
-                  A pagar (dinheiro / MBWay) €
-                </label>
-                <input
-                  data-testid="payment-amount-input"
-                  type="number"
-                  step="0.01"
-                  required
-                  min="0"
-                  autoFocus
-                  placeholder="0,00 (valor que o cliente entrega)"
-                  value={payForm.amount}
-                  onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })}
-                  className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white text-lg font-bold focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                />
-              </div>
-
-              {(c.points || 0) >= 5 && (
-                <div className="bg-green-500/5 border border-green-500/20 rounded-lg p-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-green-400/80 flex items-center gap-1.5">
-                      <Coins size={12} weight="duotone" /> Descontar pontos
-                    </span>
-                    <span className="text-xs text-slate-500">
-                      Disponíveis: <strong className="text-green-300">{c.points}</strong>
-                    </span>
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
-                      Pontos a descontar (múltiplos de 5)
-                    </label>
-                    <input
-                      data-testid="payment-points-input"
-                      type="number"
-                      min="0"
-                      step="5"
-                      max={Math.floor((c.points || 0) / 5) * 5}
-                      value={payForm.points_used}
-                      onChange={(e) => setPayForm({ ...payForm, points_used: e.target.value })}
-                      className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-green-500/50"
-                    />
-                  </div>
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="text-slate-500">Valor dos pontos:</span>
-                    <span data-testid="payment-points-value" className="font-bold text-green-300">
-                      {euro((Number(payForm.points_used) || 0) / 5)}
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              {/* Resumo: total recebido, abatido, troco, gratificação */}
-              {(() => {
-                const cash = Number(payForm.amount) || 0;
-                const ptsValue = (Number(payForm.points_used) || 0) / 5;
-                const total = cash + ptsValue;
-                const selectedIds = Object.entries(paySelectedSales).filter(([, v]) => v).map(([k]) => k);
-                const target = selectedIds.length
-                  ? selectedIds.reduce((s, sid) => s + (sales.find((x) => x.id === sid)?.total || 0), 0)
-                  : debt;
-                const keepCredit = !!payForm.keep_change_as_credit;
-                const tipChange = !!payForm.tip_change;
-                const excess = Math.max(total - target, 0);
-                const tipExplicit = Number(payForm.tip) || 0;
-                const tipValue = tipChange ? excess : Math.min(tipExplicit, excess);
-                const totalApplied = keepCredit ? total - tipValue : Math.min(total - tipValue, target);
-                const change = (keepCredit || tipChange) ? 0 : Math.max(excess - tipValue, 0);
-                const newCredit = keepCredit && total - tipValue > target ? total - tipValue - target : 0;
-                return (
-                  <div className="space-y-2">
-                    <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 flex items-center justify-between">
-                      <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Total recebido</span>
-                      <span className="font-outfit text-xl font-bold text-slate-100">{euro(total)}</span>
-                    </div>
-                    {selectedIds.length > 0 && (
-                      <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 flex items-center justify-between text-xs">
-                        <span className="text-slate-400">Total das vendas selecionadas</span>
-                        <span className="text-slate-200 font-bold">{euro(target)}</span>
-                      </div>
-                    )}
-                    <div className="bg-slate-950 border border-amber-500/20 rounded-lg p-3 flex items-center justify-between">
-                      <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80">Abate na dívida</span>
-                      <span data-testid="payment-total-credit" className="font-outfit text-xl font-bold text-amber-300">{euro(totalApplied)}</span>
-                    </div>
-                    {tipValue > 0 && (
-                      <div className="bg-fuchsia-500/10 border border-fuchsia-500/30 rounded-lg p-3 flex items-center justify-between">
-                        <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-fuchsia-300/80">Gratificação (caixa)</span>
-                        <span data-testid="payment-tip" className="font-outfit text-xl font-bold text-fuchsia-300">{euro(tipValue)}</span>
-                      </div>
-                    )}
-                    {change > 0 && (
-                      <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg p-3 flex items-center justify-between">
-                        <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300/80">Troco a devolver (dinheiro)</span>
-                        <span data-testid="payment-change" className="font-outfit text-xl font-bold text-emerald-300">{euro(change)}</span>
-                      </div>
-                    )}
-                    {newCredit > 0 && (
-                      <div className="bg-sky-500/10 border border-sky-500/30 rounded-lg p-3 flex items-center justify-between">
-                        <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-sky-300/80">Fica como crédito a favor</span>
-                        <span data-testid="payment-new-credit" className="font-outfit text-xl font-bold text-sky-300">{euro(newCredit)}</span>
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-
-              <label className="flex items-start gap-3 px-3 py-3 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-sky-500/40">
-                <input
-                  data-testid="payment-keep-credit-toggle"
-                  type="checkbox"
-                  checked={!!payForm.keep_change_as_credit}
-                  onChange={(e) => setPayForm({ ...payForm, keep_change_as_credit: e.target.checked, tip_change: e.target.checked ? false : payForm.tip_change })}
-                  className="mt-0.5 w-4 h-4 accent-sky-400"
-                />
-                <span className="text-xs text-slate-200">
-                  <strong>Deixar troco como crédito</strong> a favor do cliente — por defeito o excedente é devolvido em dinheiro.
-                </span>
-              </label>
-
-              <label className="flex items-start gap-3 px-3 py-3 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-fuchsia-500/40">
-                <input
-                  data-testid="payment-tip-change-toggle"
-                  type="checkbox"
-                  checked={!!payForm.tip_change}
-                  onChange={(e) => setPayForm({ ...payForm, tip_change: e.target.checked, keep_change_as_credit: e.target.checked ? false : payForm.keep_change_as_credit })}
-                  className="mt-0.5 w-4 h-4 accent-fuchsia-400"
-                />
-                <span className="text-xs text-slate-200">
-                  <strong>Cliente deixa o troco como gratificação</strong> — vai para a caixa do bar (receita extra), não fica em conta.
-                </span>
-              </label>
-
-              <div>
-                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-fuchsia-300/80">Gratificação manual (€)</label>
-                <input
-                  data-testid="payment-tip-input"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  disabled={!!payForm.tip_change}
-                  placeholder="0,00"
-                  value={payForm.tip}
-                  onChange={(e) => setPayForm({ ...payForm, tip: e.target.value })}
-                  className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-fuchsia-500/50 disabled:opacity-50"
-                />
-              </div>
-
-              <div>
-                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Nota</label>
-                <input
-                  value={payForm.note}
-                  onChange={(e) => setPayForm({ ...payForm, note: e.target.value })}
-                  className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                  placeholder="Numerário, MBWay..."
-                />
-              </div>
-              <div className="flex gap-2 pt-2">
-                <button type="button" onClick={() => setShowPay(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Cancelar</button>
-                <button data-testid="payment-submit-btn" type="submit" className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold">Confirmar</button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <PaymentModal
+          client={c}
+          debt={debt}
+          unpaidSales={unpaidSales}
+          prefill={payPrefill}
+          canEditSale={canEditSale}
+          canCancelSale={canCancelSale}
+          onEditSale={(sale) => { setShowPay(false); setPayPrefill(null); openEditSale(sale); }}
+          onCancelSale={cancelSale}
+          onClose={() => { setShowPay(false); setPayPrefill(null); }}
+          onDone={(payment) => { setShowPay(false); setPayPrefill(null); load(); setNotifyPayment(payment); }}
+        />
       )}
 
       {notifyPayment && (

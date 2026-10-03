@@ -124,6 +124,13 @@ class SaleEditIn(BaseModel):
     client_id: Optional[str] = None  # se fornecido, transfere a venda para este cliente
     items: Optional[List[SaleItemIn]] = None  # se fornecido, substitui todos os itens
 
+class PaymentItemTarget(BaseModel):
+    sale_id: str
+    product_name: str
+    unit_price: float
+    qty_pay: int = 0    # quantidade que o cliente paga
+    qty_offer: int = 0  # quantidade oferecida pela casa (fica registada como despesa/limite)
+
 class PaymentIn(BaseModel):
     client_id: str
     amount: float
@@ -132,6 +139,7 @@ class PaymentIn(BaseModel):
     keep_change_as_credit: bool = False  # se False, valor abate é capped na dívida
     tip: float = 0.0  # gratificação (parte do amount que NÃO abate à dívida — receita extra)
     sale_ids: Optional[List[str]] = None  # se fornecido, paga apenas estas vendas em específico
+    item_targets: Optional[List[PaymentItemTarget]] = None  # seleção por item (pagar/oferecer)
 
 class PaymentUpdate(BaseModel):
     amount: Optional[float] = None
@@ -705,6 +713,52 @@ def _compute_points_with_rollover(client: dict, total: float) -> tuple[int, floa
     return pts, new_pending
 
 
+# ---------- Oferta da casa (limites mensais por utilizador) ----------
+HOUSE_OFFER_LIMITS = {"funcionario": 20.0}  # admin/tesoureiro/presidente: 50 €
+HOUSE_OFFER_DEFAULT_LIMIT = 50.0
+
+async def _house_offer_used_month(email: str) -> float:
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Europe/Lisbon"))
+    except Exception:
+        now = datetime.now(timezone.utc)
+    prefix = f"{now.year}-{now.month:02d}"
+    docs = await db.house_offers.find({"user_email": email}, {"_id": 0, "amount": 1, "created_at": 1}).to_list(5000)
+    return round(sum(float(d.get("amount") or 0) for d in docs if (d.get("created_at") or "")[:7] == prefix), 2)
+
+async def _house_offer_allowance(user: dict) -> dict:
+    limit = HOUSE_OFFER_LIMITS.get(user.get("role"), HOUSE_OFFER_DEFAULT_LIMIT)
+    used = await _house_offer_used_month(user["email"])
+    return {"limit": limit, "used": used, "remaining": round(max(limit - used, 0.0), 2)}
+
+async def _record_house_offers(entries: list, user: dict, client_name: str):
+    """Regista ofertas da casa: histórico (house_offers) + despesa de bar 'Conta da Casa'."""
+    total = round(sum(float(e["amount"]) for e in entries), 2)
+    if total <= 0:
+        return
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.house_offers.insert_many([
+        {**e, "user_email": user["email"], "user_role": user.get("role"), "client_name": client_name, "created_at": now_iso}
+        for e in entries
+    ])
+    await _ensure_house_supplier()
+    expense_tx = await _next_tx_number()
+    await db.supplier_expenses.insert_one({
+        "id": str(uuid.uuid4()),
+        "tx_number": expense_tx,
+        "supplier_id": "_house",
+        "supplier_name": "Conta da Casa",
+        "description": f"Oferta da casa · pagamento em conta corrente · {client_name} · por {user['email']}",
+        "amount": float(total),
+        "paid": True,
+        "due_date": None,
+        "paid_at": now_iso,
+        "created_at": now_iso,
+        "user_email": user["email"],
+        "house_items": entries,
+    })
+
 # ---------- Sales ----------
 @api_router.post("/sales")
 async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
@@ -751,10 +805,8 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
         qty = int(it.quantity)
         subtotal_full = unit_price * qty
         # Oferta da casa: flag do produto, do item ou do carrinho completo.
-        # Funcionário não pode dar ofertas — só admin/tesoureiro.
+        # Todos os funcionários podem oferecer, sujeito ao limite mensal (validado após o loop).
         item_offer = bool(getattr(it, "house_offer", False)) or bool(body.house_offer)
-        if item_offer and not is_staff:
-            raise HTTPException(status_code=403, detail="Só admin/tesoureiro pode marcar oferta da casa")
         is_house = bool(prod.get("is_house_account")) or item_offer
         subtotal = 0.0 if is_house else subtotal_full
         if is_house:
@@ -769,6 +821,15 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
             "is_house_account": is_house,
             "house_value": subtotal_full if is_house else 0.0,
         })
+
+    # Limite mensal de oferta da casa: funcionário 20 € · admin/tesoureiro/presidente 50 €
+    if house_total > 0:
+        allowance = await _house_offer_allowance(user)
+        if round(allowance["used"] + house_total, 2) > allowance["limit"]:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Limite mensal de oferta da casa excedido ({allowance['used']:.2f} € usados de {allowance['limit']:.2f} € · disponível: {allowance['remaining']:.2f} €)",
+            )
 
     # decrement stock
     for it in body.items:
@@ -817,6 +878,24 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
             "sale_id": sale_id,
             "house_items": [li for li in line_items if li.get("is_house_account")],
         })
+        # histórico de ofertas por funcionário (para limites e consulta)
+        await db.house_offers.insert_many([
+            {
+                "product_id": li["product_id"],
+                "product_name": li["product_name"],
+                "unit_price": float(li["unit_price"]),
+                "qty": int(li["quantity"]),
+                "amount": round(float(li["house_value"]), 2),
+                "user_email": user["email"],
+                "user_role": user.get("role"),
+                "client_id": body.client_id,
+                "client_name": client_doc["name"],
+                "sale_id": sale_id,
+                "source": "sale",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            for li in line_items if li.get("is_house_account")
+        ])
 
     # update client balance, total spent, points and pending value
     set_ops: dict = {}
@@ -1142,17 +1221,21 @@ async def approve_consumption_request(req_id: str, user: dict = Depends(get_curr
     client_doc = await db.clients.find_one({"id": req["client_id"]})
     if not client_doc:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
-    # Validar stock + atualizar
-    pids = [it["product_id"] for it in req["items"]]
+    # Validar stock + atualizar (itens de cota 'quota-YYYY-MM' não são produtos)
+    pids = [it["product_id"] for it in req["items"] if not str(it["product_id"]).startswith("quota-")]
     prods = await db.products.find({"id": {"$in": pids}}, {"_id": 0}).to_list(len(pids))
     pmap = {p["id"]: p for p in prods}
     for it in req["items"]:
+        if str(it["product_id"]).startswith("quota-"):
+            continue
         prod = pmap.get(it["product_id"])
         if not prod:
             raise HTTPException(status_code=400, detail=f"Produto {it['product_name']} foi removido")
         if prod["quantity"] < it["quantity"]:
             raise HTTPException(status_code=400, detail=f"Stock insuficiente para {prod['name']}")
     for it in req["items"]:
+        if str(it["product_id"]).startswith("quota-"):
+            continue
         await db.products.update_one({"id": it["product_id"]}, {"$inc": {"quantity": -int(it["quantity"])}})
     # Criar venda
     sale_id = str(uuid.uuid4())
@@ -1177,6 +1260,20 @@ async def approve_consumption_request(req_id: str, user: dict = Depends(get_curr
         "request_id": req_id,
     }
     await db.sales.insert_one(sale_doc)
+    # Cotas incluídas no pedido ficam 'billed' (na conta corrente) e apontam à venda gerada
+    for it in req["items"]:
+        pid = str(it["product_id"])
+        if pid.startswith("quota-"):
+            parts = pid.split("-")
+            try:
+                qy, qm = int(parts[1]), int(parts[2])
+            except (IndexError, ValueError):
+                continue
+            await db.quotas.update_one(
+                {"client_id": req["client_id"], "year": qy, "month": qm},
+                {"$set": {"client_id": req["client_id"], "year": qy, "month": qm, "amount": QUOTA_MONTHLY_VALUE, "status": "billed", "sale_id": sale_id}},
+                upsert=True,
+            )
     inc = {"balance": req["total"], "total_spent": req["total"], "points": points_earned}
     set_ops = {}
     if is_member:
@@ -1238,9 +1335,50 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
     total_paid_raw = cash_effective + points_euros
     if total_paid_raw <= 0 and tip <= 0:
         raise HTTPException(status_code=400, detail="O pagamento total tem de ser superior a 0")
-    # Cálculo do target (vendas específicas ou dívida total)
+    # Seleção por item: quantidades a pagar / a oferecer (oferta da casa)
+    offer_amount = 0.0
+    if body.item_targets:
+        target_amount = 0.0
+        prior = {}
+        past = await db.payments.find(
+            {"client_id": body.client_id, "item_targets": {"$exists": True, "$ne": None}},
+            {"_id": 0, "item_targets": 1},
+        ).to_list(5000)
+        for pp in past:
+            for t in (pp.get("item_targets") or []):
+                key = (t["sale_id"], t["product_name"])
+                prior[key] = prior.get(key, 0) + int(t.get("qty_pay", 0)) + int(t.get("qty_offer", 0))
+        sales_docs = await db.sales.find(
+            {"id": {"$in": sorted({t.sale_id for t in body.item_targets})}, "client_id": body.client_id},
+            {"_id": 0},
+        ).to_list(100)
+        smap = {s["id"]: s for s in sales_docs}
+        for t in body.item_targets:
+            s = smap.get(t.sale_id)
+            if not s:
+                raise HTTPException(status_code=400, detail="Venda alvo não encontrada")
+            line = next((li for li in s.get("items", []) if li["product_name"] == t.product_name), None)
+            if line is None or line.get("is_house_account"):
+                raise HTTPException(status_code=400, detail=f"Item inválido: {t.product_name}")
+            avail = int(line["quantity"]) - int(prior.get((t.sale_id, t.product_name), 0))
+            if t.qty_pay < 0 or t.qty_offer < 0 or t.qty_pay + t.qty_offer <= 0 or t.qty_pay + t.qty_offer > avail:
+                raise HTTPException(status_code=400, detail=f"Quantidade indisponível para {t.product_name} (disponível: {max(avail, 0)})")
+            target_amount += float(t.unit_price) * t.qty_pay
+            offer_amount += float(t.unit_price) * t.qty_offer
+        target_amount = round(target_amount, 2)
+        offer_amount = round(offer_amount, 2)
+        if offer_amount > 0:
+            allowance = await _house_offer_allowance(user)
+            if round(allowance["used"] + offer_amount, 2) > allowance["limit"]:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Limite mensal de oferta da casa excedido ({allowance['used']:.2f} € usados de {allowance['limit']:.2f} € · disponível: {allowance['remaining']:.2f} €)",
+                )
+    # Cálculo do target (seleção por item, vendas específicas ou dívida total)
     sale_ids_clean: list = []
-    if body.sale_ids:
+    if body.item_targets:
+        sale_ids_clean = sorted({t.sale_id for t in body.item_targets})
+    elif body.sale_ids:
         target_sales = await db.sales.find(
             {"id": {"$in": body.sale_ids}, "client_id": body.client_id},
             {"_id": 0, "id": 1, "total": 1},
@@ -1272,30 +1410,78 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
         "tendered": round(total_paid_raw + tip, 2),# total entregue (cash + valor pontos)
         "points_used": int(body.points_used or 0),
         "points_value": points_value,
-        "total_credited": round(total_paid, 2),    # valor abatido à dívida
+        "total_credited": round(total_paid + offer_amount, 2),  # valor abatido à dívida (pago + oferta)
         "change_returned": change_returned,
         "keep_change_as_credit": bool(body.keep_change_as_credit),
         "tip": tip,                                # gratificação (receita extra)
         "sale_ids": sale_ids_clean,                # vendas específicas (vazio = FIFO)
         "sale_tx_numbers": sale_tx_numbers,        # nºs das vendas cobertas (recibo)
+        "item_targets": (
+            [
+                {"sale_id": t.sale_id, "product_name": t.product_name, "unit_price": float(t.unit_price), "qty_pay": t.qty_pay, "qty_offer": t.qty_offer}
+                for t in body.item_targets
+            ]
+            if body.item_targets
+            else None
+        ),
+        "offer_amount": offer_amount,              # parte da oferta da casa (despesa do bar)
         "note": body.note,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "user_email": user["email"],
         "source": "points+cash" if (body.points_used and body.amount) else ("points" if body.points_used else "cash"),
     }
     await db.payments.insert_one(pay)
-    inc = {"balance": -total_paid}
+    credit_total = round(total_paid + offer_amount, 2)
+    inc = {"balance": -credit_total}
     if body.points_used:
         inc["points"] = -int(body.points_used)
     await db.clients.update_one({"id": body.client_id}, {"$inc": inc})
     if body.points_used:
         await _log_points(body.client_id, -int(body.points_used), "payment", pid, f"Pagamento (descontou {points_euros:.2f} €)", user["email"])
+    if offer_amount > 0:
+        entries = [
+            {"sale_id": t.sale_id, "product_name": t.product_name, "unit_price": float(t.unit_price), "qty": int(t.qty_offer), "amount": round(float(t.unit_price) * t.qty_offer, 2), "client_id": body.client_id, "source": "payment"}
+            for t in body.item_targets if t.qty_offer > 0
+        ]
+        await _record_house_offers(entries, user, c["name"])
     if tip > 0:
         await _audit("payment_tip", user["email"], entity="payment", entity_id=pid, after={"tip": tip, "client": c["name"]}, summary=f"Gratificação {tip:.2f} € de {c['name']}")
-    await _audit("payment_create", user["email"], entity="payment", entity_id=pid, summary=f"Pagamento tx #{tx_no} · {c['name']} · abatido {total_paid:.2f} €" + (f" · vendas {sale_tx_numbers}" if sale_tx_numbers else ""))
+    await _audit("payment_create", user["email"], entity="payment", entity_id=pid, summary=f"Pagamento tx #{tx_no} · {c['name']} · abatido {credit_total:.2f} €" + (f" · oferta {offer_amount:.2f} €" if offer_amount else "") + (f" · vendas {sale_tx_numbers}" if sale_tx_numbers else ""))
     await _sync_quota_paid_status(body.client_id)
     pay.pop("_id", None)
     return pay
+
+
+@api_router.get("/house-offers/allowance")
+async def get_house_offer_allowance(user: dict = Depends(get_current_user)):
+    """Quanto cada funcionário ainda pode oferecer este mês (funcionário 20 €, admin/tesoureiro 50 €)."""
+    return await _house_offer_allowance(user)
+
+
+@api_router.get("/house-offers")
+async def list_house_offers(year: Optional[int] = None, month: Optional[int] = None, user: dict = Depends(get_current_user)):
+    """Consulta de ofertas da casa por funcionário (quem ofereceu mais) e entradas detalhadas."""
+    now = datetime.now(timezone.utc)
+    year = year or now.year
+    month = month or now.month
+    prefix = f"{year}-{month:02d}"
+    items = await db.house_offers.find({"created_at": {"$regex": f"^{prefix}"}}, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    by_user = {}
+    for it in items:
+        u = by_user.setdefault(it["user_email"], {"user_email": it["user_email"], "role": it.get("user_role") or "—", "total": 0.0, "count": 0})
+        u["total"] += float(it.get("amount") or 0)
+        u["count"] += 1
+    ranked = sorted(by_user.values(), key=lambda x: (-x["total"], x["user_email"]))
+    for u in ranked:
+        u["total"] = round(u["total"], 2)
+        u["limit"] = HOUSE_OFFER_LIMITS.get(u.get("role"), HOUSE_OFFER_DEFAULT_LIMIT)
+    return {
+        "year": year,
+        "month": month,
+        "items": items,
+        "by_user": ranked,
+        "total": round(sum(float(i.get("amount") or 0) for i in items), 2),
+    }
 
 
 @api_router.post("/payments/{payment_id}/reverse")
@@ -2200,16 +2386,39 @@ async def socio_list_products(socio: dict = Depends(get_current_socio)):
     return items
 
 
-@api_router.post("/socio/consumption-request")
-async def socio_consumption_request(body: SocioConsumptionReqIn, socio: dict = Depends(get_current_socio)):
-    if not body.items:
-        raise HTTPException(status_code=400, detail="Sem itens")
-    pids = [it.product_id for it in body.items]
+async def _build_request_line_items(items, client_id: str) -> list:
+    """Constrói line_items de um pedido de consumo; aceita pseudo-produto de cota ('quota-YYYY-MM')
+    para o sócio pagar a cota em dívida junto ao pedido."""
+    pids = [it.product_id for it in items if not it.product_id.startswith("quota-")]
     prods = await db.products.find({"id": {"$in": pids}}, {"_id": 0}).to_list(len(pids))
     pmap = {p["id"]: p for p in prods}
     line_items = []
     total = 0.0
-    for it in body.items:
+    for it in items:
+        if it.product_id.startswith("quota-"):
+            parts = it.product_id.split("-")
+            try:
+                qy, qm = int(parts[1]), int(parts[2])
+            except (IndexError, ValueError):
+                raise HTTPException(status_code=400, detail="Item de cota inválido")
+            if qm < 1 or qm > 12 or qy < 2000 or qy > 2100:
+                raise HTTPException(status_code=400, detail="Item de cota inválido")
+            if it.quantity != 1:
+                raise HTTPException(status_code=400, detail="Só podes incluir 1 cota por mês")
+            existing = await db.quotas.find_one({"client_id": client_id, "year": qy, "month": qm})
+            if existing and existing.get("status") == "paid" and not existing.get("reversed"):
+                raise HTTPException(status_code=400, detail=f"Cota {MONTHS_PT[qm-1]}/{qy} já está paga")
+            sub = float(QUOTA_MONTHLY_VALUE)
+            total += sub
+            line_items.append({
+                "product_id": it.product_id,
+                "product_name": f"Cota {MONTHS_PT[qm-1]}/{qy}",
+                "unit_price": QUOTA_MONTHLY_VALUE,
+                "quantity": 1,
+                "subtotal": sub,
+                "is_quota": True,
+            })
+            continue
         prod = pmap.get(it.product_id)
         if not prod:
             raise HTTPException(status_code=404, detail=f"Produto {it.product_id} não encontrado")
@@ -2224,6 +2433,17 @@ async def socio_consumption_request(body: SocioConsumptionReqIn, socio: dict = D
             "quantity": int(it.quantity),
             "subtotal": sub,
         })
+    return line_items
+
+
+@api_router.post("/socio/consumption-request")
+async def socio_consumption_request(body: SocioConsumptionReqIn, socio: dict = Depends(get_current_socio)):
+    if not body.items:
+        raise HTTPException(status_code=400, detail="Sem itens")
+    pids = [it.product_id for it in body.items]
+    prods = await db.products.find({"id": {"$in": pids}}, {"_id": 0}).to_list(len(pids))
+    line_items = await _build_request_line_items(body.items, socio["id"])
+    total = round(sum(li["subtotal"] for li in line_items), 2)
     rid = str(uuid.uuid4())
     doc = {
         "id": rid,
@@ -2273,26 +2493,8 @@ async def socio_edit_request(req_id: str, body: SocioConsumptionReqIn, socio: di
         raise HTTPException(status_code=400, detail=f"Pedido já {req.get('status')}, não pode ser alterado")
     if not body.items:
         raise HTTPException(status_code=400, detail="Sem itens")
-    pids = [it.product_id for it in body.items]
-    prods = await db.products.find({"id": {"$in": pids}}, {"_id": 0}).to_list(len(pids))
-    pmap = {p["id"]: p for p in prods}
-    line_items = []
-    total = 0.0
-    for it in body.items:
-        prod = pmap.get(it.product_id)
-        if not prod:
-            raise HTTPException(status_code=404, detail=f"Produto {it.product_id} não encontrado")
-        if it.quantity <= 0:
-            raise HTTPException(status_code=400, detail="Quantidade inválida")
-        sub = float(prod["price"]) * int(it.quantity)
-        total += sub
-        line_items.append({
-            "product_id": prod["id"],
-            "product_name": prod["name"],
-            "unit_price": float(prod["price"]),
-            "quantity": int(it.quantity),
-            "subtotal": sub,
-        })
+    line_items = await _build_request_line_items(body.items, req["client_id"])
+    total = round(sum(li["subtotal"] for li in line_items), 2)
     await db.consumption_requests.update_one(
         {"id": req_id},
         {"$set": {"items": line_items, "total": total, "note": body.note, "edited_at": datetime.now(timezone.utc).isoformat()}},
@@ -2312,6 +2514,23 @@ async def socio_quotas(year: Optional[int] = None, socio: dict = Depends(get_cur
     if year is None:
         year = datetime.now(timezone.utc).year
     return {"year": year, "quotas": await _quotas_status(socio["id"], year)}
+
+
+@api_router.get("/socio/bar-status")
+async def socio_bar_status(socio: dict = Depends(get_current_socio)):
+    """Estado do bar para a app do sócio (pedir consumo bloqueado quando fechado)."""
+    doc = await db.club_state.find_one({"_id": "bar"}, {"_id": 0})
+    is_open = bool(doc and doc.get("open"))
+    if is_open:
+        # coerente com o fecho automático (02:00–05:00 hora de Lisboa)
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.now(ZoneInfo("Europe/Lisbon"))
+        except Exception:
+            now = datetime.now(timezone.utc)
+        if 2 <= now.hour < 5:
+            is_open = False
+    return {"open": is_open}
 
 async def _socio_has_open_quotas(client_id: str, year: int) -> bool:
     qs = await _quotas_status(client_id, year)
