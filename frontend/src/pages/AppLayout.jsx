@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { NavLink, Outlet, useNavigate, useLocation, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
+import { openFinanceDoc } from "../lib/financeDoc";
 import {
   Bell,
   ChartLineUp,
@@ -107,6 +108,18 @@ function BarStatusButton() {
         `Bar ${data.open ? "ABERTO" : "FECHADO"} · valor em caixa: ${euro(data.cash_in_drawer)} (consta na ata)`
       );
       setConfirmOpen(false);
+      // Ao fechar o bar: gera o PDF de fecho de contas do dia (Deve / Haver)
+      if (!data.open) {
+        try {
+          const t = new Date().toISOString().slice(0, 10);
+          const { data: rep } = await api.get("/reports/finance", { params: { date_from: t, date_to: t } });
+          if (!openFinanceDoc(rep, t.split("-").reverse().join("/"), t.split("-").reverse().join("/"), "FECHO DE CONTAS DO DIA")) {
+            toast.error("Permite popups para o PDF de fecho de contas");
+          }
+        } catch {
+          toast.error("Não foi possível gerar o PDF de fecho de contas");
+        }
+      }
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }

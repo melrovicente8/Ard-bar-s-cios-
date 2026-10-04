@@ -292,16 +292,36 @@ export default function PaymentModal({
                 <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
                   Pontos a descontar (múltiplos de 5)
                 </label>
-                <input
-                  data-testid="payment-points-input"
-                  type="number"
-                  min="0"
-                  step="5"
-                  max={Math.floor((client.points || 0) / 5) * 5}
-                  value={form.points_used}
-                  onChange={(e) => setForm({ ...form, points_used: e.target.value })}
-                  className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-green-500/50"
-                />
+                <div className="mt-1.5 flex gap-2">
+                  <input
+                    data-testid="payment-points-input"
+                    type="number"
+                    min="0"
+                    step="5"
+                    max={Math.floor((client.points || 0) / 5) * 5}
+                    value={form.points_used}
+                    onChange={(e) => setForm({ ...form, points_used: e.target.value })}
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-green-500/50"
+                  />
+                  <button
+                    type="button"
+                    data-testid="payment-points-suggest"
+                    onClick={() => {
+                      const tgt = selCount ? target : debt;
+                      // 5 pts = 1 € → pontos necessários = alvo × 5, arredondado por cima ao múltiplo de 5
+                      const needed = Math.ceil(tgt) * 5;
+                      const suggested = Math.min(
+                        Math.floor((client.points || 0) / 5) * 5,
+                        needed
+                      );
+                      setForm((f) => ({ ...f, points_used: Math.max(suggested, 0) }));
+                    }}
+                    title={`Sugere os pontos necessários para pagar ${euro(selCount ? target : debt)}`}
+                    className="px-3 rounded-lg bg-green-500/15 border border-green-500/30 text-green-300 text-xs font-bold hover:bg-green-500/25 whitespace-nowrap"
+                  >
+                    Sugerir
+                  </button>
+                </div>
               </div>
               <div className="flex items-center justify-between text-xs">
                 <span className="text-slate-500">Valor dos pontos:</span>

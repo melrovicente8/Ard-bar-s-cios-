@@ -43,7 +43,7 @@ export default function Socios() {
       if (filter === "paid" && !c.is_member) return false;
       if (filter === "uptodate" && !c.quotas_up_to_date) return false;
       if (filter === "notuptodate" && c.quotas_up_to_date) return false;
-      if (filter === "debt" && (c.balance || 0) <= 0) return false;
+      if (filter === "debt" && (c.balance || 0) <= 0.004) return false;
       if (!q) return true;
       return (
         c.name.toLowerCase().includes(q) ||
@@ -218,7 +218,7 @@ export default function Socios() {
                     <td className="px-4 py-3 text-slate-400">{c.contact || "—"}</td>
                     <td className="px-4 py-3 text-slate-400 truncate max-w-[180px]">{c.email || "—"}</td>
                     <td className="px-4 py-3 text-right">
-                      <span className={(c.balance || 0) > 0 ? "text-rose-400 font-semibold" : "text-slate-500"}>
+                      <span className={(c.balance || 0) > 0.004 ? "text-rose-400 font-semibold" : "text-slate-500"}>
                         {euro(Math.max(c.balance || 0, 0))}
                       </span>
                     </td>

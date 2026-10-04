@@ -162,6 +162,8 @@ class MBWayRequestIn(BaseModel):
     amount: float
     mbway_phone: str  # phone used to pay
     note: Optional[str] = None
+    use_points: bool = False
+    points_to_use: int = 0
 
 class SocioPayPointsIn(BaseModel):
     points: int
@@ -623,7 +625,8 @@ async def client_detail(client_id: str, user: dict = Depends(get_current_user)):
 @api_router.get("/clients-with-debt")
 async def list_debtors(user: dict = Depends(get_current_user)):
     clients = await db.clients.find({}, {"_id": 0, "pin_hash": 0}).to_list(5000)
-    debtors = [c for c in clients if (c.get("balance", 0) > 0)]
+    # Épsilon de 0,005 €: resíduos de vírgula flutuante (ex.: 4e-16) não são dívida
+    debtors = [c for c in clients if (c.get("balance", 0) > 0.004)]
     debtors.sort(key=lambda x: x.get("balance", 0), reverse=True)
     # vendas de hoje por cliente (para o filtro "Hoje" por defeito)
     try:
@@ -2236,6 +2239,15 @@ async def socio_update_me(body: SocioUpdateIn, socio: dict = Depends(get_current
 async def socio_mbway_request(body: MBWayRequestIn, socio: dict = Depends(get_current_socio)):
     if body.amount <= 0:
         raise HTTPException(status_code=400, detail="Valor inválido")
+    points_to_use = 0
+    if body.use_points:
+        if body.points_to_use <= 0:
+            raise HTTPException(status_code=400, detail="Quantidade de pontos inválida")
+        cur = await db.clients.find_one({"id": socio["id"]}, {"points": 1, "balance": 1})
+        available = int(cur.get("points", 0)) if cur else 0
+        if body.points_to_use > available:
+            raise HTTPException(status_code=400, detail=f"Só tens {available} pontos disponíveis")
+        points_to_use = int(body.points_to_use)
     rec = {
         "id": str(uuid.uuid4()),
         "client_id": socio["id"],
@@ -2243,6 +2255,7 @@ async def socio_mbway_request(body: MBWayRequestIn, socio: dict = Depends(get_cu
         "amount": float(body.amount),
         "mbway_phone": body.mbway_phone.strip(),
         "note": body.note,
+        "points_used": points_to_use,
         "status": "pending",  # pending | confirmed | rejected
         "created_at": datetime.now(timezone.utc).isoformat(),
         "confirmed_at": None,
@@ -2375,7 +2388,8 @@ async def socio_members_paid_up(socio: dict = Depends(get_current_socio)):
 
 @api_router.get("/socio/products")
 async def socio_list_products(socio: dict = Depends(get_current_socio)):
-    """Lista de produtos disponíveis para o sócio pedir consumo (exclui cotas e sem stock)."""
+    """Lista de produtos disponíveis para o sócio pedir consumo (exclui cotas e sem stock).
+    A disponibilidade desconta o que já está reservado em pedidos pendentes."""
     items = await db.products.find(
         {"$and": [
             {"$or": [{"is_quota": {"$exists": False}}, {"is_quota": False}]},
@@ -2383,7 +2397,17 @@ async def socio_list_products(socio: dict = Depends(get_current_socio)):
         ]},
         {"_id": 0},
     ).sort("name", 1).to_list(1000)
-    return items
+    # Reservado em pedidos ainda pendentes (qualquer sócio)
+    reserved: dict = {}
+    async for req in db.consumption_requests.find({"status": "pending"}, {"items": 1}):
+        for it in req.get("items", []):
+            pid = str(it.get("product_id", ""))
+            if pid.startswith("quota-"):
+                continue
+            reserved[pid] = reserved.get(pid, 0) + int(it.get("quantity", 0))
+    for p in items:
+        p["available_quantity"] = max(int(p.get("quantity", 0)) - reserved.get(p["id"], 0), 0)
+    return [p for p in items if p["available_quantity"] > 0]
 
 
 async def _build_request_line_items(items, client_id: str) -> list:
@@ -2609,6 +2633,13 @@ async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> 
     orders = await db.supplier_orders.find(exp_q, {"_id": 0}).sort("created_at", -1).to_list(5000)
     expenses = await db.supplier_expenses.find(exp_q, {"_id": 0}).sort("created_at", -1).to_list(5000)
 
+    # Nº de sócio de cada cliente (para o PDF usar o nº em vez do nome)
+    cids = list({s["client_id"] for s in sales if s.get("client_id")})
+    members = await db.clients.find({"id": {"$in": cids}}, {"id": 1, "member_number": 1}).to_list(len(cids)) if cids else []
+    member_map = {c["id"]: c.get("member_number") or "" for c in members}
+    for s in sales:
+        s["client_member_number"] = member_map.get(s.get("client_id"), "")
+
     sales_consumo = [s for s in sales if s.get("source") != "quota"]
     sales_cotas = [s for s in sales if s.get("source") == "quota"]
     rev_consumo = sum(s.get("total", 0) for s in sales_consumo)
@@ -2810,6 +2841,9 @@ async def _apply_mbway_confirm(mb: dict, user: dict) -> dict:
     else:
         pid = str(uuid.uuid4())
         tx_no = await _next_tx_number()
+        pts = int(mb.get("points_used") or 0)
+        pts_value = round(pts / POINTS_PER_EURO, 2)
+        credited = round(float(mb["amount"]) + pts_value, 2)
         pay = {
             "id": pid,
             "tx_number": tx_no,
@@ -2817,18 +2851,23 @@ async def _apply_mbway_confirm(mb: dict, user: dict) -> dict:
             "client_name": mb["client_name"],
             "amount": float(mb["amount"]),
             "tendered": float(mb["amount"]),
-            "total_credited": float(mb["amount"]),
+            "total_credited": credited,
             "change_returned": 0.0,
-            "points_used": 0,
-            "points_value": 0.0,
-            "note": f"MBWay {mb['mbway_phone']}" + (f" · {mb['note']}" if mb.get("note") else ""),
+            "points_used": pts,
+            "points_value": pts_value,
+            "note": f"MBWay {mb['mbway_phone']}" + (f" · {mb['note']}" if mb.get("note") else "") + (f" · {pts} pts" if pts else ""),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "user_email": user["email"],
             "source": "mbway",
             "mbway_id": mb["id"],
         }
         await db.payments.insert_one(pay)
-        await db.clients.update_one({"id": mb["client_id"]}, {"$inc": {"balance": -float(mb["amount"])}})
+        await db.clients.update_one(
+            {"id": mb["client_id"]},
+            {"$inc": {"balance": -credited, **({"points": -pts} if pts else {})}},
+        )
+        if pts:
+            await _log_points(mb["client_id"], -pts, "mbway", mb["id"], f"Desconto de pontos em pagamento MBWay ({pts_value:.2f} €)", user["email"])
         await _sync_quota_paid_status(mb["client_id"])
         result = {"payment_id": pid, "payment_tx_number": tx_no}
     return result

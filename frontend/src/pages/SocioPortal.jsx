@@ -23,6 +23,7 @@ import {
   Camera,
   Plus,
   Ticket,
+  Storefront,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import CommunityChat from "../components/CommunityChat";
@@ -34,7 +35,7 @@ export default function SocioPortal() {
   const [form, setForm] = useState({ contact: "", email: "", morada: "" });
   const [club, setClub] = useState({});
   const [showMb, setShowMb] = useState(false);
-  const [mbForm, setMbForm] = useState({ amount: "", mbway_phone: "", note: "" });
+  const [mbForm, setMbForm] = useState({ amount: "", mbway_phone: "", note: "", use_points: false, points_to_use: 0 });
   const [showPoints, setShowPoints] = useState(false);
   const [pointsToUse, setPointsToUse] = useState(5);
   const [historyFilter, setHistoryFilter] = useState("today"); // default Hoje
@@ -100,7 +101,8 @@ export default function SocioPortal() {
   }
 
   const { client: c, sales, payments, mbway } = data;
-  const debt = Math.max(c.balance || 0, 0);
+  // Épsilon: resíduos de vírgula flutuante (ex.: 4e-16) não são dívida
+  const debt = (c.balance || 0) > 0.004 ? c.balance : 0;
 
   const MONTHS_PT = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
   const quotaItem = (pid) => {
@@ -109,6 +111,8 @@ export default function SocioPortal() {
   };
   const priceOf = (pid) => (pid.startsWith("quota-") ? quotaItem(pid).price : (products.find((x) => x.id === pid)?.price || 0));
   const nameOf = (pid) => (pid.startsWith("quota-") ? quotaItem(pid).label : (products.find((x) => x.id === pid)?.name || ""));
+  // Disponível = stock menos o que já está reservado em pedidos pendentes (vem do backend)
+  const availOf = (p) => (p.available_quantity != null ? p.available_quantity : p.quantity || 0);
 
   // Vendas ainda em dívida (FIFO igual ao histórico do clube)
   const debtSales = (() => {
@@ -156,6 +160,8 @@ export default function SocioPortal() {
         amount: parseFloat(mbForm.amount),
         mbway_phone: mbForm.mbway_phone,
         note: mbForm.note || null,
+        use_points: !!mbForm.use_points,
+        points_to_use: mbForm.use_points ? Number(mbForm.points_to_use) || 0 : 0,
       });
       toast.success("Pedido enviado — aguarda confirmação do clube.");
       setShowMb(false);
@@ -477,7 +483,7 @@ export default function SocioPortal() {
               {debt > 0 && (
                 <button
                   data-testid="socio-pay-mbway-btn"
-                  onClick={() => setShowMb(true)}
+                  onClick={() => { setMbForm((f) => ({ ...f, use_points: false, points_to_use: 0 })); setShowMb(true); }}
                   className="mt-4 w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-2.5 rounded-lg flex items-center justify-center gap-2"
                 >
                   <DeviceMobile size={18} weight="bold" /> Pagar por MBWay
@@ -552,6 +558,22 @@ export default function SocioPortal() {
             )}
           </div>
         </div>
+
+        {/* Bar fechado — aviso bem visível, pedir consumo bloqueado */}
+        {barOpen === false && (
+          <div
+            data-testid="socio-bar-closed-banner"
+            className="bg-rose-500/10 border-2 border-rose-500/40 rounded-2xl p-5 flex items-center gap-4"
+          >
+            <div className="w-12 h-12 rounded-xl bg-rose-500/20 flex items-center justify-center shrink-0">
+              <Storefront size={26} weight="duotone" className="text-rose-400" />
+            </div>
+            <div>
+              <div className="font-outfit text-xl font-bold text-rose-300">Estamos Fechados</div>
+              <p className="text-sm text-rose-200/80">Voltamos em breve, fica atento. Enquanto o bar estiver fechado não é possível pedir consumo.</p>
+            </div>
+          </div>
+        )}
 
         {/* Personal info */}
         <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-6">
@@ -662,7 +684,7 @@ export default function SocioPortal() {
                   title="O bar está fechado"
                   className="text-xs px-3 py-1.5 rounded-md bg-rose-500/15 text-rose-300 border border-rose-500/30 flex items-center gap-1.5 font-bold"
                 >
-                  <Storefront size={13} weight="duotone" /> Bar Fechado · Aguarda Reabertura
+                  <Storefront size={13} weight="duotone" /> Estamos Fechados · Volta em breve, fica atento
                 </span>
               ) : (
                 <button
@@ -1070,9 +1092,9 @@ export default function SocioPortal() {
                           type="button"
                           data-testid={`req-inc-${pid}`}
                           onClick={() => setReqCart({ ...reqCart, [pid]: q + 1 })}
-                          disabled={!isQuota && p && q >= p.quantity}
+                          disabled={!isQuota && p && q >= availOf(p)}
                           className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700 text-base font-bold disabled:opacity-30"
-                          title={q >= p.quantity ? "Stock esgotado" : "Adicionar 1"}
+                          title={!isQuota && p && q >= availOf(p) ? "Quantidade disponível esgotada" : "Adicionar 1"}
                         >+</button>
                         <button
                           type="button"
@@ -1094,16 +1116,18 @@ export default function SocioPortal() {
 
             <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1 px-1">Produtos disponíveis</div>
             <div className="flex-1 overflow-y-auto grid grid-cols-2 md:grid-cols-3 gap-2 mb-3">
-              {products.filter((p) => !p.is_quota && p.quantity > 0).map((p) => (
+              {products.filter((p) => !p.is_quota && availOf(p) > 0).map((p) => (
                 <button
                   key={p.id}
                   type="button"
                   data-testid={`req-prod-${p.id}`}
+                  disabled={!!reqCart[p.id] && reqCart[p.id] >= availOf(p)}
                   onClick={() => setReqCart({ ...reqCart, [p.id]: (reqCart[p.id] || 0) + 1 })}
-                  className="text-left px-2 py-2 rounded bg-slate-950 border border-slate-800 hover:border-amber-500/40 text-xs"
+                  className="text-left px-2 py-2 rounded bg-slate-950 border border-slate-800 hover:border-amber-500/40 text-xs disabled:opacity-30 disabled:cursor-not-allowed"
                 >
                   <div className="truncate font-medium">{p.name}</div>
                   <div className="text-amber-400 font-bold text-[11px]">{euro(p.price)}</div>
+                  <div className="text-[10px] text-slate-500">{availOf(p)} disp.</div>
                   {reqCart[p.id] && <div className="text-emerald-400 text-[10px] mt-0.5">× {reqCart[p.id]} no carrinho</div>}
                 </button>
               ))}
@@ -1336,6 +1360,55 @@ export default function SocioPortal() {
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
                 />
               </Field>
+
+              {(c.points || 0) > 0 && (
+                <div className="bg-green-500/5 border border-green-500/20 rounded-lg p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-green-400/80">Descontar pontos</span>
+                    <div className="flex gap-2" data-testid="mbway-points-toggle">
+                      {[{ v: false, l: "Não" }, { v: true, l: "Sim" }].map((o) => (
+                        <button
+                          key={o.l}
+                          type="button"
+                          data-testid={`mbway-points-${o.v ? "sim" : "nao"}`}
+                          onClick={() => setMbForm((f) => ({ ...f, use_points: o.v, points_to_use: o.v && !f.points_to_use ? Math.min(c.points, 5) : f.points_to_use }))}
+                          className={`px-3 py-1 rounded-md text-xs font-bold ${mbForm.use_points === o.v ? "bg-green-500 text-slate-950" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}
+                        >{o.l}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    Disponíveis: <strong className="text-green-300">{c.points}</strong> · 5 pts = 1 €
+                  </div>
+                  {mbForm.use_points && (
+                    <div>
+                      <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Descontar Pontos</label>
+                      <input
+                        data-testid="mbway-points-input"
+                        type="number"
+                        min="1"
+                        max={c.points}
+                        required
+                        value={mbForm.points_to_use}
+                        onChange={(e) => setMbForm({ ...mbForm, points_to_use: e.target.value })}
+                        className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-green-500/50"
+                      />
+                      <div className="mt-2 flex items-center justify-between text-xs">
+                        <span className="text-slate-500">Valor dos pontos:</span>
+                        <span className="font-bold text-green-300">{euro((Number(mbForm.points_to_use) || 0) / 5)}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="bg-slate-950 border border-amber-500/20 rounded-lg p-3 flex items-center justify-between">
+                <span className="text-[10px] uppercase tracking-wider text-amber-400/80 font-bold">Total a abater</span>
+                <span data-testid="mbway-total-credit" className="font-outfit text-xl font-bold text-amber-300">
+                  {euro((Number(mbForm.amount) || 0) + (mbForm.use_points ? (Number(mbForm.points_to_use) || 0) / 5 : 0))}
+                </span>
+              </div>
+
               <Field label="Nota (opcional)">
                 <input
                   value={mbForm.note}

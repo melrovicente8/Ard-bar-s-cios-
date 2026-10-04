@@ -220,7 +220,7 @@ export default function Clientes() {
               </thead>
               <tbody>
                 {filtered.map((c) => {
-                  const debt = (c.balance || 0) > 0;
+                  const debt = (c.balance || 0) > 0.004;
                   return (
                     <tr key={c.id} data-testid={`client-row-${c.id}`} className="border-t border-slate-800/60 hover:bg-slate-900/60">
                       <td className="px-4 py-2.5 font-medium text-slate-100">
@@ -260,7 +260,7 @@ export default function Clientes() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {filtered.map((c) => {
-            const debt = (c.balance || 0) > 0;
+            const debt = (c.balance || 0) > 0.004;
             return (
               <div
                 key={c.id}
