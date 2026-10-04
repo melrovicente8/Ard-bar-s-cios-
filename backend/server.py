@@ -2007,7 +2007,7 @@ async def _sync_quota_paid_status(client_id: str):
     """Recalcula o estado das cotas a partir da cobertura de pagamentos (FIFO + sale_ids).
     Vendas de cota cobertas por pagamentos → meses 'paid'; caso contrário → 'billed'.
     Meses com flag 'reversed' (extorno manual) não são tocados."""
-    sales = await db.sales.find({"client_id": client_id, "source": "quota"}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    sales = await db.sales.find({"client_id": client_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
     if not sales:
         return
     payments = await db.payments.find({"client_id": client_id}, {"_id": 0}).sort("created_at", 1).to_list(5000)

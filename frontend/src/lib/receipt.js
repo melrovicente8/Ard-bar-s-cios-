@@ -26,10 +26,22 @@ export function printReceipt(tx, extras = {}) {
     ? tx.items
         .map(
           (it) =>
-            `<div class="row"><span>${it.quantity}× ${it.product_name} <span class="muted">(${euro(it.unit_price || 0)}/un)</span></span><span>${euro(it.subtotal)}</span></div>`
+            `<div class="row"><span>${it.quantity}× ${it.product_name}${it.is_house_account ? ' <span class="offer">· OFERTA DA CASA</span>' : ""} <span class="muted">(${euro(it.unit_price || 0)}/un)</span></span><span>${euro(it.subtotal)}</span></div>`
         )
         .join("")
     : "";
+  // Recibo de pagamento com seleção por item: mostra o que foi pago e o que foi oferecido
+  const payItemsHtml =
+    !isSale && tx.item_targets && tx.item_targets.length
+      ? tx.item_targets
+          .map((t) => {
+            const parts = [];
+            if (t.qty_pay > 0) parts.push(`${t.qty_pay}× pago`);
+            if (t.qty_offer > 0) parts.push(`${t.qty_offer}× OFERTA DA CASA`);
+            return `<div class="row"><span>${t.product_name} <span class="muted">(${euro(t.unit_price || 0)}/un)</span></span><span class="muted">${parts.join(" + ")}</span></div>`;
+          })
+          .join("")
+      : "";
   const tendered = tx.tendered || tx.amount || 0;
   const credited = tx.total_credited || tx.amount || 0;
   const change = tx.change_returned || 0;
@@ -53,6 +65,7 @@ hr{border:0;border-top:1px dashed #000;margin:10px 0}
 .row{display:flex;justify-content:space-between;margin:4px 0}
 .big{font-size:20px;font-weight:bold}
 .muted{color:#555;font-size:11px}
+.offer{color:#7e22ce;font-weight:bold;font-size:11px;letter-spacing:.03em}
 .txn{font-size:14px;font-weight:bold;background:#000;color:#fff;text-align:center;padding:4px;border-radius:3px;margin:8px 0}
 @media print{ body{margin:0} button{display:none} }
 </style></head><body>
@@ -69,8 +82,11 @@ ${client.member_number ? `<div class="row"><span>Sócio</span><strong>nº ${clie
 ${quota ? `<div class="row"><span>Cotas</span><strong style="color:${quotaColor[quota.status] || "#000"}">${quota.label}</strong></div>` : ""}
 ${isSale ? `<hr/>${itemsHtml}<hr/>
 <div class="row big"><span>TOTAL</span><span>${euro(tx.total)}</span></div>
-${tx.points_earned ? `<div class="row"><span>Pontos ganhos</span><span>+${tx.points_earned}</span></div>` : ""}` : `<hr/>
+${tx.points_earned ? `<div class="row"><span>Pontos ganhos</span><span>+${tx.points_earned}</span></div>` : ""}` : `${payItemsHtml ? `<hr/><div class="muted">Itens:</div>${payItemsHtml}` : ""}
+${tx.offer_amount > 0 ? '<div style="text-align:center;background:#a21caf;color:#fff;padding:4px;border-radius:3px;margin:6px 0;font-weight:bold">★ OFERTA DA CASA ★</div>' : ""}
+<hr/>
 <div class="row"><span>Valor a pagar</span><span>${euro(balanceOwed != null ? balanceOwed + credited : credited)}</span></div>
+${tx.offer_amount > 0 ? `<div class="row"><span>Oferta da casa (despesa do bar)</span><span>${euro(tx.offer_amount)}</span></div>` : ""}
 <div class="row"><span>Numerário entregue</span><span>${euro(tendered)}</span></div>
 ${tx.points_used ? `<div class="row"><span>Pontos usados</span><span>${tx.points_used} pts (${euro(tx.points_value || tx.points_used / 5)})</span></div>` : ""}
 <div class="row"><span>Abatido na dívida</span><span>${euro(credited)}</span></div>
