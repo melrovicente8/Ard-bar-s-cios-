@@ -23,6 +23,7 @@ import {
   Storefront,
   MagnifyingGlass,
   Wine,
+  ArrowClockwise,
   Printer,
   Phone,
   MapPin,
@@ -595,6 +596,14 @@ export default function ClienteFicha() {
       >
         <ArrowLeft size={16} /> Voltar
       </Link>
+      <button
+        data-testid="ficha-refresh-btn"
+        onClick={load}
+        title="Atualizar dados"
+        className="inline-flex items-center gap-2 text-sm text-slate-400 hover:text-amber-400 mb-6 ml-3"
+      >
+        <ArrowClockwise size={16} /> Refresh
+      </button>
 
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-8">
         <div className="flex items-center gap-4">

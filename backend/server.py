@@ -1410,7 +1410,7 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
         "client_id": body.client_id,
         "client_name": c["name"],
         "amount": float(body.amount),              # numerário entregue (cash bruto, inclui tip)
-        "tendered": round(total_paid_raw + tip, 2),# total entregue (cash + valor pontos)
+        "tendered": round(float(body.amount), 2),  # numerário entregue (apenas cash — pontos abatem à dívida, não são dinheiro entregue)
         "points_used": int(body.points_used or 0),
         "points_value": points_value,
         "total_credited": round(total_paid + offer_amount, 2),  # valor abatido à dívida (pago + oferta)

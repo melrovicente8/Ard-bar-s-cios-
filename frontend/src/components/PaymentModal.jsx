@@ -71,11 +71,8 @@ export default function PaymentModal({
   const target = itemRows.reduce((acc, r) => acc + (r.it.unit_price || 0) * ((itemSel[r.key] || {}).pay || 0), 0);
   const offerAmount = itemRows.reduce((acc, r) => acc + (r.it.unit_price || 0) * ((itemSel[r.key] || {}).offer || 0), 0);
 
-  const applyAmount = (sel) => {
-    const t = itemRows.reduce((acc, r) => acc + (r.it.unit_price || 0) * ((sel[r.key] || {}).pay || 0), 0);
-    setForm((f) => ({ ...f, amount: t > 0 ? t.toFixed(2) : f.amount }));
-  };
-
+  // O campo "A pagar" representa o numerário que o cliente entrega (para calcular troco)
+  // e é preenchido manualmente pelo funcionário — a seleção de itens não o altera.
   const changeItem = (key, qty, field, delta) => {
     const cur = itemSel[key] || { pay: 0, offer: 0 };
     let pay = cur.pay;
@@ -85,7 +82,6 @@ export default function PaymentModal({
     const next = { ...itemSel, [key]: { pay, offer } };
     if (pay <= 0 && offer <= 0) delete next[key];
     setItemSel(next);
-    applyAmount(next);
   };
 
   const selectAll = () => {
@@ -96,7 +92,6 @@ export default function PaymentModal({
       total += (r.it.unit_price || 0) * r.it.quantity;
     });
     setItemSel(next);
-    setForm((f) => ({ ...f, amount: total > 0 ? total.toFixed(2) : f.amount }));
   };
 
   const submit = async (e) => {
