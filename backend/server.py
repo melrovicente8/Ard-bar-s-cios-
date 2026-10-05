@@ -6,6 +6,7 @@ load_dotenv(ROOT_DIR / '.env')
 
 import os
 import logging
+import re
 import uuid
 import jwt
 import bcrypt
@@ -99,6 +100,8 @@ class ClientIn(BaseModel):
     is_member: bool = False  # sócio com cotas pagas
     morada: Optional[str] = None
     pin: Optional[str] = None  # set by admin/tesoureiro to enable sócio portal login
+    credit_limit: Optional[float] = None  # teto de fiado (None = sem limite)
+    family_head_client_id: Optional[str] = None  # dependente do agregado familiar
 
 class ClientUpdate(BaseModel):
     name: Optional[str] = None
@@ -109,6 +112,8 @@ class ClientUpdate(BaseModel):
     is_member: Optional[bool] = None
     morada: Optional[str] = None
     pin: Optional[str] = None
+    credit_limit: Optional[float] = None
+    family_head_client_id: Optional[str] = None
 
 class SaleItemIn(BaseModel):
     product_id: str
@@ -515,6 +520,8 @@ async def create_client(body: ClientIn, user: dict = Depends(get_current_user)):
         "points": 0,
         "balance": 0.0,
         "total_spent": 0.0,
+        "credit_limit": body.credit_limit,
+        "family_head_client_id": body.family_head_client_id if role in ("admin", "tesoureiro") else None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.clients.insert_one(doc)
@@ -719,6 +726,20 @@ def _compute_points_with_rollover(client: dict, total: float) -> tuple[int, floa
 # ---------- Oferta da casa (limites mensais por utilizador) ----------
 HOUSE_OFFER_LIMITS = {"funcionario": 20.0}  # admin/tesoureiro/presidente: 50 €
 HOUSE_OFFER_DEFAULT_LIMIT = 50.0
+
+def _lisbon_hour() -> int:
+    """Hora local de Portugal (Europe/Lisbon), para janelas horárias (ex.: comida 16h-20h)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Europe/Lisbon")).hour
+    except Exception:
+        return datetime.now(timezone.utc).hour
+
+
+def _food_window_open() -> bool:
+    """Comida só pode ser pedida/vendida no portal do sócio entre as 16h e as 20h."""
+    return 16 <= _lisbon_hour() < 20
+
 
 async def _house_offer_used_month(email: str) -> float:
     try:
@@ -1296,6 +1317,18 @@ async def approve_consumption_request(req_id: str, user: dict = Depends(get_curr
             "sale_id": sale_id,
         }},
     )
+    # Notificação ao sócio: o pedido pode ser levantado ao balcão
+    await db.socio_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "client_id": req["client_id"],
+        "client_name": req["client_name"],
+        "subject": "✅ Pedido aprovado — pronto ao balcão",
+        "message": f"O teu pedido ({euro_fmt(req['total'])}) foi aceite pelo staff. Podes levantá-lo ao balcão.",
+        "from_staff": True,
+        "reply": None,
+        "request_id": req_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
     sale_doc.pop("_id", None)
     return {"ok": True, "sale": sale_doc}
 
@@ -2039,14 +2072,21 @@ async def _sync_quota_paid_status(client_id: str):
         for m in months:
             if (year, m) in reversed_keys:
                 continue
+            patch = {
+                "client_id": client_id, "year": year, "month": m,
+                "status": status,
+                "amount": QUOTA_MONTHLY_VALUE,
+                "sale_id": s["id"],
+            }
+            if status == "paid":
+                patch["paid_at"] = s.get("created_at")
+                patch["billed_at"] = None
+            else:
+                patch["billed_at"] = s.get("created_at")
+                patch["paid_at"] = None
             await db.quotas.update_one(
                 {"client_id": client_id, "year": year, "month": m},
-                {"$set": {
-                    "client_id": client_id, "year": year, "month": m,
-                    "status": status,
-                    "amount": QUOTA_MONTHLY_VALUE,
-                    "sale_id": s["id"],
-                }},
+                {"$set": patch},
                 upsert=True,
             )
 
@@ -2219,8 +2259,53 @@ async def socio_logout(response: Response):
     response.delete_cookie("socio_token", path="/")
     return {"ok": True}
 
+async def _maybe_award_birthday(client_id: str):
+    """No dia de aniversário: pontos = idade ÷ 4 + mensagem de parabéns com os pontos oferecidos."""
+    c = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
+    if not c or not c.get("birthday"):
+        return
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Europe/Lisbon"))
+    except Exception:
+        now = datetime.now(timezone.utc)
+    try:
+        bd = datetime.fromisoformat(str(c["birthday"]))
+    except (ValueError, TypeError):
+        return
+    if (bd.month, bd.day) != (now.month, now.day):
+        return
+    if c.get("birthday_points_year") == now.year:
+        return
+    age = max(now.year - bd.year, 1)
+    pts = max(age // 4, 1)
+    await db.clients.update_one(
+        {"id": client_id},
+        {"$set": {"birthday_points_year": now.year}, "$inc": {"points": pts}},
+    )
+    await _log_points(client_id, pts, "birthday", None, f"Bónus de aniversário · {age} anos ÷ 4 = {pts} pontos", "sistema")
+    text = f"🎂 Parabéns, {c['name']}! A ARD Nespereira deseja-te um feliz aniversário e oferece-te {pts} pontos ({age} ÷ 4)."
+    await db.socio_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "client_id": client_id,
+        "client_name": c["name"],
+        "subject": "🎂 Feliz aniversário!",
+        "message": text,
+        "from_staff": True,
+        "reply": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    if c.get("email"):
+        await send_email(c["email"], "🎂 Feliz aniversário — ARD Nespereira", f"<p>{text}</p>")
+    await _audit("birthday_bonus", "sistema", entity="client", entity_id=client_id, summary=f"Bónus de aniversário: +{pts} pts ({age} anos ÷ 4) · mensagem enviada ao sócio")
+
+
 @api_router.get("/socio/me")
 async def socio_me(socio: dict = Depends(get_current_socio)):
+    await _maybe_award_birthday(socio["id"])
+    fresh = await db.clients.find_one({"id": socio["id"]}, {"_id": 0, "pin_hash": 0})
+    if fresh:
+        socio = fresh
     sales = await db.sales.find({"client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
     payments = await db.payments.find({"client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
     mbway = await db.mbway_payments.find({"client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
@@ -2243,6 +2328,8 @@ async def socio_mbway_request(body: MBWayRequestIn, socio: dict = Depends(get_cu
     if body.use_points:
         if body.points_to_use <= 0:
             raise HTTPException(status_code=400, detail="Quantidade de pontos inválida")
+        if body.points_to_use % POINTS_PER_EURO != 0:
+            raise HTTPException(status_code=400, detail=f"Os pontos devem ser múltiplos de {POINTS_PER_EURO} (5 pts = 1 €)")
         cur = await db.clients.find_one({"id": socio["id"]}, {"points": 1, "balance": 1})
         available = int(cur.get("points", 0)) if cur else 0
         if body.points_to_use > available:
@@ -2390,13 +2477,14 @@ async def socio_members_paid_up(socio: dict = Depends(get_current_socio)):
 async def socio_list_products(socio: dict = Depends(get_current_socio)):
     """Lista de produtos disponíveis para o sócio pedir consumo (exclui cotas e sem stock).
     A disponibilidade desconta o que já está reservado em pedidos pendentes."""
-    items = await db.products.find(
-        {"$and": [
-            {"$or": [{"is_quota": {"$exists": False}}, {"is_quota": False}]},
-            {"quantity": {"$gt": 0}},
-        ]},
-        {"_id": 0},
-    ).sort("name", 1).to_list(1000)
+    q = {"$and": [
+        {"$or": [{"is_quota": {"$exists": False}}, {"is_quota": False}]},
+        {"unavailable": {"$ne": True}},  # itens marcados como indisponíveis NUNCA aparecem na app
+        {"quantity": {"$gt": 0}},
+    ]}
+    if not _food_window_open():
+        q = {"$and": [q, {"$or": [{"is_food": {"$exists": False}}, {"is_food": False}]}]}
+    items = await db.products.find(q, {"_id": 0}).sort("name", 1).to_list(1000)
     # Reservado em pedidos ainda pendentes (qualquer sócio)
     reserved: dict = {}
     async for req in db.consumption_requests.find({"status": "pending"}, {"items": 1}):
@@ -2448,6 +2536,10 @@ async def _build_request_line_items(items, client_id: str) -> list:
             raise HTTPException(status_code=404, detail=f"Produto {it.product_id} não encontrado")
         if it.quantity <= 0:
             raise HTTPException(status_code=400, detail="Quantidade inválida")
+        if prod.get("unavailable"):
+            raise HTTPException(status_code=400, detail=f"'{prod['name']}' está indisponível")
+        if prod.get("is_food") and not _food_window_open():
+            raise HTTPException(status_code=400, detail=f"'{prod['name']}' (comida) só pode ser pedida entre as 16h e as 20h")
         sub = float(prod["price"]) * int(it.quantity)
         total += sub
         line_items.append({
@@ -2460,6 +2552,22 @@ async def _build_request_line_items(items, client_id: str) -> list:
     return line_items
 
 
+async def _check_credit_limit(client_id: str, new_total: float):
+    """Teto de fiado: se saldo + novo pedido ultrapassa o limite de crédito do sócio, bloqueia."""
+    c = await db.clients.find_one({"id": client_id}, {"credit_limit": 1, "balance": 1})
+    if not c:
+        return
+    limit = c.get("credit_limit")
+    if limit in (None, "", 0):
+        return
+    projected = float(c.get("balance", 0) or 0) + float(new_total)
+    if projected > float(limit) + 1e-9:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Limite de fiado excedido — teto de {float(limit):.2f} € (saldo atual {float(c.get('balance', 0) or 0):.2f} €). Regulariza a conta para voltar a pedir no bar.",
+        )
+
+
 @api_router.post("/socio/consumption-request")
 async def socio_consumption_request(body: SocioConsumptionReqIn, socio: dict = Depends(get_current_socio)):
     if not body.items:
@@ -2468,6 +2576,7 @@ async def socio_consumption_request(body: SocioConsumptionReqIn, socio: dict = D
     prods = await db.products.find({"id": {"$in": pids}}, {"_id": 0}).to_list(len(pids))
     line_items = await _build_request_line_items(body.items, socio["id"])
     total = round(sum(li["subtotal"] for li in line_items), 2)
+    await _check_credit_limit(socio["id"], total)
     rid = str(uuid.uuid4())
     doc = {
         "id": rid,
@@ -2519,12 +2628,54 @@ async def socio_edit_request(req_id: str, body: SocioConsumptionReqIn, socio: di
         raise HTTPException(status_code=400, detail="Sem itens")
     line_items = await _build_request_line_items(body.items, req["client_id"])
     total = round(sum(li["subtotal"] for li in line_items), 2)
+    await _check_credit_limit(req["client_id"], total)
     await db.consumption_requests.update_one(
         {"id": req_id},
         {"$set": {"items": line_items, "total": total, "note": body.note, "edited_at": datetime.now(timezone.utc).isoformat()}},
     )
     updated = await db.consumption_requests.find_one({"id": req_id}, {"_id": 0})
     return updated
+
+class SocioInsistIn(BaseModel):
+    pass
+
+
+@api_router.post("/socio/consumption-requests/{req_id}/insist")
+async def socio_insist_request(req_id: str, socio: dict = Depends(get_current_socio)):
+    """Sócio insiste num pedido em espera há mais de 5 min — staff recebe nova notificação."""
+    req = await db.consumption_requests.find_one({"id": req_id, "client_id": socio["id"]}, {"_id": 0})
+    if not req:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if req.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Pedido já tratado")
+    created = datetime.fromisoformat(req["created_at"])
+    waited = (datetime.now(timezone.utc) - created).total_seconds()
+    if waited < 5 * 60:
+        rest = int(5 * 60 - waited)
+        raise HTTPException(status_code=400, detail=f"O pedido só pode ser insistido 5 minutos após o envio (faltam {max(rest // 60, 1)} min)")
+    await db.consumption_requests.update_one(
+        {"id": req_id},
+        {"$set": {"insisted_at": datetime.now(timezone.utc).isoformat()},
+         "$inc": {"insist_count": 1}},
+    )
+    await db.socio_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "client_id": socio["id"],
+        "client_name": socio["name"],
+        "subject": f"⚡ Insistência no pedido de consumo",
+        "message": f"O sócio {socio['name']} está à espera há mais de 5 minutos e insistiu no pedido ({euro_fmt(req['total'])}).",
+        "from_staff": False,
+        "reply": None,
+        "insist_request_id": req_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await _audit("request_insist", socio.get("name") or socio["id"], entity="consumption_request", entity_id=req_id, summary=f"Sócio {socio['name']} insistiu no pedido ({req['total']:.2f} €) após 5 min em espera")
+    return {"ok": True}
+
+
+def euro_fmt(v: float) -> str:
+    return f"{float(v):.2f}".replace(".", ",") + " €"
+
 
 @api_router.get("/socio/points-history")
 async def socio_points_history(socio: dict = Depends(get_current_socio)):
@@ -3397,15 +3548,22 @@ async def list_cash_closes(date_from: Optional[str] = None, date_to: Optional[st
 
 class BarStatusIn(BaseModel):
     open: bool
+    cash_declared: Optional[float] = None  # obrigatório ao ABRIR: dinheiro em caixa
 
 @api_router.post("/bar-status")
 async def set_bar_status(body: BarStatusIn, user: dict = Depends(get_current_user)):
     cash = await _expected_cash_today()
+    # Ao abrir o bar é OBRIGATÓRIO indicar o dinheiro em caixa
+    if body.open and body.cash_declared is None:
+        raise HTTPException(status_code=400, detail="Indica obrigatoriamente o dinheiro em caixa para abrir o bar")
+    if body.open and body.cash_declared is not None and body.cash_declared < 0:
+        raise HTTPException(status_code=400, detail="Valor em caixa inválido")
     doc = {
         "open": bool(body.open),
         "changed_at": datetime.now(timezone.utc).isoformat(),
         "changed_by": user["email"],
         "cash_in_drawer": cash,
+        "opening_cash_declared": round(float(body.cash_declared), 2) if (body.open and body.cash_declared is not None) else None,
     }
     await db.club_state.find_one_and_replace({"_id": "bar"}, {"_id": "bar", **doc}, upsert=True)
     await _audit("bar_open" if body.open else "bar_close", user["email"], summary=f"Bar {'ABERTO' if body.open else 'FECHADO'} · valor em caixa: {cash:.2f} €")
@@ -3754,8 +3912,10 @@ async def delete_community_message(msg_id: str, user: dict = Depends(require_rol
 
 # ---------- Extras do portal do sócio ----------
 @api_router.get("/socio/top-products")
-async def socio_top_products(socio: dict = Depends(get_current_socio)):
-    """Top 5 de vendas (produtos mais consumidos) do sócio."""
+async def socio_top_products(scope: str = "mine", socio: dict = Depends(get_current_socio)):
+    """Venda rápida: top 10 produtos mais vendidos (global) ou do sócio (scope=mine, top 5)."""
+    if scope == "global":
+        return await _top_products_global(10)
     sales = await db.sales.find({"client_id": socio["id"], "source": {"$ne": "quota"}}, {"_id": 0, "items": 1}).to_list(5000)
     agg: dict = {}
     for s in sales:
@@ -3796,6 +3956,331 @@ async def socio_balance_quarterly(socio: dict = Depends(get_current_socio)):
     not_paid = [(y, m) for (y, m) in months_to_check if by_year.get(y, {}).get(m, {}).get("status") != "paid"]
     if not_paid:
         raise HTTPException(status_code=403, detail="Cotas por regularizar — consulta as contas junto à ARDN.")
+
+
+# ---------- Venda rápida: produtos mais vendidos (global, top 10) ----------
+@api_router.get("/products/top")
+async def products_top(limit: int = 10, user: dict = Depends(get_current_user)):
+    """Top N de produtos mais vendidos (global) para venda rápida no POS."""
+    limit = min(max(limit, 1), 20)
+    return await _top_products_global(limit)
+
+
+async def _top_products_global(limit: int) -> list:
+    qty_by_pid: dict = {}
+    async for s in db.sales.find({}, {"items": 1}):
+        for it in s.get("items", []):
+            pid = it.get("product_id")
+            if not pid or str(pid).startswith("quota-") or it.get("is_house_account"):
+                continue
+            qty_by_pid[pid] = qty_by_pid.get(pid, 0) + int(it.get("quantity", 0))
+    top = sorted(qty_by_pid.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+    pids = [pid for pid, _ in top]
+    prods = {p["id"]: p for p in await db.products.find({"id": {"$in": pids}}, {"_id": 0}).to_list(len(pids))}
+    out = []
+    for pid, qty in top:
+        p = prods.get(pid)
+        if not p or p.get("is_quota"):
+            continue
+        out.append({**p, "sold_qty": qty})
+    return out
+
+
+# ---------- Cartão de Sócio Digital (QR dinâmico) ----------
+import hmac as _hmac
+import hashlib as _hashlib
+
+
+@api_router.get("/socio/card-code")
+async def socio_card_code(socio: dict = Depends(get_current_socio)):
+    """Código dinâmico para o cartão digital: roda a cada minuto (HMAC do nº de sócio + janela temporal)."""
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    bucket = now_ts // 60
+    msg = f"{socio['member_number']}:{bucket}".encode()
+    sig = _hmac.new(JWT_SECRET.encode(), msg, _hashlib.sha256).hexdigest()[:8].upper()
+    code = f"ARD-{socio['member_number']}-{sig}"
+    return {
+        "code": code,
+        "member_number": socio["member_number"],
+        "name": socio["name"],
+        "valid_seconds": 60 - (now_ts % 60),
+    }
+
+
+class CardVerifyIn(BaseModel):
+    code: str
+
+
+@api_router.post("/socio/card-verify")
+async def card_verify(body: CardVerifyIn, user: dict = Depends(get_current_user)):
+    """Staff valida o cartão digital do sócio (aceita janela atual e anterior)."""
+    parts = (body.code or "").strip().split("-")
+    if len(parts) != 3 or parts[0] != "ARD":
+        return {"valid": False, "reason": "Formato inválido"}
+    mn, sig = parts[1], parts[2]
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    for b in (now_ts // 60, now_ts // 60 - 1):
+        expect = _hmac.new(JWT_SECRET.encode(), f"{mn}:{b}".encode(), _hashlib.sha256).hexdigest()[:8].upper()
+        if sig == expect:
+            c = await db.clients.find_one({"member_number": mn}, {"_id": 0, "pin_hash": 0})
+            if not c:
+                return {"valid": False, "reason": "Sócio não encontrado"}
+            await _audit("card_verify", user["email"], entity="client", entity_id=c["id"], summary=f"Cartão digital validado: {c['name']} (nº {mn})")
+            return {"valid": True, "client": c}
+    return {"valid": False, "reason": "Código expirado — pede ao sócio para atualizar o cartão"}
+
+
+# ---------- Loja de merchandising (adeptos) ----------
+@api_router.get("/socio/merch")
+async def socio_merch(socio: dict = Depends(get_current_socio)):
+    """Produtos de merchandising (adeptos) — visíveis mas indisponíveis para venda."""
+    items = await db.products.find(
+        {"category": "Merchandising"},
+        {"_id": 0},
+    ).sort("name", 1).to_list(100)
+    return items
+
+
+# ---------- Recuperação de PIN (público, gera mensagem à direção) ----------
+class SocioRecoverPinIn(BaseModel):
+    member_number: str
+    contact: str
+
+
+@api_router.post("/socio/recover-pin")
+async def socio_recover_pin(body: SocioRecoverPinIn):
+    """Sócio esqueceu o PIN: nº de sócio + telemóvel → mensagem aos administradores/tesoureiro."""
+    mn = body.member_number.strip()
+    c = await db.clients.find_one({"member_number": mn}, {"_id": 0, "pin_hash": 0})
+    if not c or not c.get("pin_hash"):
+        raise HTTPException(status_code=404, detail="Nº de sócio não encontrado ou sem acesso ao portal")
+    digits_in = "".join(ch for ch in (body.contact or "") if ch.isdigit())
+    digits_db = "".join(ch for ch in (c.get("contact") or "") if ch.isdigit())
+    if not digits_in or not digits_db or digits_in[-9:] != digits_db[-9:]:
+        raise HTTPException(status_code=403, detail="O contacto indicado não corresponde ao registado para este nº de sócio")
+    await db.socio_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "client_id": c["id"],
+        "client_name": c["name"],
+        "subject": "🔑 Recuperação de PIN",
+        "message": f"O sócio {c['name']} (nº {mn}, tel. {body.contact}) esqueceu o PIN e pede um novo. Enviar novo PIN ao sócio (ficha do cliente → PIN).",
+        "from_staff": False,
+        "reply": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await _audit("pin_recover_request", c["name"], entity="client", entity_id=c["id"], summary=f"Sócio {c['name']} (nº {mn}) pediu recuperação de PIN")
+    return {"ok": True, "message": "Pedido enviado à direção — vai receber o novo PIN em breve."}
+
+
+# ---------- Agregado familiar ----------
+class DependentIn(BaseModel):
+    name: str
+    contact: Optional[str] = None
+    birthday: Optional[str] = None
+    note: Optional[str] = None
+
+
+class DependentQuotaPayIn(BaseModel):
+    dependent_id: str
+    year: int
+    months: List[int]
+    mbway_phone: str
+
+
+@api_router.get("/socio/family")
+async def socio_family(socio: dict = Depends(get_current_socio)):
+    """Agregado familiar do titular: dependentes com quotas e estado de conta."""
+    deps = await db.clients.find({"family_head_client_id": socio["id"]}, {"_id": 0, "pin_hash": 0}).sort("name", 1).to_list(50)
+    out = []
+    for d in deps:
+        d["quotas"] = await db.quotas.find({"client_id": d["id"]}, {"_id": 0}).sort("year", 1).to_list(50)
+        d["quota_status"] = await _quota_overall_status(d["id"])
+        out.append(d)
+    return out
+
+
+@api_router.post("/socio/family")
+async def socio_add_dependent(body: DependentIn, socio: dict = Depends(get_current_socio)):
+    """Titular inscreve um filho/dependente no agregado familiar."""
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Nome do dependente obrigatório")
+    count = await db.clients.count_documents({"family_head_client_id": socio["id"]})
+    if count >= 15:
+        raise HTTPException(status_code=400, detail="Agregado familiar completo (máx. 15 dependentes)")
+    cid = str(uuid.uuid4())
+    doc = {
+        "id": cid,
+        "name": name,
+        "contact": body.contact,
+        "email": None,
+        "note": body.note or "Agregado familiar",
+        "member_number": None,
+        "is_member": False,
+        "morada": socio.get("morada"),
+        "pin_hash": None,
+        "points": 0,
+        "balance": 0.0,
+        "total_spent": 0.0,
+        "credit_limit": None,
+        "family_head_client_id": socio["id"],
+        "birthday": body.birthday,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.clients.insert_one(doc)
+    await _audit("family_dependent_add", socio.get("name") or socio["id"], entity="client", entity_id=cid, summary=f"Dependente inscrito no agregado de {socio['name']}: {name}")
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.post("/socio/family/quotas/pay")
+async def socio_family_quotas_pay(body: DependentQuotaPayIn, socio: dict = Depends(get_current_socio)):
+    """Titular paga quotas de um dependente do agregado via MBWay."""
+    dep = await db.clients.find_one({"id": body.dependent_id, "family_head_client_id": socio["id"]}, {"_id": 0})
+    if not dep:
+        raise HTTPException(status_code=404, detail="Dependente não encontrado no teu agregado")
+    if not body.months:
+        raise HTTPException(status_code=400, detail="Sem meses selecionados")
+    already = await db.quotas.find({"client_id": dep["id"], "year": body.year, "month": {"$in": body.months}, "status": {"$in": ["paid", "billed"]}, "reversed": {"$ne": True}}, {"_id": 0}).to_list(20)
+    if already:
+        raise HTTPException(status_code=400, detail=f"Já lançadas na conta corrente: {', '.join(MONTHS_PT[a['month']-1] for a in already)}")
+    total = QUOTA_MONTHLY_VALUE * len(body.months)
+    rec = {
+        "id": str(uuid.uuid4()),
+        "client_id": dep["id"],
+        "client_name": f"{dep['name']} (agregado de {socio['name']})",
+        "amount": total,
+        "mbway_phone": body.mbway_phone.strip(),
+        "note": f"Cotas {body.year} · {dep['name']}: {', '.join(MONTHS_PT[m-1] for m in body.months)}",
+        "status": "pending",
+        "kind": "quota",
+        "quota_year": body.year,
+        "quota_months": body.months,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "confirmed_at": None,
+        "confirmed_by": None,
+    }
+    await db.mbway_payments.insert_one(rec)
+    rec.pop("_id", None)
+    return rec
+
+
+# ---------- Match Center (FPF · A.F. Guarda) ----------
+FPF_COMPETITION_URL = os.environ.get(
+    "FPF_COMPETITION_URL",
+    "https://resultados.fpf.pt/Competition/Details?competitionId=30210&seasonId=106",
+)
+FPF_READER = "https://r.jina.ai/"
+_match_center_cache: dict = {"ts": 0.0, "data": None}
+
+
+def _fetch_via_reader(url: str) -> str:
+    import urllib.request
+    req = urllib.request.Request(f"{FPF_READER}{url}", headers={"User-Agent": "Mozilla/5.0", "X-Return-Format": "markdown"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read().decode("utf-8", "replace")
+
+
+def _parse_fpf_markdown(md: str) -> dict:
+    """Extrai classificação + jogos da jornada atual do markdown da FPF."""
+    lines = [ln.strip() for ln in md.splitlines() if ln.strip()]
+    # ---- Classificação (POS JGS V E D GM GS PTS) ----
+    standings = []
+    header_idx = next((i for i, ln in enumerate(lines) if ln == "POS" and i + 2 < len(lines)), None)
+    if header_idx is not None:
+        j = header_idx + 1
+        while j < len(lines) and len(standings) < 30:
+            if lines[j].isdigit():
+                pos = int(lines[j])
+                team = lines[j + 1]
+                nums = [lines[j + k] for k in range(2, 9)]
+                if all(n.isdigit() for n in nums) and not team.isdigit():
+                    standings.append({"pos": pos, "team": team, "j": int(nums[0]), "v": int(nums[1]), "e": int(nums[2]), "d": int(nums[3]), "gm": int(nums[4]), "gs": int(nums[5]), "pts": int(nums[6])})
+                    j += 9
+                    continue
+                j += 1
+            else:
+                j += 1
+    # ---- Jornadas disponíveis ----
+    fixtures = []
+    for m in re.finditer(r"\[(\d+)\]\(https://resultados\.fpf\.pt/Competition/GetClassificationAndMatchesByFixture\?fixtureId=(\d+)\)", md):
+        fixtures.append({"number": int(m.group(1)), "fixture_id": int(m.group(2))})
+    # ---- Jogos da jornada mostrada (blocos [equipas e resultado](link FPF)) ----
+    matches = _parse_fpf_match_blocks(md)
+    return {"standings": standings, "fixtures": fixtures, "matches": matches}
+
+
+def _split_match_md(md: str) -> list:
+    """Blocos de jogo no markdown da FPF: [Gd Trancoso\\ \\ 3 - 2 \\ 4 out\\ \\ Gc Figueirense\\ \\ Estadio ...](link)."""
+    out = []
+    block_re = re.compile(r"\[([^\]]+)\]\(https://resultados\.fpf\.pt/Match/GetMatchInformation\?matchId=(\d+)\)")
+    for m in block_re.finditer(md):
+        inner = m.group(1).replace("\\", " ")
+        inner = " ".join(inner.split())
+        out.append({"raw": inner, "id": m.group(2), "url": f"https://resultados.fpf.pt/Match/GetMatchInformation?matchId={m.group(2)}"})
+    return out
+
+
+def _parse_fpf_match_blocks(md: str) -> list:
+    matches = []
+    for blk in _split_match_md(md):
+        inner = blk["raw"]
+        mm = re.match(r"^(.+?)\s+(\d+)\s*-\s*(\d+)\s+([0-9]{1,2}\s+[a-zçã]+)\s+(.+)$", inner, re.IGNORECASE)
+        if not mm:
+            # Jogo agendado (sem resultado): "EquipA - EquipB · data"
+            mm = re.match(r"^(.+?)\s*-\s*(.+?)\s+([0-9]{1,2}\s+[a-zçã]+)\s*$", inner, re.IGNORECASE)
+            if mm:
+                matches.append({"id": blk["id"], "team1": mm.group(1).strip(), "score1": None, "score2": None, "date": mm.group(3).strip(), "team2": mm.group(2).strip(), "venue": "", "url": blk["url"], "status": "scheduled"})
+            continue
+        rest = mm.group(5).strip()
+        venue = ""
+        t2 = rest
+        vm = re.search(r"(Estadi[oá]|Campo)\s+.*$", rest, re.IGNORECASE)
+        if vm:
+            venue = vm.group(0).strip()
+            t2 = rest[: vm.start()].strip()
+        matches.append({
+            "id": blk["id"],
+            "team1": mm.group(1).strip(),
+            "score1": int(mm.group(2)),
+            "score2": int(mm.group(3)),
+            "date": mm.group(4).strip(),
+            "team2": t2,
+            "venue": venue,
+            "url": blk["url"],
+            "status": "finished",
+        })
+    return matches
+
+
+@api_router.get("/match-center")
+async def match_center(refresh: bool = False, user: dict = Depends(get_current_user)):
+    """Match Center: classificação, calendário de jornadas e jogos (FPF · A.F. Guarda)."""
+    now = datetime.now(timezone.utc).timestamp()
+    if not refresh and _match_center_cache["data"] and now - _match_center_cache["ts"] < 120:
+        return _match_center_cache["data"]
+    try:
+        md = _fetch_via_reader(FPF_COMPETITION_URL)
+        parsed = _parse_fpf_markdown(md)
+        data = {**parsed, "competition": "1ª LIGA FUTEBOL CIMA-TAVFER", "fetched_at": datetime.now(timezone.utc).isoformat(), "source": FPF_COMPETITION_URL, "ok": True}
+        if parsed.get("standings") or parsed.get("fixtures"):
+            _match_center_cache.update({"ts": now, "data": data})
+        return data
+    except Exception as e:
+        return {"ok": False, "error": f"FPF indisponível: {e}", "standings": [], "fixtures": [], "matches": []}
+
+
+@api_router.get("/match-center/jornada/{fixture_id}")
+async def match_center_jornada(fixture_id: int, user: dict = Depends(get_current_user)):
+    """Jogos + classificação de uma jornada específica da FPF."""
+    url = f"https://resultados.fpf.pt/Competition/GetClassificationAndMatchesByFixture?fixtureId={fixture_id}"
+    try:
+        md = _fetch_via_reader(url)
+        parsed = _parse_fpf_markdown(md)
+        matches_raw = _split_match_md(md)
+        return {**parsed, "matches_raw": matches_raw[:20], "fixture_id": fixture_id, "ok": True}
+    except Exception as e:
+        return {"ok": False, "error": f"FPF indisponível: {e}", "standings": [], "fixtures": [], "matches": [], "matches_raw": []}
     # trimestre corrente
     q_index = (now.month - 1) // 3  # 0..3
     q_start_month = q_index * 3 + 1
