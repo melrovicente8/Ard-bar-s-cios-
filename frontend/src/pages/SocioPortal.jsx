@@ -99,6 +99,22 @@ export default function SocioPortal() {
   const [showPin, setShowPin] = useState(false);
   const [pinForm, setPinForm] = useState({ current: "", next: "", confirm: "" });
 
+  const loadMyRequests = async () => {
+    try {
+      const { data } = await api.get("/socio/consumption-requests");
+      setMyRequests(data);
+    } catch { /* sem pedidos */ }
+  };
+
+  // Notificações do clube (pedidos aceites/recusados, respostas) — banner até serem vistas
+  const loadStaffMessages = async () => {
+    try {
+      const { data } = await api.get("/socio/messages");
+      const lastSeen = Number(localStorage.getItem("socio_staff_seen_at") || 0);
+      setStaffUnread((data || []).filter((m) => m.from_staff && new Date(m.created_at).getTime() > lastSeen));
+    } catch { /* ignore */ }
+  };
+
   useEffect(() => {
     api.get("/club/info").then((r) => setClub(r.data)).catch(() => {});
     api.get("/socio/bar-status").then((r) => setBarOpen(!!r.data.open)).catch(() => setBarOpen(null));
@@ -191,22 +207,6 @@ export default function SocioPortal() {
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
-  };
-
-  const loadMyRequests = async () => {
-    try {
-      const { data } = await api.get("/socio/consumption-requests");
-      setMyRequests(data);
-    } catch { /* sem pedidos */ }
-  };
-
-  // Notificações do clube (pedidos aceites/recusados, respostas) — banner até serem vistas
-  const loadStaffMessages = async () => {
-    try {
-      const { data } = await api.get("/socio/messages");
-      const lastSeen = Number(localStorage.getItem("socio_staff_seen_at") || 0);
-      setStaffUnread((data || []).filter((m) => m.from_staff && new Date(m.created_at).getTime() > lastSeen));
-    } catch { /* ignore */ }
   };
 
   const openMessagesSeen = async () => {

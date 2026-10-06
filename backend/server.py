@@ -3886,6 +3886,15 @@ async def on_startup():
         await db.counters.update_one({"_id": "supplier_code"}, {"$set": {"seq": seq}}, upsert=True)
         logging.getLogger(__name__).info(f"Backfill fornecedores: {sup_fix} códigos F atribuídos")
 
+    # Backfill retiradas de caixa antigas sem campo kind — o fluxo original
+    # era sempre transferência de caixa para o banco (depósito).
+    wd_fix = 0
+    async for w in db.cash_withdrawals.find({"kind": {"$exists": False}}, {"_id": 0, "id": 1}):
+        await db.cash_withdrawals.update_one({"id": w["id"]}, {"$set": {"kind": "bank_deposit"}})
+        wd_fix += 1
+    if wd_fix:
+        logging.getLogger(__name__).info(f"Backfill cash_withdrawals: {wd_fix} retiradas antigas classificadas como depósito bancário")
+
 @app.on_event("shutdown")
 async def on_shutdown():
     client.close()
