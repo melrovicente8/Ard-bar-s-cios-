@@ -129,7 +129,14 @@ export default function SocioGifts({ me }) {
     }
     if (isPayer && g.kind === "delegated" && g.status === "requested") {
       return (
-        <div className="flex gap-1.5">
+        <div className="flex gap-1.5 flex-wrap">
+          <button
+            data-testid={`socio-gift-edit-${g.id}`}
+            onClick={() => startEditGift(g)}
+            className="text-[10px] px-2 py-1 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1"
+          >
+            <PencilSimple size={11} weight="bold" /> Editar o que pago
+          </button>
           <button
             data-testid={`socio-gift-accept-${g.id}`}
             onClick={() => action(g, "accept", "Aceitaste · agora edita os itens e confirma quando quiseres pagar")}

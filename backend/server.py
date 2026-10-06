@@ -3323,14 +3323,14 @@ async def socio_create_gift(body: SocioGiftIn, socio: dict = Depends(get_current
 
 @api_router.put("/socio/gifts/{gift_id}")
 async def socio_edit_gift(gift_id: str, body: SocioGiftEditIn, socio: dict = Depends(get_current_socio)):
-    """Quem pagou (delegado) pode editar os itens enquanto o pedido estiver aceite e por confirmar."""
+    """Quem paga (delegado) pode editar os itens enquanto o pedido estiver por aceitar/aceite e por confirmar."""
     gift = await db.socio_gifts.find_one({"id": gift_id}, {"_id": 0})
     if not gift:
         raise HTTPException(status_code=404, detail="Consumo não encontrado")
     if gift.get("payer_id") != socio["id"]:
         raise HTTPException(status_code=403, detail="Só quem paga pode editar")
-    if gift.get("status") != "accepted":
-        raise HTTPException(status_code=400, detail="Só pedidos aceites e por confirmar podem ser editados")
+    if gift.get("status") not in ("requested", "accepted"):
+        raise HTTPException(status_code=400, detail="Só pedidos por aceitar ou aceites podem ser editados")
     if not body.items:
         raise HTTPException(status_code=400, detail="Sem itens")
     if any(str(it.product_id).startswith("quota-") for it in body.items):
