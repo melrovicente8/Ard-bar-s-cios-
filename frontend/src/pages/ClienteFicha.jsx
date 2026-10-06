@@ -29,6 +29,7 @@ import {
   MapPin,
   Camera,
   CalendarBlank,
+  Crown,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
@@ -58,6 +59,8 @@ export default function ClienteFicha() {
     member_number: "",
     is_member: false,
     pin: "",
+    direction_role: "",
+    direction_history: [],
   });
   // Sell modal state
   const [showSell, setShowSell] = useState(false);
@@ -497,6 +500,8 @@ export default function ClienteFicha() {
       member_number: c.member_number || "",
       is_member: !!c.is_member,
       pin: "",
+      direction_role: c.direction_role || "",
+      direction_history: (c.direction_history || []).map((h) => ({ role: h.role || "", start_year: h.start_year || "", end_year: h.end_year || "" })),
     });
     setShowEdit(true);
   };
@@ -511,6 +516,10 @@ export default function ClienteFicha() {
       body.member_number = editForm.member_number || null;
       body.is_member = editForm.is_member;
       if (editForm.pin) body.pin = editForm.pin;
+      body.direction_role = editForm.direction_role || ""; // "" limpa o cargo no backend
+      body.direction_history = (editForm.direction_history || [])
+        .filter((h) => h.role || h.start_year)
+        .map((h) => ({ role: h.role, start_year: Number(h.start_year) || null, end_year: h.end_year ? Number(h.end_year) : null }));
     }
     if (canEditName) body.name = editForm.name;
     body.contact = editForm.contact || null;
@@ -664,7 +673,21 @@ export default function ClienteFicha() {
                   Não-sócio
                 </span>
               )}
+              {c.direction_role && (
+                <span
+                  className="px-3 py-1 rounded-full text-xs font-bold bg-purple-500/15 text-purple-300 border border-purple-500/30 flex items-center gap-1.5"
+                  data-testid="ficha-direction-badge"
+                >
+                  <Crown size={14} weight="fill" /> Direção · {c.direction_role}
+                </span>
+              )}
             </div>
+            {(c.direction_history || []).length > 0 && (
+              <div className="text-xs text-slate-400 mt-1.5" data-testid="ficha-direction-history">
+                Direção (mandatos anteriores):{" "}
+                {(c.direction_history || []).map((h) => `${h.role || "—"} ${h.start_year || "?"}–${h.end_year || "presente"}`).join(" · ")}
+              </div>
+            )}
             {c.birthday && (
               <div className="text-xs text-slate-400 mt-1" data-testid="ficha-bday">
                 Data de nascimento: <span className="text-slate-300 font-medium">{new Date(c.birthday).toLocaleDateString("pt-PT")}</span>
@@ -1345,6 +1368,63 @@ export default function ClienteFicha() {
                     <p className="text-[11px] text-slate-500 mt-1">
                       Permite ao sócio fazer login em <code className="text-amber-400">/socio/login</code> com o nº de sócio e PIN.
                     </p>
+                  </div>
+                  {/* Direção: cargo atual + mandatos anteriores */}
+                  <div className="border-t border-slate-800 pt-4">
+                    <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
+                      Cargo na direção (vazio = não pertence)
+                    </label>
+                    <input
+                      data-testid="edit-direction-role-input"
+                      value={editForm.direction_role}
+                      onChange={(e) => setEditForm({ ...editForm, direction_role: e.target.value })}
+                      placeholder='Ex.: "Presidente da Direção", "Tesoureiro"'
+                      className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                    />
+                    <div className="mt-3">
+                      <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
+                        Mandatos anteriores (direção)
+                      </label>
+                      {(editForm.direction_history || []).map((h, i) => (
+                        <div key={i} className="mt-1.5 flex gap-2 items-center">
+                          <input
+                            placeholder="Cargo"
+                            value={h.role}
+                            onChange={(e) => setEditForm({ ...editForm, direction_history: editForm.direction_history.map((x, j) => (j === i ? { ...x, role: e.target.value } : x)) })}
+                            className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                          />
+                          <input
+                            placeholder="Início" inputMode="numeric" maxLength={4}
+                            value={h.start_year}
+                            onChange={(e) => setEditForm({ ...editForm, direction_history: editForm.direction_history.map((x, j) => (j === i ? { ...x, start_year: e.target.value } : x)) })}
+                            className="w-20 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                          />
+                          <span className="text-slate-600 text-xs">–</span>
+                          <input
+                            placeholder="Fim" inputMode="numeric" maxLength={4}
+                            value={h.end_year}
+                            onChange={(e) => setEditForm({ ...editForm, direction_history: editForm.direction_history.map((x, j) => (j === i ? { ...x, end_year: e.target.value } : x)) })}
+                            className="w-20 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setEditForm({ ...editForm, direction_history: editForm.direction_history.filter((_, j) => j !== i) })}
+                            className="p-2 rounded-md text-rose-400 hover:bg-rose-500/10"
+                            title="Remover mandato"
+                          >
+                            <XIcon size={14} weight="bold" />
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        data-testid="edit-direction-history-add"
+                        type="button"
+                        onClick={() => setEditForm({ ...editForm, direction_history: [...(editForm.direction_history || []), { role: "", start_year: "", end_year: "" }] })}
+                        className="mt-2 px-2.5 py-1.5 rounded-md text-xs font-medium bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 flex items-center gap-1"
+                      >
+                        <Plus size={12} weight="bold" /> Adicionar mandato
+                      </button>
+                    </div>
                   </div>
                 </>
               )}

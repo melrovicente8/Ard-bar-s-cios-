@@ -26,12 +26,15 @@ import {
   Storefront,
   IdentificationCard,
   Users,
+  Crown,
+  ChartLine,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import CommunityChat from "../components/CommunityChat";
 import SocioDigitalCard from "../components/SocioDigitalCard";
 import SocioMerch from "../components/SocioMerch";
 import SocioFamily from "../components/SocioFamily";
+import { openQuarterlyDoc } from "../lib/quarterlyDoc";
 
 export default function SocioPortal() {
   const { data, logout, refresh } = useSocio();
@@ -76,10 +79,17 @@ export default function SocioPortal() {
   const [showMerch, setShowMerch] = useState(false);
   // Agregado familiar
   const [showFamily, setShowFamily] = useState(false);
+  // Financeiro do clube: movimento do mês (todos os sócios) + balanço trimestral (cotas em dia)
+  const [monthly, setMonthly] = useState(null);
+  const [quarterly, setQuarterly] = useState(null);
 
   useEffect(() => {
     api.get("/club/info").then((r) => setClub(r.data)).catch(() => {});
     api.get("/socio/bar-status").then((r) => setBarOpen(!!r.data.open)).catch(() => setBarOpen(null));
+    // Resumo discreto do mês corrente — todos os sócios (apenas totalizadores)
+    api.get("/socio/finance").then((r) => setMonthly(r.data)).catch(() => {});
+    // Balanço trimestral — só devolve dados se as cotas estiverem em dia (403 caso contrário)
+    api.get("/socio/balance-quarterly").then((r) => setQuarterly(r.data)).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -453,9 +463,13 @@ export default function SocioPortal() {
         {/* Hero */}
         <div className="bg-gradient-to-br from-green-600/10 via-slate-900/40 to-amber-500/10 border border-slate-800 rounded-2xl p-6 md:p-8">
           <div className="flex items-start gap-4 flex-wrap">
-            <div className="w-16 h-16 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold text-2xl">
-              {c.name[0]?.toUpperCase()}
-            </div>
+            {c.photo_data ? (
+              <img src={c.photo_data} alt={c.name} data-testid="socio-photo" className="w-16 h-16 rounded-full object-cover border-2 border-amber-400" />
+            ) : (
+              <div className="w-16 h-16 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center font-bold text-2xl">
+                {c.name[0]?.toUpperCase()}
+              </div>
+            )}
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-3 flex-wrap">
                 <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight" data-testid="socio-name">
@@ -474,6 +488,18 @@ export default function SocioPortal() {
               <p className="text-sm text-slate-400 mt-1">
                 Conta corrente do bar · {club.name || "ARD Nespereira"}
               </p>
+              {c.direction_role && (
+                <div className="flex items-center gap-2 mt-2" data-testid="socio-direction">
+                  <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-purple-500/15 text-purple-300 border border-purple-500/30 flex items-center gap-1.5">
+                    <Crown size={12} weight="fill" /> Direção · {c.direction_role}
+                  </span>
+                </div>
+              )}
+              {(c.direction_history || []).length > 0 && (
+                <div className="text-[11px] text-slate-500 mt-1.5" data-testid="socio-direction-history">
+                  Mandatos anteriores: {(c.direction_history || []).map((h) => `${h.role || "—"} ${h.start_year || "?"}–${h.end_year || "presente"}`).join(" · ")}
+                </div>
+              )}
             </div>
           </div>
 
@@ -569,6 +595,31 @@ export default function SocioPortal() {
             )}
           </div>
         </div>
+
+        {/* Movimento do clube no mês corrente — discreto, apenas totalizadores */}
+        {monthly && (
+          <div
+            className="bg-slate-900/30 border border-slate-800/60 rounded-lg px-4 py-2.5 text-[11px] text-slate-500 flex items-center gap-3 flex-wrap"
+            data-testid="socio-finance-month"
+          >
+            <span className="flex items-center gap-1.5 uppercase tracking-[0.15em] text-[10px]">
+              <ChartLine size={12} /> Movimento do clube · {new Date().toLocaleDateString("pt-PT", { month: "long", year: "numeric" })}
+            </span>
+            <span>Receitas <span className="text-slate-300 font-medium">{euro(monthly.income.total)}</span></span>
+            <span>Despesas <span className="text-slate-300 font-medium">{euro(monthly.expenses.total)}</span></span>
+            <span>Saldo <span className="text-slate-300 font-medium">{euro(monthly.balance)}</span></span>
+            {quarterly && (
+              <button
+                data-testid="socio-quarterly-pdf-btn"
+                onClick={() => { if (!openQuarterlyDoc(quarterly)) toast.error("Permite popups para imprimir o balanço"); }}
+                className="ml-auto text-amber-400/80 hover:text-amber-300 flex items-center gap-1.5 font-medium"
+                title="Balanço trimestral — sócio com cotas em dia"
+              >
+                <Printer size={12} /> Balanço trimestral ({quarterly.quarter}) · PDF
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Bar fechado — aviso bem visível, pedir consumo bloqueado */}
         {barOpen === false && (
