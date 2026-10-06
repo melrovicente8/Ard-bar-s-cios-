@@ -729,11 +729,9 @@ export default function SocioPortal() {
             {c.member_number && quotas && (
               <div className="bg-slate-950/60 border border-amber-500/30 rounded-xl p-5" data-testid="socio-quotas-card">
                 {(() => {
-                  // Só contam meses já vencidos (até ao mês corrente) — cotas futuras não são "por regularizar"
-                  const curMonth = new Date().getMonth() + 1;
-                  const due = quotas.quotas.filter((q) => q.month <= curMonth);
-                  const paid = due.filter((q) => q.status === "paid").length;
-                  const total = due.length || 12;
+                  // Contagem sempre sobre os 12 meses do ano (ex.: 10/12)
+                  const paid = quotas.quotas.filter((q) => q.status === "paid").length;
+                  const total = 12;
                   const pct = Math.round((paid / total) * 100);
                   const upToDate = paid >= total;
                   return (
