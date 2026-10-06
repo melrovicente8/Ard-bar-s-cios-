@@ -57,19 +57,23 @@ export default function Fornecedores() {
     supplier_id: "",
     items: [{ product_id: "", quantity: 1, unit_cost: 0 }],
     paid: false,
+    payment_source: "caixa",
+    payment_ref: "",
     invoice_ref: "",
     note: "",
   });
 
   const [payOrder, setPayOrder] = useState(null);
-  const [payForm, setPayForm] = useState({ amount: "" });
+  const [payForm, setPayForm] = useState({ amount: "", payment_source: "caixa", payment_ref: "" });
+  const [payExpense, setPayExpense] = useState(null); // despesa a pagar
+  const [payExpForm, setPayExpForm] = useState({ payment_source: "caixa", payment_ref: "" });
 
   // Report modal
   const [reportSupplier, setReportSupplier] = useState(null);
   const [reportRange, setReportRange] = useState({ from: "", to: "" });
 
   const [showExpense, setShowExpense] = useState(null); // null/false | {mode:"new"} | {mode:"edit",id}
-  const [expForm, setExpForm] = useState({ supplier_id: "", description: "", amount: "", due_date: "", paid: false, recurring: "", note: "" });
+  const [expForm, setExpForm] = useState({ supplier_id: "", description: "", amount: "", due_date: "", paid: false, payment_source: "caixa", payment_ref: "", recurring: "", note: "" });
 
   const load = async () => {
     setLoading(true);
@@ -152,17 +156,20 @@ export default function Fornecedores() {
       .filter((x) => x.product_id && x.quantity > 0)
       .map((x) => ({ product_id: x.product_id, quantity: Number(x.quantity), unit_cost: Number(x.unit_cost) }));
     if (!items.length) return toast.error("Sem itens válidos");
+    if (orderForm.paid && !orderForm.payment_ref.trim()) return toast.error("Indica o nº da nota de pagamento");
     try {
       await api.post("/supplier-orders", {
         supplier_id: orderForm.supplier_id,
         items,
         paid: orderForm.paid,
+        payment_source: orderForm.paid ? orderForm.payment_source : null,
+        payment_ref: orderForm.paid ? orderForm.payment_ref.trim() : null,
         invoice_ref: orderForm.invoice_ref || null,
         note: orderForm.note || null,
       });
       toast.success("Encomenda registada — stock atualizado");
       setShowOrder(false);
-      setOrderForm({ supplier_id: "", items: [{ product_id: "", quantity: 1, unit_cost: 0 }], paid: false, invoice_ref: "", note: "" });
+      setOrderForm({ supplier_id: "", items: [{ product_id: "", quantity: 1, unit_cost: 0 }], paid: false, payment_source: "caixa", payment_ref: "", invoice_ref: "", note: "" });
       await load();
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
@@ -171,11 +178,16 @@ export default function Fornecedores() {
 
   const submitPay = async (e) => {
     e.preventDefault();
+    if (!payForm.payment_ref.trim()) return toast.error("Indica o nº da nota de pagamento");
     try {
-      await api.post(`/supplier-orders/${payOrder.id}/pay`, { amount: parseFloat(payForm.amount) });
-      toast.success("Pagamento ao fornecedor registado");
+      await api.post(`/supplier-orders/${payOrder.id}/pay`, {
+        amount: parseFloat(payForm.amount),
+        payment_source: payForm.payment_source,
+        payment_ref: payForm.payment_ref.trim(),
+      });
+      toast.success(`Pagamento em ${payForm.payment_source} registado — saldo atualizado`);
       setPayOrder(null);
-      setPayForm({ amount: "" });
+      setPayForm({ amount: "", payment_source: "caixa", payment_ref: "" });
       await load();
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
@@ -183,7 +195,7 @@ export default function Fornecedores() {
   };
 
   const openNewExpense = () => {
-    setExpForm({ supplier_id: "", description: "", amount: "", due_date: "", paid: false, recurring: "monthly", note: "" });
+    setExpForm({ supplier_id: "", description: "", amount: "", due_date: "", paid: false, payment_source: "caixa", payment_ref: "", recurring: "monthly", note: "" });
     setShowExpense({ mode: "new" });
   };
   const openEditExpense = (e) => {
@@ -193,6 +205,8 @@ export default function Fornecedores() {
       amount: String(e.amount),
       due_date: e.due_date || "",
       paid: !!e.paid,
+      payment_source: e.payment_source || "caixa",
+      payment_ref: e.payment_ref || "",
       recurring: e.recurring || "",
       note: e.note || "",
     });
@@ -206,9 +220,12 @@ export default function Fornecedores() {
       amount: parseFloat(expForm.amount),
       due_date: expForm.due_date || null,
       paid: !!expForm.paid,
+      payment_source: expForm.paid ? expForm.payment_source : null,
+      payment_ref: expForm.paid ? expForm.payment_ref.trim() : null,
       recurring: expForm.recurring || null,
       note: expForm.note || null,
     };
+    if (expForm.paid && !expForm.payment_ref.trim()) return toast.error("Indica o nº da nota de pagamento");
     try {
       if (showExpense.mode === "new") {
         await api.post("/supplier-expenses", body);
@@ -223,10 +240,29 @@ export default function Fornecedores() {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
     }
   };
-  const toggleExpensePaid = async (e) => {
+  const openPayExpense = (e) => {
+    setPayExpense(e);
+    setPayExpForm({ payment_source: "caixa", payment_ref: "" });
+  };
+  const submitPayExpense = async (ev) => {
+    ev.preventDefault();
+    if (!payExpForm.payment_ref.trim()) return toast.error("Indica o nº da nota de pagamento");
     try {
-      await api.put(`/supplier-expenses/${e.id}`, { paid: !e.paid });
-      toast.success(e.paid ? "Marcada como em aberto" : "Marcada como paga");
+      await api.post(`/supplier-expenses/${payExpense.id}/pay`, {
+        payment_source: payExpForm.payment_source,
+        payment_ref: payExpForm.payment_ref.trim(),
+      });
+      toast.success(`Despesa paga em ${payExpForm.payment_source} — saldo atualizado`);
+      setPayExpense(null);
+      await load();
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    }
+  };
+  const reopenExpense = async (e) => {
+    try {
+      await api.put(`/supplier-expenses/${e.id}`, { paid: false });
+      toast.success("Marcada como em aberto");
       await load();
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
@@ -276,7 +312,7 @@ export default function Fornecedores() {
           <td>${e.description}</td>
           <td>${e.recurring || "—"}</td>
           <td class="right ${e.paid ? "pos" : "neg"}"><strong>${euro(e.amount)}</strong></td>
-          <td>${e.paid ? `Pago ${e.paid_at ? "em " + fmtD(e.paid_at) : ""}` : "Em dívida"}</td>
+          <td>${e.paid ? `Pago${e.payment_source ? " em " + e.payment_source : ""}${e.payment_ref ? " · nota " + e.payment_ref : ""}${e.paid_at ? " em " + fmtD(e.paid_at) : ""}` : "Em dívida"}</td>
         </tr>
       `).join("");
       w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Conta-corrente · ${data.supplier.name}</title>
@@ -564,7 +600,9 @@ export default function Fornecedores() {
                       </td>
                       <td className="px-5 py-3">
                         {o.paid ? (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">Pago</span>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                            Pago{o.payment_source ? ` · ${o.payment_source}` : ""}{o.payment_ref ? ` · nota ${o.payment_ref}` : ""}
+                          </span>
                         ) : (
                           <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30">Em dívida</span>
                         )}
@@ -574,7 +612,7 @@ export default function Fornecedores() {
                           {!o.paid && canManage && (
                             <button
                               data-testid={`order-pay-${o.id}`}
-                              onClick={() => { setPayOrder(o); setPayForm({ amount: String(o.balance_due.toFixed(2)) }); }}
+                              onClick={() => { setPayOrder(o); setPayForm({ amount: String(o.balance_due.toFixed(2)), payment_source: "caixa", payment_ref: "" }); }}
                               className="px-3 py-1.5 rounded-md text-xs font-bold bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 flex items-center gap-1.5"
                             >
                               <CurrencyEur size={14} weight="bold" /> Pagar
@@ -646,7 +684,7 @@ export default function Fornecedores() {
                       <td className="px-5 py-3">
                         {e.paid ? (
                           <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-                            Pago{e.paid_at ? ` · ${new Date(e.paid_at).toLocaleDateString("pt-PT")}` : ""}
+                            Pago{e.payment_source ? ` · ${e.payment_source}` : ""}{e.payment_ref ? ` · nota ${e.payment_ref}` : ""}
                           </span>
                         ) : (
                           <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-300 border border-rose-500/30">Em aberto</span>
@@ -654,13 +692,22 @@ export default function Fornecedores() {
                       </td>
                       <td className="px-5 py-3">
                         <div className="flex items-center justify-end gap-2">
-                          {canManage && (
+                          {canManage && !e.paid && (
                             <button
-                              data-testid={`expense-toggle-${e.id}`}
-                              onClick={() => toggleExpensePaid(e)}
-                              className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1.5 ${e.paid ? "bg-amber-500/15 text-amber-300 hover:bg-amber-500/25" : "bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"}`}
+                              data-testid={`expense-pay-${e.id}`}
+                              onClick={() => openPayExpense(e)}
+                              className="px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1.5 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
                             >
-                              {e.paid ? "Reabrir" : "Marcar pago"}
+                              <CurrencyEur size={14} weight="bold" /> Pagar
+                            </button>
+                          )}
+                          {canManage && e.paid && (
+                            <button
+                              data-testid={`expense-reopen-${e.id}`}
+                              onClick={() => reopenExpense(e)}
+                              className="px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1.5 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25"
+                            >
+                              Reabrir
                             </button>
                           )}
                           {canManage && (
@@ -773,6 +820,19 @@ export default function Fornecedores() {
               <span className="text-xs font-medium text-slate-200">Já pago (não fica em dívida)</span>
             </label>
           </div>
+          {orderForm.paid && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Pago com *">
+                <select data-testid="order-paid-source-select" value={orderForm.payment_source} onChange={(e) => setOrderForm({ ...orderForm, payment_source: e.target.value })} className={inputCls}>
+                  <option value="caixa">Caixa (dinheiro na gaveta)</option>
+                  <option value="banco">Banco (transferência/MB)</option>
+                </select>
+              </Field>
+              <Field label="Nº nota de pagamento *">
+                <input data-testid="order-paid-ref-input" value={orderForm.payment_ref} onChange={(e) => setOrderForm({ ...orderForm, payment_ref: e.target.value })} placeholder="Ex: NP-014" className={inputCls} />
+              </Field>
+            </div>
+          )}
 
           <div className="bg-slate-950 border border-amber-500/20 rounded-lg p-4 flex items-center justify-between">
             <span className="text-xs font-bold uppercase tracking-[0.2em] text-amber-400/80">Total</span>
@@ -795,11 +855,51 @@ export default function Fornecedores() {
             Em dívida: <strong className="text-rose-300">{euro(payOrder?.balance_due || 0)}</strong>
           </div>
           <Field label="Valor a pagar € *">
-            <input data-testid="pay-order-amount-input" type="number" step="0.01" min="0.01" required value={payForm.amount} onChange={(e) => setPayForm({ amount: e.target.value })} className={inputCls + " text-lg font-bold"} />
+            <input data-testid="pay-order-amount-input" type="number" step="0.01" min="0.01" required value={payForm.amount} onChange={(e) => setPayForm({ ...payForm, amount: e.target.value })} className={inputCls + " text-lg font-bold"} />
           </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Pago com *">
+              <select data-testid="pay-order-source-select" value={payForm.payment_source} onChange={(e) => setPayForm({ ...payForm, payment_source: e.target.value })} className={inputCls}>
+                <option value="caixa">Caixa (dinheiro na gaveta)</option>
+                <option value="banco">Banco (transferência/MB)</option>
+              </select>
+            </Field>
+            <Field label="Nº nota de pagamento *">
+              <input data-testid="pay-order-ref-input" required value={payForm.payment_ref} onChange={(e) => setPayForm({ ...payForm, payment_ref: e.target.value })} placeholder="Ex: NP-014" className={inputCls} />
+            </Field>
+          </div>
+          <div className="text-[11px] text-slate-500 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2">
+            O valor sai do saldo {payForm.payment_source === "caixa" ? "da caixa do bar" : "do banco"} e fica registado nos movimentos com o nº da nota.
+          </div>
           <div className="flex gap-2 pt-2">
             <button type="button" onClick={() => setPayOrder(null)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Cancelar</button>
             <button data-testid="pay-order-submit-btn" type="submit" className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold">Pagar</button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={!!payExpense} onClose={() => setPayExpense(null)} title={`Pagar despesa · ${payExpense?.description || ""}`}>
+        <form onSubmit={submitPayExpense} className="space-y-3">
+          <div className="text-xs text-slate-400">
+            Valor: <strong className="text-amber-300">{euro(payExpense?.amount || 0)}</strong>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Pago com *">
+              <select data-testid="pay-expense-source-select" value={payExpForm.payment_source} onChange={(e) => setPayExpForm({ ...payExpForm, payment_source: e.target.value })} className={inputCls}>
+                <option value="caixa">Caixa (dinheiro na gaveta)</option>
+                <option value="banco">Banco (transferência/MB)</option>
+              </select>
+            </Field>
+            <Field label="Nº nota de pagamento *">
+              <input data-testid="pay-expense-ref-input" required value={payExpForm.payment_ref} onChange={(e) => setPayExpForm({ ...payExpForm, payment_ref: e.target.value })} placeholder="Ex: NP-014" className={inputCls} />
+            </Field>
+          </div>
+          <div className="text-[11px] text-slate-500 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2">
+            O valor sai do saldo {payExpForm.payment_source === "caixa" ? "da caixa do bar" : "do banco"} e fica registado nos movimentos com o nº da nota.
+          </div>
+          <div className="flex gap-2 pt-2">
+            <button type="button" onClick={() => setPayExpense(null)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Cancelar</button>
+            <button data-testid="pay-expense-submit-btn" type="submit" className="flex-1 px-4 py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold">Pagar</button>
           </div>
         </form>
       </Modal>
@@ -869,6 +969,19 @@ export default function Fornecedores() {
             />
             <span className="text-xs font-medium text-slate-200">Já está pago</span>
           </label>
+          {expForm.paid && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Pago com *">
+                <select data-testid="expense-source-select" value={expForm.payment_source} onChange={(e) => setExpForm({ ...expForm, payment_source: e.target.value })} className={inputCls}>
+                  <option value="caixa">Caixa (dinheiro na gaveta)</option>
+                  <option value="banco">Banco (transferência/MB)</option>
+                </select>
+              </Field>
+              <Field label="Nº nota de pagamento *">
+                <input data-testid="expense-ref-input" value={expForm.payment_ref} onChange={(e) => setExpForm({ ...expForm, payment_ref: e.target.value })} placeholder="Ex: NP-014" className={inputCls} />
+              </Field>
+            </div>
+          )}
           <Field label="Nota">
             <input value={expForm.note} onChange={(e) => setExpForm({ ...expForm, note: e.target.value })} className={inputCls} />
           </Field>

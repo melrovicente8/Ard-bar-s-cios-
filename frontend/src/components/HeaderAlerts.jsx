@@ -1,24 +1,30 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "../lib/api";
-import { Bell, ChatCircle, DeviceMobile } from "@phosphor-icons/react";
+import { Bell, ChatCircle, DeviceMobile, Package } from "@phosphor-icons/react";
 
 /**
  * Relógio + notificações pendentes no topo — presente em todas as abas.
  */
 export default function HeaderAlerts() {
   const [clock, setClock] = useState("");
-  const [pending, setPending] = useState({ requests: 0, messages: 0, mbway: 0 });
+  const [pending, setPending] = useState({ requests: 0, messages: 0, mbway: 0, toDeliver: 0 });
 
   const loadPending = async () => {
     try {
-      const [r, m, mb] = await Promise.all([
+      const [r, m, mb, td] = await Promise.all([
         api.get("/consumption-requests", { params: { status_filter: "pending" } }).catch(() => ({ data: [] })),
         api.get("/socio-messages", { params: { status_filter: "open" } }).catch(() => ({ data: [] })),
         api.get("/mbway-payments").catch(() => ({ data: [] })),
+        api.get("/consumption-requests", { params: { status_filter: "approved" } }).catch(() => ({ data: [] })),
       ]);
       const pendingMb = (mb.data || []).filter((x) => x.status === "pending").length;
-      setPending({ requests: (r.data || []).length, messages: (m.data || []).length, mbway: pendingMb });
+      setPending({
+        requests: (r.data || []).length,
+        messages: (m.data || []).length,
+        mbway: pendingMb,
+        toDeliver: (td.data || []).length,
+      });
     } catch {
       /* ignore */
     }
@@ -44,6 +50,11 @@ export default function HeaderAlerts() {
       {pending.requests > 0 && (
         <Link to="/pedidos" data-testid="header-alert-requests" className={`${pill} bg-amber-400 text-slate-950 ring-amber-400/70`}>
           <Bell size={13} weight="fill" /> {pending.requests} pedido{pending.requests > 1 ? "s" : ""}
+        </Link>
+      )}
+      {pending.toDeliver > 0 && (
+        <Link to="/pedidos" data-testid="header-alert-todeliver" className={`${pill} bg-emerald-400 text-slate-950 ring-emerald-400/70`}>
+          <Package size={13} weight="fill" /> {pending.toDeliver} por entregar
         </Link>
       )}
       {pending.mbway > 0 && (

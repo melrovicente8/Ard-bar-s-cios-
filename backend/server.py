@@ -200,6 +200,8 @@ class SupplierOrderIn(BaseModel):
     supplier_id: str
     items: List[SupplierOrderItemIn]
     paid: bool = False  # se já está pago, não vai para "em dívida"
+    payment_source: Optional[str] = None  # "caixa" | "banco" (quando já pago)
+    payment_ref: Optional[str] = None  # nº da nota de pagamento
     invoice_ref: Optional[str] = None
     note: Optional[str] = None
     attachment_name: Optional[str] = None  # ex: "fatura-jan.pdf"
@@ -208,6 +210,12 @@ class SupplierOrderIn(BaseModel):
 class SupplierOrderPay(BaseModel):
     amount: float
     note: Optional[str] = None
+    payment_source: str = "caixa"  # "caixa" | "banco"
+    payment_ref: str  # nº da nota de pagamento — OBRIGATÓRIO
+
+class SupplierExpensePay(BaseModel):
+    payment_source: str  # "caixa" | "banco"
+    payment_ref: str  # nº da nota de pagamento — OBRIGATÓRIO
 
 class SupplierExpenseIn(BaseModel):
     supplier_id: Optional[str] = None
@@ -218,6 +226,8 @@ class SupplierExpenseIn(BaseModel):
     paid: bool = False
     paid_at: Optional[str] = None
     recurring: Optional[str] = None  # "monthly" | "yearly" | None
+    payment_source: Optional[str] = None  # "caixa" | "banco" (quando já paga)
+    payment_ref: Optional[str] = None  # nº da nota de pagamento
     note: Optional[str] = None
     attachment_name: Optional[str] = None
     attachment_data: Optional[str] = None
@@ -1922,17 +1932,8 @@ async def dashboard(user: dict = Depends(get_current_user)):
             "balance": f_data["balance"],
             "counts": f_data["counts"],
         }
-        # Caixa contabilístico (todas as datas): vendas em numerário −
-        # depósitos bancários − devoluções de crédito. Banco = depósitos.
-        cash_payments = await db.payments.find({"source": {"$ne": "refund"}}, {"_id": 0}).to_list(50000)
-        cash_in_all = sum(_payment_cash_value(p) for p in cash_payments)
-        wd_all = await db.cash_withdrawals.find({}, {"_id": 0}).to_list(50000)
-        deposits_all = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") != "credit_refund"), 2)
-        refunds_all = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "credit_refund"), 2)
-        cash_bank = {
-            "cash_balance": round(cash_in_all - deposits_all - refunds_all, 2),
-            "bank_balance": deposits_all,
-        }
+        # Saldos contabilísticos (caixa + banco) — incluem despesas pagas
+        cash_bank = await _account_balances()
     # Dívidas antigas (sem pagamento há mais de X dias) — alerta automático
     overdue = await _overdue_debtors(clients, OVERDUE_DEBT_DAYS)
     # Aniversários dos próximos 7 dias
@@ -3084,9 +3085,12 @@ async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> 
     rev_cotas = sum(s.get("total", 0) for s in sales_cotas)
     rev_total = rev_consumo + rev_cotas
 
-    # Depósitos bancários vão para o banco; devoluções de crédito só reduzem a caixa
-    bank_deposits = [w for w in withdrawals if w.get("kind") != "credit_refund"]
+    # Depósitos bancários vão para o banco; devoluções de crédito só reduzem a
+    # caixa; pagamentos de despesas (expense_cash/expense_bank) já contam nas
+    # encomendas/despesas — não somar aqui para evitar duplicação
+    bank_deposits = [w for w in withdrawals if w.get("kind") == "bank_deposit"]
     credit_refunds = [w for w in withdrawals if w.get("kind") == "credit_refund"]
+    expense_payments = [w for w in withdrawals if w.get("kind") in ("expense_cash", "expense_bank")]
     exp_orders = sum(o.get("total", 0) for o in orders)
     exp_expenses = sum(e.get("amount", 0) for e in expenses)
     exp_withdrawals = sum(w.get("amount", 0) for w in bank_deposits)
@@ -3114,6 +3118,7 @@ async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> 
             "orders": len(orders),
             "expenses": len(expenses),
             "withdrawals": len(bank_deposits),
+            "expense_payments": len(expense_payments),
             "credit_refunds": len(credit_refunds),
         },
         "details": {
@@ -3535,6 +3540,15 @@ async def create_supplier_order(body: SupplierOrderIn, user: dict = Depends(requ
 
     oid = str(uuid.uuid4())
     paid = bool(body.paid)
+    movement = None
+    if paid:
+        # Encomenda já paga no ato — exige método + nº da nota de pagamento
+        movement = await _record_expense_payment(
+            amount=total, payment_source=body.payment_source or "caixa", payment_ref=body.payment_ref or "",
+            supplier_id=body.supplier_id, supplier_name=sup["name"],
+            entity="supplier_order", entity_id=oid, user=user,
+            note=f"Encomenda paga no registo {body.invoice_ref or ''}".strip() or None,
+        )
     tx_no = await _next_tx_number()
     doc = {
         "id": oid,
@@ -3546,6 +3560,13 @@ async def create_supplier_order(body: SupplierOrderIn, user: dict = Depends(requ
         "paid": paid,
         "balance_due": 0.0 if paid else total,
         "amount_paid": total if paid else 0.0,
+        "payment_source": movement["payment_source"] if movement else None,
+        "payment_ref": movement["payment_ref"] if movement else None,
+        "payments": [{
+            "amount": round(total, 2), "payment_source": movement["payment_source"],
+            "payment_ref": movement["payment_ref"], "paid_at": movement["created_at"],
+            "user_email": user["email"],
+        }] if movement else [],
         "invoice_ref": body.invoice_ref,
         "note": body.note,
         "attachment_name": body.attachment_name,
@@ -3581,13 +3602,32 @@ async def pay_supplier_order(order_id: str, body: SupplierOrderPay, user: dict =
     if new_paid_total > total + 1e-9:
         raise HTTPException(status_code=400, detail=f"Valor excede o em dívida ({total - o.get('amount_paid', 0):.2f} €)")
     fully = abs(new_paid_total - total) < 1e-9
+    # Pagamento sai da CAIXA ou do BANCO — desconta do saldo respetivo e fica
+    # registado com o nº da nota de pagamento
+    movement = await _record_expense_payment(
+        amount=body.amount, payment_source=body.payment_source, payment_ref=body.payment_ref,
+        supplier_id=o.get("supplier_id"), supplier_name=o.get("supplier_name"),
+        entity="supplier_order", entity_id=order_id, user=user,
+        note=body.note or f"Pagamento de encomenda {o.get('tx_number') or order_id}",
+    )
+    payments_log = list(o.get("payments") or [])
+    payments_log.append({
+        "amount": round(float(body.amount), 2),
+        "payment_source": movement["payment_source"],
+        "payment_ref": movement["payment_ref"],
+        "paid_at": movement["created_at"],
+        "user_email": user["email"],
+    })
     await db.supplier_orders.update_one(
         {"id": order_id},
         {"$set": {
             "amount_paid": new_paid_total,
             "balance_due": max(total - new_paid_total, 0),
             "paid": fully,
-            "last_payment_at": datetime.now(timezone.utc).isoformat(),
+            "payment_source": movement["payment_source"],
+            "payment_ref": movement["payment_ref"],
+            "payments": payments_log,
+            "last_payment_at": movement["created_at"],
         }},
     )
     return await db.supplier_orders.find_one({"id": order_id}, {"_id": 0})
@@ -3622,12 +3662,27 @@ async def create_supplier_expense(body: SupplierExpenseIn, user: dict = Depends(
         "due_date": body.due_date,
         "paid": bool(body.paid),
         "paid_at": body.paid_at if body.paid else None,
+        "payment_source": (body.payment_source or "").strip().lower() or None,
+        "payment_ref": (body.payment_ref or "").strip() or None,
         "recurring": body.recurring,
         "note": body.note,
         "attachment_name": body.attachment_name,
         "attachment_data": body.attachment_data,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+    if doc["paid"]:
+        # Despesa já paga no ato — exige método + nº da nota de pagamento
+        movement = await _record_expense_payment(
+            amount=float(body.amount), payment_source=body.payment_source or "caixa",
+            payment_ref=body.payment_ref or "",
+            supplier_id=body.supplier_id, supplier_name=sup_name,
+            entity="supplier_expense", entity_id=eid, user=user,
+            note=body.description,
+        )
+        doc["payment_source"] = movement["payment_source"]
+        doc["payment_ref"] = movement["payment_ref"]
+        if not doc["paid_at"]:
+            doc["paid_at"] = movement["created_at"]
     await db.supplier_expenses.insert_one(doc)
     doc.pop("_id", None)
     return doc
@@ -3648,6 +3703,33 @@ async def update_supplier_expense(expense_id: str, body: SupplierExpenseUpdate, 
     res = await db.supplier_expenses.update_one({"id": expense_id}, {"$set": update})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Despesa não encontrada")
+    return await db.supplier_expenses.find_one({"id": expense_id}, {"_id": 0})
+
+@api_router.post("/supplier-expenses/{expense_id}/pay")
+async def pay_supplier_expense(expense_id: str, body: SupplierExpensePay, user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
+    """Marca a despesa como paga indicando método (caixa/banco) e o nº da
+    nota de pagamento — desconta o valor do saldo respetivo."""
+    e = await db.supplier_expenses.find_one({"id": expense_id}, {"_id": 0})
+    if not e:
+        raise HTTPException(status_code=404, detail="Despesa não encontrada")
+    if e.get("paid"):
+        raise HTTPException(status_code=400, detail="Despesa já está paga")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    movement = await _record_expense_payment(
+        amount=float(e["amount"]), payment_source=body.payment_source, payment_ref=body.payment_ref,
+        supplier_id=e.get("supplier_id"), supplier_name=e.get("supplier_name"),
+        entity="supplier_expense", entity_id=expense_id, user=user,
+        note=e.get("description"),
+    )
+    await db.supplier_expenses.update_one(
+        {"id": expense_id},
+        {"$set": {
+            "paid": True,
+            "paid_at": now_iso,
+            "payment_source": movement["payment_source"],
+            "payment_ref": movement["payment_ref"],
+        }},
+    )
     return await db.supplier_expenses.find_one({"id": expense_id}, {"_id": 0})
 
 @api_router.delete("/supplier-expenses/{expense_id}")
@@ -3833,10 +3915,76 @@ async def _expected_cash_today() -> float:
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     payments = await db.payments.find({"created_at": {"$gte": day_start}}, {"_id": 0}).to_list(5000)
     cash_in = sum(_payment_cash_value(p) for p in payments)
-    # Saídas de caixa do dia: depósitos bancários e devoluções de crédito
+    # Saídas de caixa do dia: depósitos bancários, devoluções de crédito e
+    # despesas pagas em caixa. Despesas pagas por BANCO nunca saem da gaveta.
     movements = await db.cash_withdrawals.find({"created_at": {"$gte": day_start}}, {"_id": 0}).to_list(5000)
-    cash_out = sum(float(m.get("amount", 0)) for m in movements)
+    cash_out = sum(float(m.get("amount", 0)) for m in movements if m.get("kind") != "expense_bank")
     return round(max(cash_in - cash_out, 0.0), 2)
+
+
+async def _account_balances() -> dict:
+    """Saldos contabilísticos de caixa e banco (todas as datas).
+    Caixa = entradas em numerário − depósitos bancários − devoluções de
+    crédito − despesas pagas em caixa. Banco = depósitos − despesas pagas por
+    banco. Pagamentos de despesas a fornecedores ficam em cash_withdrawals
+    com kind 'expense_cash' (sai da gaveta) ou 'expense_bank' (sai do banco)."""
+    cash_payments = await db.payments.find({"source": {"$ne": "refund"}}, {"_id": 0}).to_list(50000)
+    cash_in = round(sum(_payment_cash_value(p) for p in cash_payments), 2)
+    wd_all = await db.cash_withdrawals.find({}, {"_id": 0}).to_list(50000)
+    deposits = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "bank_deposit"), 2)
+    refunds = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "credit_refund"), 2)
+    exp_cash = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "expense_cash"), 2)
+    exp_bank = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "expense_bank"), 2)
+    bank_balance = round(deposits - exp_bank, 2)
+    cash_balance = round(cash_in - deposits - refunds - exp_cash, 2)
+    return {
+        "cash_balance": cash_balance,
+        "bank_balance": bank_balance,
+        "total_balance": round(bank_balance + cash_balance, 2),
+    }
+
+
+async def _record_expense_payment(
+    *, amount: float, payment_source: str, payment_ref: str,
+    supplier_id: Optional[str] = None, supplier_name: Optional[str] = None,
+    entity: str, entity_id: Optional[str], user: dict, note: Optional[str] = None,
+) -> dict:
+    """Regista o pagamento de uma despesa a fornecedor: sai da CAIXA (kind
+    expense_cash, reduz a gaveta) ou do BANCO (kind expense_bank, reduz o
+    saldo bancário). Guarda o nº da nota de pagamento."""
+    source = (payment_source or "").strip().lower()
+    if source not in ("caixa", "banco"):
+        raise HTTPException(status_code=400, detail="Método de pagamento deve ser 'caixa' ou 'banco'")
+    ref = (payment_ref or "").strip()
+    if not ref:
+        raise HTTPException(status_code=400, detail="O nº da nota de pagamento é obrigatório")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Valor de pagamento inválido")
+    kind = "expense_cash" if source == "caixa" else "expense_bank"
+    doc = {
+        "id": str(uuid.uuid4()),
+        "tx_number": await _next_tx_number(),
+        "kind": kind,
+        "amount": round(float(amount), 2),
+        "payment_ref": ref[:100],
+        "payment_source": source,
+        "supplier_id": supplier_id,
+        "supplier_name": supplier_name,
+        "entity": entity,
+        "entity_id": entity_id,
+        "note": note,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "user_email": user["email"],
+        "user_role": user.get("role"),
+    }
+    await db.cash_withdrawals.insert_one(doc)
+    if kind == "expense_cash":
+        await db.club_state.update_one({"_id": "bar"}, {"$inc": {"cash_in_drawer": -float(amount)}})
+    await _audit(
+        "expense_payment", user["email"], entity=entity, entity_id=entity_id,
+        summary=f"Despesa paga em {source} · {euro_fmt(float(amount))} · nota {ref}" + (f" · {supplier_name}" if supplier_name else ""),
+    )
+    return doc
 
 class CashCloseIn(BaseModel):
     cash_counted: float  # valor contado na gaveta (fecho cego)
@@ -4385,14 +4533,11 @@ async def socio_balance_quarterly(socio: dict = Depends(get_current_socio)):
     date_from = f"{year}-{quarter_start_month:02d}-01"
     date_to = now.strftime("%Y-%m-%d")
     data = await _finance_summary(date_from, date_to)
-    # Saldos contabilísticos (todas as datas): caixa = vendas em numerário −
-    # depósitos bancários − devoluções de crédito; banco = depósitos registados.
-    cash_payments = await db.payments.find({"source": {"$ne": "refund"}}, {"_id": 0}).to_list(50000)
-    cash_in_all = sum(_payment_cash_value(p) for p in cash_payments)
-    wd_all = await db.cash_withdrawals.find({}, {"_id": 0}).to_list(50000)
-    bank_balance = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") != "credit_refund"), 2)
-    refunds_all = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "credit_refund"), 2)
-    cash_balance = round(cash_in_all - bank_balance - refunds_all, 2)
+    # Saldos contabilísticos (todas as datas) — descontam despesas pagas
+    # em caixa ou por banco (com nº de nota de pagamento)
+    balances = await _account_balances()
+    bank_balance = balances["bank_balance"]
+    cash_balance = balances["cash_balance"]
     return {
         "quarter": f"T{quarter}/{year}",
         "period": data["period"],
