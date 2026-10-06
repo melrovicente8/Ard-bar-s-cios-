@@ -22,6 +22,7 @@ import {
   ClockCounterClockwise,
   ShoppingCart,
   Bank,
+  Vault,
   ChatCircle,
   Book,
   List,
@@ -75,6 +76,7 @@ const navGroups = [
     items: [
       { to: "/equipa", label: "Equipa", icon: UsersThree, testid: "nav-equipa", roles: ["admin"] },
       { to: "/contas", label: "Contas", icon: Bank, testid: "nav-contas", roles: [...STAFF_ROLES, "funcionario"] },
+      { to: "/banco", label: "Banco", icon: Vault, testid: "nav-banco", roles: ["admin", "tesoureiro"] },
       { to: "/historico", label: "Histórico", icon: ClockCounterClockwise, testid: "nav-historico", roles: STAFF_ROLES },
       { to: "/transacoes", label: "Transações", icon: ListDashes, testid: "nav-transacoes", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/ofertas", label: "Ofertas casa", icon: Gift, testid: "nav-ofertas", roles: STAFF_ROLES },

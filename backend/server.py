@@ -1151,6 +1151,22 @@ async def refund_client_credit(client_id: str, user: dict = Depends(require_role
     await db.payments.insert_one(pay)
     # Saldo negativo (crédito) volta a 0
     await db.clients.update_one({"id": client_id}, {"$inc": {"balance": credit}})
+    # A devolução sai em numerário da gaveta — reduz o valor em caixa e
+    # fica nas transações/movimentações de caixa (kind credit_refund)
+    wd = {
+        "id": str(uuid.uuid4()),
+        "tx_number": await _next_tx_number(),
+        "kind": "credit_refund",
+        "client_id": client_id,
+        "client_name": c["name"],
+        "amount": credit,
+        "note": "Devolução de crédito em numerário",
+        "created_at": pay["created_at"],
+        "user_email": user["email"],
+        "user_role": user.get("role"),
+    }
+    await db.cash_withdrawals.insert_one(wd)
+    await db.club_state.update_one({"_id": "bar"}, {"$inc": {"cash_in_drawer": -credit}})
     await _audit(
         "credit_refund", user["email"], entity="client", entity_id=client_id,
         summary=f"Devolução de crédito de {credit:.2f} € em numerário a {c['name']}",
@@ -1792,6 +1808,17 @@ async def dashboard(user: dict = Depends(get_current_user)):
             "balance": f_data["balance"],
             "counts": f_data["counts"],
         }
+        # Caixa contabilístico (todas as datas): vendas em numerário −
+        # depósitos bancários − devoluções de crédito. Banco = depósitos.
+        cash_payments = await db.payments.find({"source": {"$ne": "refund"}}, {"_id": 0}).to_list(50000)
+        cash_in_all = sum(_payment_cash_value(p) for p in cash_payments)
+        wd_all = await db.cash_withdrawals.find({}, {"_id": 0}).to_list(50000)
+        deposits_all = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") != "credit_refund"), 2)
+        refunds_all = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "credit_refund"), 2)
+        cash_bank = {
+            "cash_balance": round(cash_in_all - deposits_all - refunds_all, 2),
+            "bank_balance": deposits_all,
+        }
     # Dívidas antigas (sem pagamento há mais de X dias) — alerta automático
     overdue = await _overdue_debtors(clients, OVERDUE_DEBT_DAYS)
     # Aniversários dos próximos 7 dias
@@ -1814,6 +1841,7 @@ async def dashboard(user: dict = Depends(get_current_user)):
         "sales_last_7_days": last_7,
         "recent_sales": recent_sales,
         "finance_month": fin_month,
+        "cash_bank": locals().get("cash_bank"),
         "overdue_debts": {"days": OVERDUE_DEBT_DAYS, "count": len(overdue), "clients": overdue},
         "birthdays": birthdays,
     }
@@ -2848,9 +2876,13 @@ async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> 
     rev_cotas = sum(s.get("total", 0) for s in sales_cotas)
     rev_total = rev_consumo + rev_cotas
 
+    # Depósitos bancários vão para o banco; devoluções de crédito só reduzem a caixa
+    bank_deposits = [w for w in withdrawals if w.get("kind") != "credit_refund"]
+    credit_refunds = [w for w in withdrawals if w.get("kind") == "credit_refund"]
     exp_orders = sum(o.get("total", 0) for o in orders)
     exp_expenses = sum(e.get("amount", 0) for e in expenses)
-    exp_withdrawals = sum(w.get("amount", 0) for w in withdrawals)
+    exp_withdrawals = sum(w.get("amount", 0) for w in bank_deposits)
+    exp_refunds = sum(w.get("amount", 0) for w in credit_refunds)
     exp_total = exp_orders + exp_expenses + exp_withdrawals
 
     return {
@@ -2864,6 +2896,7 @@ async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> 
             "supplier_orders": exp_orders,
             "supplier_expenses": exp_expenses,
             "cash_withdrawals": exp_withdrawals,
+            "credit_refunds": exp_refunds,
             "total": exp_total,
         },
         "balance": rev_total - exp_total,
@@ -2872,7 +2905,8 @@ async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> 
             "quotas": len(sales_cotas),
             "orders": len(orders),
             "expenses": len(expenses),
-            "withdrawals": len(withdrawals),
+            "withdrawals": len(bank_deposits),
+            "credit_refunds": len(credit_refunds),
         },
         "details": {
             "sales": sales_consumo,
@@ -3544,9 +3578,13 @@ async def on_shutdown():
 # ---------- Fecho de caixa cego + estado do bar ----------
 def _payment_cash_value(p: dict) -> float:
     """Valor em dinheiro de um pagamento (para o fecho de caixa).
-    MBWay e pontos não contam; gratificação (tip) fica na gaveta."""
+    MBWay e pontos não contam; gratificação (tip) fica na gaveta.
+    Devoluções de crédito NÃO contam como entrada de caixa — saem pela
+    movimentação própria em cash_withdrawals (kind credit_refund)."""
     src = (p.get("source") or "").lower()
     if "mbway" in src:
+        return 0.0
+    if src == "refund":
         return 0.0
     credited = float(p.get("total_credited", p.get("amount", 0)) or 0)
     pts = float(p.get("points_value", 0) or 0)
@@ -3561,7 +3599,11 @@ async def _expected_cash_today() -> float:
         now = datetime.now(timezone.utc)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     payments = await db.payments.find({"created_at": {"$gte": day_start}}, {"_id": 0}).to_list(5000)
-    return round(sum(_payment_cash_value(p) for p in payments), 2)
+    cash_in = sum(_payment_cash_value(p) for p in payments)
+    # Saídas de caixa do dia: depósitos bancários e devoluções de crédito
+    movements = await db.cash_withdrawals.find({"created_at": {"$gte": day_start}}, {"_id": 0}).to_list(5000)
+    cash_out = sum(float(m.get("amount", 0)) for m in movements)
+    return round(max(cash_in - cash_out, 0.0), 2)
 
 class CashCloseIn(BaseModel):
     cash_counted: float  # valor contado na gaveta (fecho cego)
@@ -3750,28 +3792,40 @@ async def list_transactions(
 class CashWithdrawalIn(BaseModel):
     amount: float
     note: Optional[str] = None
+    deposit_note: str  # nota de depósito — OBRIGATÓRIA
+    deposit_date: str  # data do depósito — OBRIGATÓRIA
 
 
 @api_router.post("/cash-withdrawals")
 async def create_cash_withdrawal(body: CashWithdrawalIn, user: dict = Depends(require_role("admin", "tesoureiro"))):
-    """Retirada de caixa (levanta dinheiro físico do bar) — fica nas transações,
-    no relatório financeiro e reduz o valor em caixa do bar."""
+    """Retira valor em caixa e transfere para o banco (depósito) — fica nas
+    transações, no relatório financeiro e reduz o valor em caixa do bar.
+    Nota de depósito e data são obrigatórias."""
     if body.amount <= 0:
         raise HTTPException(status_code=400, detail="Valor inválido")
+    deposit_note = (body.deposit_note or "").strip()
+    deposit_date = (body.deposit_date or "").strip()
+    if not deposit_note:
+        raise HTTPException(status_code=400, detail="A nota de depósito é obrigatória")
+    if not deposit_date:
+        raise HTTPException(status_code=400, detail="A data do depósito é obrigatória")
     tx_no = await _next_tx_number()
     now_iso = datetime.now(timezone.utc).isoformat()
     doc = {
         "id": str(uuid.uuid4()),
         "tx_number": tx_no,
+        "kind": "bank_deposit",
         "amount": float(body.amount),
         "note": (body.note or "").strip()[:300] or None,
+        "deposit_note": deposit_note[:300],
+        "deposit_date": deposit_date,
         "created_at": now_iso,
         "user_email": user["email"],
         "user_role": user.get("role"),
     }
     await db.cash_withdrawals.insert_one(doc)
     await db.club_state.update_one({"_id": "bar"}, {"$inc": {"cash_in_drawer": -float(body.amount)}})
-    await _audit("cash_withdrawal", user["email"], entity="cash_withdrawal", entity_id=doc["id"], summary=f"Retirada de caixa de {euro_fmt(body.amount)}")
+    await _audit("cash_withdrawal", user["email"], entity="cash_withdrawal", entity_id=doc["id"], summary=f"Depósito bancário de {euro_fmt(body.amount)} · nota {deposit_note} · {deposit_date}")
     doc.pop("_id", None)
     return doc
 

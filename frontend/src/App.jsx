@@ -18,6 +18,7 @@ import DividasHoje from "./pages/DividasHoje";
 import Equipa from "./pages/Equipa";
 import Historico from "./pages/Historico";
 import Contas from "./pages/Contas";
+import Banco from "./pages/Banco";
 import Mensagens from "./pages/Mensagens";
 import Pedidos from "./pages/Pedidos";
 import Transacao from "./pages/Transacao";
@@ -119,6 +120,10 @@ function App() {
                 <Route
                   path="contas"
                   element={<AllStaffOnly><Contas /></AllStaffOnly>}
+                />
+                <Route
+                  path="banco"
+                  element={<StaffOnly><Banco /></StaffOnly>}
                 />
                 <Route path="mensagens" element={<Mensagens />} />
                 <Route path="pedidos" element={<Pedidos />} />

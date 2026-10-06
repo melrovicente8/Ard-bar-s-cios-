@@ -14,6 +14,8 @@ import {
   CalendarBlank,
   Eye,
   EyeSlash,
+  Vault,
+  Bank,
   Coffee,
   Cake,
 } from "@phosphor-icons/react";
@@ -101,6 +103,7 @@ export default function Dashboard() {
   const canSeeStockValue = user?.role === "admin" || user?.role === "tesoureiro";
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const cashBank = data ? (data.cash_bank || null) : null;
   const greeting = useGreeting(user?.name || user?.email || "");
 
   const load = async () => {
@@ -202,6 +205,28 @@ export default function Dashboard() {
             value={euro(data.total_stock_value)}
             accent="bg-emerald-500/10 text-emerald-400"
             to="/stock"
+            masked
+          />
+        )}
+        {cashBank && (
+          <StatCard
+            testid="kpi-cash"
+            icon={Vault}
+            label="Valor em caixa"
+            value={euro(cashBank.cash_balance)}
+            accent="bg-amber-500/10 text-amber-300"
+            to="/banco"
+            masked
+          />
+        )}
+        {cashBank && (
+          <StatCard
+            testid="kpi-bank"
+            icon={Bank}
+            label="Valor em banco"
+            value={euro(cashBank.bank_balance)}
+            accent="bg-emerald-500/10 text-emerald-400"
+            to="/banco"
             masked
           />
         )}
