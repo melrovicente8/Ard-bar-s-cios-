@@ -2895,6 +2895,31 @@ async def socio_insist_request(req_id: str, socio: dict = Depends(get_current_so
     return {"ok": True}
 
 
+@api_router.post("/socio/consumption-requests/{req_id}/picked-up")
+async def socio_mark_picked_up(req_id: str, socio: dict = Depends(get_current_socio)):
+    """O sócio confirma no portal que já levantou o pedido no balcão."""
+    req = await db.consumption_requests.find_one({"id": req_id, "client_id": socio["id"]}, {"_id": 0})
+    if not req:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if req.get("status") == "delivered":
+        raise HTTPException(status_code=400, detail="Pedido já foi entregue")
+    if req.get("status") != "approved":
+        raise HTTPException(status_code=400, detail="Só pedidos prontos a levantar podem ser marcados como levantados")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.consumption_requests.update_one(
+        {"id": req_id},
+        {"$set": {
+            "status": "delivered",
+            "delivered_at": now_iso,
+            "delivered_by": f"socio:{socio.get('member_number') or socio['id']}",
+            "picked_up_by_socio": True,
+        }},
+    )
+    await _audit("request_picked_up_socio", f"socio:{socio.get('member_number') or socio['id']}", entity="consumption_request", entity_id=req_id,
+                 summary=f"Sócio {socio['name']} confirmou no portal o levantamento do pedido ({euro_fmt(req['total'])})")
+    return {"ok": True}
+
+
 def euro_fmt(v: float) -> str:
     return f"{float(v):.2f}".replace(".", ",") + " €"
 
@@ -2930,8 +2955,21 @@ async def socio_bar_status(socio: dict = Depends(get_current_socio)):
     return {"open": is_open}
 
 async def _socio_has_open_quotas(client_id: str, year: int) -> bool:
+    """Cotas por regularizar = meses JÁ VENCIDOS (até ao mês corrente) sem pagamento.
+    Cotas futuras (ainda não vencidas) nunca bloqueiam o sócio."""
     qs = await _quotas_status(client_id, year)
-    return any(q["status"] != "paid" for q in qs)
+    try:
+        from zoneinfo import ZoneInfo
+        cur = datetime.now(ZoneInfo("Europe/Lisbon"))
+    except Exception:
+        cur = datetime.now(timezone.utc)
+    if year < cur.year:
+        months = qs
+    elif year > cur.year:
+        months = []
+    else:
+        months = [q for q in qs if q["month"] <= cur.month]
+    return any(q["status"] != "paid" for q in months)
 
 # ---------- Sócio messages ----------
 class SocioMessageIn(BaseModel):
@@ -3887,7 +3925,16 @@ async def get_bar_status(user: dict = Depends(get_current_user)):
         await _audit("bar_auto_close", user["email"], summary=f"Bar FECHADO automaticamente às 02:00 · valor em caixa: {cash:.2f} €")
         auto_closed = True
     cash = await _expected_cash_today()
-    return {"open": bool(doc and doc.get("open")), "changed_at": doc.get("changed_at") if doc else None, "changed_by": doc.get("changed_by") if doc else None, "cash_in_drawer": cash, "auto_closed": auto_closed}
+    # Nota do último fecho de caixa — mostra ao abrir o bar qual era o valor em caixa
+    last_close = await db.cash_closes.find({}, {"_id": 0}).sort("created_at", -1).to_list(1)
+    return {
+        "open": bool(doc and doc.get("open")),
+        "changed_at": doc.get("changed_at") if doc else None,
+        "changed_by": doc.get("changed_by") if doc else None,
+        "cash_in_drawer": cash,
+        "auto_closed": auto_closed,
+        "last_close": last_close[0] if last_close else None,
+    }
 
 @api_router.get("/ata/daily")
 async def ata_daily(date: Optional[str] = None, user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
@@ -4338,11 +4385,14 @@ async def socio_balance_quarterly(socio: dict = Depends(get_current_socio)):
     date_from = f"{year}-{quarter_start_month:02d}-01"
     date_to = now.strftime("%Y-%m-%d")
     data = await _finance_summary(date_from, date_to)
-    # Valor em caixa: o dinheiro declarado quando o bar foi aberto
-    bar_doc = await db.club_state.find_one({"_id": "bar"}, {"_id": 0})
-    cash_in_drawer = 0.0
-    if bar_doc:
-        cash_in_drawer = float(bar_doc.get("opening_cash_declared") or bar_doc.get("cash_in_drawer") or 0)
+    # Saldos contabilísticos (todas as datas): caixa = vendas em numerário −
+    # depósitos bancários − devoluções de crédito; banco = depósitos registados.
+    cash_payments = await db.payments.find({"source": {"$ne": "refund"}}, {"_id": 0}).to_list(50000)
+    cash_in_all = sum(_payment_cash_value(p) for p in cash_payments)
+    wd_all = await db.cash_withdrawals.find({}, {"_id": 0}).to_list(50000)
+    bank_balance = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") != "credit_refund"), 2)
+    refunds_all = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "credit_refund"), 2)
+    cash_balance = round(cash_in_all - bank_balance - refunds_all, 2)
     return {
         "quarter": f"T{quarter}/{year}",
         "period": data["period"],
@@ -4352,9 +4402,10 @@ async def socio_balance_quarterly(socio: dict = Depends(get_current_socio)):
         "counts": data["counts"],
         "generated_at": data["generated_at"],
         "club_name": data["club_name"],
-        "cash_in_drawer": round(cash_in_drawer, 2),
-        # Saldo bancário do trimestre = depósitos bancários registados no período
-        "bank_balance": round(float(data["expenses"]["cash_withdrawals"] or 0), 2),
+        # Saldos contabilísticos (banco + caixa)
+        "bank_balance": bank_balance,
+        "cash_balance": cash_balance,
+        "total_balance": round(bank_balance + cash_balance, 2),
     }
 
 

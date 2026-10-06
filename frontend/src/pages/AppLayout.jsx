@@ -136,7 +136,11 @@ function BarStatusButton() {
     <>
       <button
         data-testid="bar-status-btn"
-        onClick={() => setConfirmOpen(true)}
+        onClick={() => {
+          // Ao abrir: prefere o valor contado no fecho anterior
+          if (!bar?.open && bar?.last_close?.cash_counted != null) setCashInput(String(bar.last_close.cash_counted));
+          setConfirmOpen(true);
+        }}
         title={`Bar ${isOpen ? "aberto" : "fechado"} — clique no interruptor para ${isOpen ? "fechar" : "abrir"} · valor em caixa ${euro(bar.cash_in_drawer)}`}
         className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-bold border transition-colors ${
           isOpen
@@ -168,6 +172,19 @@ function BarStatusButton() {
               </div>
               <p className="text-[11px] text-slate-500">Este valor fica registado na ata diária e no audit log.</p>
             </div>
+            {!isOpen && bar?.last_close && (
+              <div data-testid="bar-last-close-note" className="mb-4 bg-amber-500/5 border border-amber-500/30 rounded-lg p-3 text-[11px] text-amber-200">
+                <div className="font-bold uppercase tracking-[0.2em] text-[10px] text-amber-400/80 mb-1">Nota do fecho anterior</div>
+                <div>
+                  No fecho anterior contou-se <strong className="font-outfit">{euro(bar.last_close.cash_counted)}</strong> em caixa
+                  (esperado {euro(bar.last_close.expected_cash)} · diferença {euro(bar.last_close.difference)}).
+                </div>
+                <div className="text-slate-400 mt-1">
+                  {bar.last_close.user_email || "—"} · {new Date(bar.last_close.created_at).toLocaleString("pt-PT")}
+                  {bar.last_close.note ? ` · nota: ${bar.last_close.note}` : ""}
+                </div>
+              </div>
+            )}
             {!isOpen && (
               <div className="mb-4">
                 <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Dinheiro em caixa ao abrir (€)</label>

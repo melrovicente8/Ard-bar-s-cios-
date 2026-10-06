@@ -35,6 +35,7 @@ import {
   Bell,
   Lightning,
   Trash,
+  CheckCircle,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import CommunityChat from "../components/CommunityChat";
@@ -249,6 +250,17 @@ export default function SocioPortal() {
       setEditingReq(null);
       await loadMyRequests();
       await refresh();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const confirmPickup = async (r) => {
+    if (!window.confirm(`Confirmas que já levantaste este pedido (${euro(r.total)}) no balcão?`)) return;
+    try {
+      await api.post(`/socio/consumption-requests/${r.id}/picked-up`);
+      toast.success("Pedido marcado como levantado");
+      await loadMyRequests();
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
@@ -717,8 +729,11 @@ export default function SocioPortal() {
             {c.member_number && quotas && (
               <div className="bg-slate-950/60 border border-amber-500/30 rounded-xl p-5" data-testid="socio-quotas-card">
                 {(() => {
-                  const paid = quotas.quotas.filter((q) => q.status === "paid").length;
-                  const total = quotas.quotas.length || 12;
+                  // Só contam meses já vencidos (até ao mês corrente) — cotas futuras não são "por regularizar"
+                  const curMonth = new Date().getMonth() + 1;
+                  const due = quotas.quotas.filter((q) => q.month <= curMonth);
+                  const paid = due.filter((q) => q.status === "paid").length;
+                  const total = due.length || 12;
                   const pct = Math.round((paid / total) * 100);
                   const upToDate = paid >= total;
                   return (
@@ -769,7 +784,7 @@ export default function SocioPortal() {
             <span>Despesas <span className="text-slate-300 font-medium">{euro(monthly.expenses.total)}</span></span>
             <span>Saldo <span className="text-slate-300 font-medium">{euro(monthly.balance)}</span></span>
             {quarterly && (
-              <span>Banco <span className="text-slate-300 font-medium">{euro(quarterly.bank_balance ?? 0)}</span></span>
+              <span title="Saldos contabilísticos (banco + caixa)">Saldos <span className="text-slate-300 font-medium">{euro(quarterly.total_balance ?? 0)}</span> <span className="text-slate-600">(banco {euro(quarterly.bank_balance ?? 0)} + caixa {euro(quarterly.cash_balance ?? 0)})</span></span>
             )}
             {quarterly && (
               <button
@@ -940,6 +955,15 @@ export default function SocioPortal() {
                     <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${reqStatusClass[r.status] || ""}`}>
                       {reqStatusLabel[r.status] || r.status}
                     </span>
+                    {r.status === "approved" && (
+                      <button
+                        data-testid={`socio-myreq-pickup-${r.id}`}
+                        onClick={() => confirmPickup(r)}
+                        className="text-[10px] px-2 py-1 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 flex items-center gap-1 font-bold"
+                      >
+                        <CheckCircle size={11} weight="bold" /> Já levantei
+                      </button>
+                    )}
                     {r.status === "pending" && (
                       <div className="flex gap-1.5">
                         <button

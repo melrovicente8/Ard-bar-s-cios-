@@ -10,8 +10,9 @@ export function openQuarterlyDoc(d) {
   // Retiradas de caixa transitam para conta bancária — não são despesa real.
   const despesasReais = (d.expenses.supplier_orders || 0) + (d.expenses.supplier_expenses || 0);
   const saldo = d.income.total - despesasReais;
-  const banco = d.expenses.cash_withdrawals || 0;
-  const caixa = d.cash_in_drawer || 0; // valor em caixa (declarado ao abrir o bar)
+  // Saldos contabilísticos (todas as datas): banco = depósitos registados; caixa = numerário em gaveta
+  const banco = d.bank_balance ?? (d.expenses.cash_withdrawals || 0);
+  const caixa = d.cash_balance ?? (d.cash_in_drawer || 0);
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Balanço trimestral ${d.quarter} · ${d.club_name}</title>
 <style>
   body{font-family:Arial;color:#0f172a;margin:24px;font-size:13px}
@@ -55,10 +56,11 @@ export function openQuarterlyDoc(d) {
     <tr style="border-top:2px solid #0f172a"><td><strong>TOTAL DESPESAS</strong></td><td class="right neg"><strong>${euro(despesasReais)}</strong></td></tr>
   </tbody></table>
 
-  <h2 style="font-size:14px;margin:22px 0 6px;color:#475569">VALOR EM CONTA BANCÁRIA</h2>
+  <h2 style="font-size:14px;margin:22px 0 6px;color:#475569">SALDOS CONTABILÍSTICOS (BANCO + CAIXA)</h2>
   <table><tbody>
-    <tr><td>Saldo Contabilístico (banco)</td><td class="right" style="color:#15803d"><strong>${euro(banco)}</strong></td></tr>
-    <tr><td>Saldo Disponível · Valor em caixa</td><td class="right" style="color:#b45309"><strong>${euro(caixa)}</strong></td></tr>
+    <tr><td>Saldo em banco (depósitos registados)</td><td class="right" style="color:#15803d"><strong>${euro(banco)}</strong></td></tr>
+    <tr><td>Saldo em caixa (numerário em gaveta)</td><td class="right" style="color:#b45309"><strong>${euro(caixa)}</strong></td></tr>
+    <tr style="border-top:2px solid #0f172a"><td><strong>TOTAL (banco + caixa)</strong></td><td class="right"><strong>${euro(banco + caixa)}</strong></td></tr>
   </tbody></table>
 
   <div class="totals">
