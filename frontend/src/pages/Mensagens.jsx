@@ -159,7 +159,7 @@ export default function Mensagens() {
                 {(m.from_staff || m.status === "replied") && (
                   m.read_at ? (
                     <span data-testid={`msg-read-${m.id}`} className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30" title={new Date(m.read_at).toLocaleString("pt-PT")}>
-                      ✓ Lida pelo sócio
+                      ✓ Lida pelo sócio · {new Date(m.read_at).toLocaleString("pt-PT")}
                     </span>
                   ) : (
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-700/50 text-slate-400 border border-slate-600/30">Não lida</span>
@@ -168,7 +168,9 @@ export default function Mensagens() {
                 {/* O staff marca mensagens como lidas (sem responder) */}
                 {m.status === "open" && (
                   m.staff_read_at ? (
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/15 text-sky-300 border border-sky-500/30">✓ Lida pelo staff</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/15 text-sky-300 border border-sky-500/30" title={new Date(m.staff_read_at).toLocaleString("pt-PT")}>
+                      ✓ Lida pelo staff · {new Date(m.staff_read_at).toLocaleString("pt-PT")}
+                    </span>
                   ) : (
                     <button
                       data-testid={`staff-read-${m.id}`}
