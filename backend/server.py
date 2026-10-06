@@ -1423,6 +1423,36 @@ async def reject_consumption_request(req_id: str, user: dict = Depends(get_curre
     })
     return {"ok": True}
 
+class ConsumptionReqEditIn(BaseModel):
+    items: List[SaleItemIn]
+    note: Optional[str] = None
+
+@api_router.put("/consumption-requests/{req_id}")
+async def staff_edit_consumption_request(req_id: str, body: ConsumptionReqEditIn, user: dict = Depends(get_current_user)):
+    """Staff pode editar itens / nota de um pedido ainda pendente, antes de o aprovar."""
+    req = await db.consumption_requests.find_one({"id": req_id}, {"_id": 0})
+    if not req:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if req.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Pedido já tratado")
+    if not body.items:
+        raise HTTPException(status_code=400, detail="Sem itens")
+    line_items = await _build_request_line_items(body.items, req["client_id"])
+    total = round(sum(li["subtotal"] for li in line_items), 2)
+    await _check_credit_limit(req["client_id"], total)
+    await db.consumption_requests.update_one(
+        {"id": req_id},
+        {"$set": {
+            "items": line_items,
+            "total": total,
+            "note": body.note,
+            "edited_at": datetime.now(timezone.utc).isoformat(),
+            "edited_by": user["email"],
+            "edited_by_staff": True,
+        }},
+    )
+    return await db.consumption_requests.find_one({"id": req_id}, {"_id": 0})
+
 # ---------- Payments ----------
 @api_router.post("/payments")
 async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)):
@@ -2593,9 +2623,10 @@ async def socio_members_paid_up(socio: dict = Depends(get_current_socio)):
     return sorted(out, key=lambda x: (x["member_number"] or ""))
 
 @api_router.get("/socio/products")
-async def socio_list_products(socio: dict = Depends(get_current_socio)):
+async def socio_list_products(exclude_request_id: Optional[str] = None, socio: dict = Depends(get_current_socio)):
     """Lista de produtos disponíveis para o sócio pedir consumo (exclui cotas e sem stock).
-    A disponibilidade desconta o que já está reservado em pedidos pendentes."""
+    A disponibilidade desconta o que já está reservado em pedidos pendentes.
+    Ao editar um pedido, a reserva do próprio pedido é excluída (exclude_request_id)."""
     q = {"$and": [
         {"$or": [{"is_quota": {"$exists": False}}, {"is_quota": False}]},
         {"unavailable": {"$ne": True}},  # itens marcados como indisponíveis NUNCA aparecem na app

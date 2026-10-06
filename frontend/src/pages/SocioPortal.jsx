@@ -92,6 +92,7 @@ export default function SocioPortal() {
   const [canSeeFinance, setCanSeeFinance] = useState(null);
   const [myRequests, setMyRequests] = useState([]);
   const [editingReq, setEditingReq] = useState(null);
+  const [editItemInfo, setEditItemInfo] = useState({}); // nome/preço de itens do pedido em edição (fallback quando o produto sai da lista)
   const [top5, setTop5] = useState([]);
   const [staffUnread, setStaffUnread] = useState([]);
   const [showPin, setShowPin] = useState(false);
@@ -221,12 +222,22 @@ export default function SocioPortal() {
     cancelled: "bg-slate-800 text-slate-400 border-slate-700",
   };
 
-  const startEditRequest = (r) => {
-    const cart = {};
-    (r.items || []).forEach((it) => { cart[it.product_id] = (cart[it.product_id] || 0) + Number(it.quantity || 0); });
-    setReqCart(cart);
+  const startEditRequest = async (r) => {
     setEditingReq(r);
     setShowRequest(true);
+    // Recarrega a lista de produtos — sem isto o carrinho ficava vazio (produtos não estavam carregados)
+    try {
+      const { data } = await api.get("/socio/products");
+      setProducts(data);
+    } catch { /* mantém a lista atual */ }
+    const cart = {};
+    const info = {};
+    (r.items || []).forEach((it) => {
+      cart[it.product_id] = (cart[it.product_id] || 0) + Number(it.quantity || 0);
+      info[it.product_id] = { name: it.product_name, price: it.unit_price };
+    });
+    setReqCart(cart);
+    setEditItemInfo(info);
   };
 
   const cancelRequest = async (r) => {
@@ -1356,8 +1367,8 @@ export default function SocioPortal() {
       )}
 
       {showRequest && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => { setShowRequest(false); setEditingReq(null); }} data-testid="socio-request-modal">
-          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg p-6 max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => { setShowRequest(false); setEditingReq(null); setEditItemInfo({}); }} data-testid="socio-request-modal">
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-2xl p-6 max-h-[90vh] flex flex-col">
             <div className="flex items-center gap-2 mb-2">
               <Plus size={22} weight="bold" className="text-emerald-400" />
               <h3 className="font-outfit text-xl font-semibold">{editingReq ? "Editar pedido" : "Pedir consumo"}</h3>
@@ -1392,17 +1403,19 @@ export default function SocioPortal() {
 
             {/* Carrinho actual (com +/- e remover) */}
             {Object.entries(reqCart).filter(([, q]) => q > 0).length > 0 && (
-              <div className="mb-3 bg-slate-950 border border-amber-500/30 rounded-lg p-2 max-h-40 overflow-y-auto" data-testid="req-cart-list">
+              <div className="mb-3 bg-slate-950 border border-amber-500/30 rounded-lg p-2 max-h-64 overflow-y-auto" data-testid="req-cart-list">
                 <div className="text-[10px] uppercase tracking-wider text-amber-400 font-bold mb-1.5 px-1">No carrinho</div>
                 {Object.entries(reqCart).filter(([, q]) => q > 0).map(([pid, q]) => {
                   const isQuota = pid.startsWith("quota-");
                   const p = products.find((x) => x.id === pid);
-                  if (!p && !isQuota) return null;
+                  const info = editItemInfo[pid];
+                  const pname = isQuota ? nameOf(pid) : (p ? p.name : (info?.name || nameOf(pid) || "Produto"));
+                  const price = isQuota ? priceOf(pid) : (p ? p.price : (info?.price ?? priceOf(pid)));
                   return (
                     <div key={pid} className="flex items-center justify-between gap-2 py-1.5 px-1 border-b border-slate-800 last:border-0">
                       <div className="flex-1 min-w-0">
-                        <div className="truncate text-sm font-medium">{isQuota ? nameOf(pid) : p.name}</div>
-                        <div className="text-[10px] text-slate-500">{euro(priceOf(pid))} · subtotal {euro(priceOf(pid) * q)}</div>
+                        <div className="truncate text-sm font-medium">{pname}</div>
+                        <div className="text-[10px] text-slate-500">{euro(price)} · subtotal {euro(price * q)}{!isQuota && !p && <span className="text-amber-500"> · indisponível agora</span>}</div>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         <button
@@ -1422,9 +1435,9 @@ export default function SocioPortal() {
                           type="button"
                           data-testid={`req-inc-${pid}`}
                           onClick={() => setReqCart({ ...reqCart, [pid]: q + 1 })}
-                          disabled={!isQuota && p && q >= availOf(p)}
+                          disabled={!isQuota && (!p || q >= availOf(p))}
                           className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700 text-base font-bold disabled:opacity-30"
-                          title={!isQuota && p && q >= availOf(p) ? "Quantidade disponível esgotada" : "Adicionar 1"}
+                          title={!isQuota && !p ? "Produto indisponível" : !isQuota && q >= availOf(p) ? "Quantidade disponível esgotada" : "Adicionar 1"}
                         >+</button>
                         <button
                           type="button"
@@ -1465,11 +1478,14 @@ export default function SocioPortal() {
             <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 mb-3 flex items-center justify-between">
               <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Total</span>
               <span data-testid="req-total" className="font-outfit text-xl font-bold text-amber-300">
-                {euro(Object.entries(reqCart).reduce((s, [pid, q]) => s + priceOf(pid) * q, 0))}
+                {euro(Object.entries(reqCart).reduce((s, [pid, q]) => {
+                  const fallback = editItemInfo[pid]?.price;
+                  return s + (pid.startsWith("quota-") ? priceOf(pid) : (products.find((x) => x.id === pid)?.price ?? fallback ?? 0)) * q;
+                }, 0))}
               </span>
             </div>
             <div className="flex gap-2">
-              <button type="button" onClick={() => { setShowRequest(false); setEditingReq(null); }} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700">Cancelar</button>
+              <button type="button" onClick={() => { setShowRequest(false); setEditingReq(null); setEditItemInfo({}); }} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700">Cancelar</button>
               <button data-testid="req-submit" onClick={submitRequest} disabled={!Object.keys(reqCart).length} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold">{editingReq ? "Guardar alterações" : "Enviar pedido"}</button>
             </div>
           </div>

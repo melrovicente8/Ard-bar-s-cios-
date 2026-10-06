@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
-import { ShoppingCart, Check, X as XIcon } from "@phosphor-icons/react";
+import { ShoppingCart, Check, X as XIcon, PencilSimple } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const STATUS_CLASS = {
@@ -14,6 +14,11 @@ export default function Pedidos() {
   const [filter, setFilter] = useState("pending");
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null);      // pedido em edição
+  const [editCart, setEditCart] = useState({});      // {product_id: qty}
+  const [editNote, setEditNote] = useState("");
+  const [addPid, setAddPid] = useState("");
+  const [products, setProducts] = useState([]);
 
   const load = async () => {
     setLoading(true);
@@ -45,6 +50,40 @@ export default function Pedidos() {
     try {
       await api.post(`/consumption-requests/${r.id}/reject`);
       toast.success("Pedido rejeitado");
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const startEdit = async (r) => {
+    const cart = {};
+    (r.items || []).forEach((it) => { cart[it.product_id] = (cart[it.product_id] || 0) + Number(it.quantity || 0); });
+    setEditing(r);
+    setEditCart(cart);
+    setEditNote(r.note || "");
+    setAddPid("");
+    setProducts([]);
+    try {
+      const { data } = await api.get("/products");
+      setProducts((data || []).filter((p) => !p.is_quota && (p.quantity || 0) > 0));
+    } catch { /* sem lista para adicionar itens */ }
+  };
+
+  const editSubtotal = () => Object.entries(editCart).reduce((s, [pid, q]) => {
+    const it = editing?.items?.find((x) => x.product_id === pid);
+    const p = products.find((x) => x.id === pid);
+    const price = p ? p.price : it?.unit_price || 0;
+    return s + price * q;
+  }, 0);
+
+  const saveEdit = async () => {
+    const items = Object.entries(editCart).filter(([, q]) => q > 0).map(([product_id, quantity]) => ({ product_id, quantity }));
+    if (!items.length) return toast.error("O pedido não pode ficar vazio — anula-o se necessário");
+    try {
+      await api.put(`/consumption-requests/${editing.id}`, { items, note: editNote || null });
+      toast.success("Pedido atualizado");
+      setEditing(null);
       await load();
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
@@ -114,8 +153,20 @@ export default function Pedidos() {
                 ))}
               </ul>
               {r.note && <p className="text-xs text-slate-400 mb-3 italic">"{r.note}"</p>}
+              {r.status === "pending" && r.edited_at && (
+                <p className="text-[10px] text-amber-400/80 mb-2">
+                  ✏️ Editado em {new Date(r.edited_at).toLocaleString("pt-PT")}{r.edited_by_staff ? ` por ${r.edited_by}` : ""}
+                </p>
+              )}
               {r.status === "pending" ? (
                 <div className="flex gap-2">
+                  <button
+                    data-testid={`edit-${r.id}`}
+                    onClick={() => startEdit(r)}
+                    className="bg-slate-800 text-slate-300 hover:bg-slate-700 border border-slate-700 font-bold rounded-lg px-4 py-2.5 flex items-center justify-center gap-2"
+                  >
+                    <PencilSimple size={16} weight="bold" /> Editar
+                  </button>
                   <button
                     data-testid={`approve-${r.id}`}
                     onClick={() => approve(r)}
@@ -142,6 +193,98 @@ export default function Pedidos() {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Modal: editar pedido pendente */}
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setEditing(null)} data-testid="pedido-edit-modal">
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-2xl p-6 max-h-[90vh] flex flex-col">
+            <div className="flex items-center gap-2 mb-1">
+              <PencilSimple size={22} weight="bold" className="text-amber-400" />
+              <h3 className="font-outfit text-xl font-semibold">Editar pedido · {editing.client_name}</h3>
+            </div>
+            <p className="text-xs text-slate-400 mb-3">Ajusta itens ou nota antes de aprovar. O sócio vê o pedido atualizado no portal.</p>
+
+            <div className="overflow-y-auto mb-3 pr-1" data-testid="pedido-edit-cart">
+              {Object.entries(editCart).filter(([, q]) => q > 0).map(([pid, q]) => {
+                const it = editing.items.find((x) => x.product_id === pid);
+                const p = products.find((x) => x.id === pid);
+                const price = p ? p.price : it?.unit_price || 0;
+                return (
+                  <div key={pid} className="flex items-center justify-between gap-2 py-1.5 px-1 border-b border-slate-800 last:border-0">
+                    <div className="flex-1 min-w-0">
+                      <div className="truncate text-sm font-medium">{p ? p.name : it?.product_name || pid}</div>
+                      <div className="text-[10px] text-slate-500">{euro(price)} · subtotal {euro(price * q)}</div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = { ...editCart };
+                          const nq = (next[pid] || 0) - 1;
+                          if (nq <= 0) delete next[pid]; else next[pid] = nq;
+                          setEditCart(next);
+                        }}
+                        className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700 text-base font-bold"
+                        title="Retirar 1"
+                      >−</button>
+                      <span className="min-w-[24px] text-center font-bold text-amber-300 text-sm">{q}</span>
+                      <button
+                        type="button"
+                        onClick={() => setEditCart({ ...editCart, [pid]: q + 1 })}
+                        className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700 text-base font-bold"
+                        title="Adicionar 1"
+                      >+</button>
+                      <button
+                        type="button"
+                        onClick={() => { const next = { ...editCart }; delete next[pid]; setEditCart(next); }}
+                        className="w-7 h-7 rounded bg-rose-950 hover:bg-rose-900 text-rose-400 text-xs ml-1"
+                        title="Remover"
+                      >×</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex gap-2 mb-3">
+              <select
+                data-testid="pedido-edit-add"
+                value={addPid}
+                onChange={(e) => {
+                  const pid = e.target.value;
+                  setAddPid("");
+                  if (!pid) return;
+                  setEditCart({ ...editCart, [pid]: (editCart[pid] || 0) + 1 });
+                }}
+                className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white"
+              >
+                <option value="">+ Adicionar produto…</option>
+                {products.filter((p) => !editCart[p.id]).map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} · {euro(p.price)} · {p.quantity} disp.</option>
+                ))}
+              </select>
+            </div>
+
+            <textarea
+              data-testid="pedido-edit-note"
+              value={editNote}
+              onChange={(e) => setEditNote(e.target.value)}
+              rows={2}
+              placeholder="Nota (opcional)"
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm mb-3"
+            />
+
+            <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 mb-3 flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Total</span>
+              <span data-testid="pedido-edit-total" className="font-outfit text-xl font-bold text-amber-300">{euro(editSubtotal())}</span>
+            </div>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setEditing(null)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700">Cancelar</button>
+              <button data-testid="pedido-edit-save" onClick={saveEdit} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold">Guardar alterações</button>
+            </div>
+          </div>
         </div>
       )}
     </div>
