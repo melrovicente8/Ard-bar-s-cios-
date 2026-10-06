@@ -87,7 +87,8 @@ export default function GiftsStaff() {
                   ))}
                 </ul>
                 <div className="text-[10px] text-slate-500 mt-1">
-                  {g.kind === "prepaid" ? "Deixado pago" : "Pagamento delegado"} · {new Date(g.created_at).toLocaleString("pt-PT")}
+                  {g.kind === "prepaid" ? "Deixado pago" : "Pagamento delegado"}
+                  {g.tx_number ? <> · <span className="font-mono">#{g.tx_number}</span></> : null} · {new Date(g.created_at).toLocaleString("pt-PT")}
                   {g.served_at && <> · servido por {g.served_by} em {new Date(g.served_at).toLocaleString("pt-PT")}</>}
                 </div>
               </li>

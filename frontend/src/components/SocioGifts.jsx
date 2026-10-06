@@ -165,6 +165,17 @@ export default function SocioGifts({ me }) {
         </button>
       );
     }
+    if (isRecipient && g.status === "accepted") {
+      return (
+        <button
+          data-testid={`socio-gift-claim-${g.id}`}
+          onClick={() => action(g, "claim", "Pedido ao balcão · o staff vai servir-te")}
+          className="text-[10px] px-2 py-1 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1 font-bold"
+        >
+          <Gift size={11} weight="bold" /> Pedir ao balcão
+        </button>
+      );
+    }
     if (isRecipient && g.status === "served") {
       return (
         <button
@@ -228,6 +239,7 @@ export default function SocioGifts({ me }) {
                       <span className="text-sky-300"><strong>{g.payer_name}</strong> (nº {g.payer_member_number}) paga · consome tu</span>
                     )}
                     {" · "}{g.kind === "prepaid" ? "Deixado pago" : "Pagamento delegado"}
+                    {g.tx_number ? <> · <span className="font-mono text-slate-400">#{g.tx_number}</span></> : null}
                   </div>
                   <ul className="text-xs text-slate-400 mt-1 space-y-0.5">
                     {(g.items || []).map((it, j) => (
