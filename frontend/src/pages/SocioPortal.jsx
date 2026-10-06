@@ -24,9 +24,14 @@ import {
   Plus,
   Ticket,
   Storefront,
+  IdentificationCard,
+  Users,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import CommunityChat from "../components/CommunityChat";
+import SocioDigitalCard from "../components/SocioDigitalCard";
+import SocioMerch from "../components/SocioMerch";
+import SocioFamily from "../components/SocioFamily";
 
 export default function SocioPortal() {
   const { data, logout, refresh } = useSocio();
@@ -65,6 +70,12 @@ export default function SocioPortal() {
   const [showTickets, setShowTickets] = useState(false);
   // Detalhe do que está por pagar
   const [showDebtDetail, setShowDebtDetail] = useState(false);
+  // Cartão de Sócio Digital (QR dinâmico)
+  const [showCard, setShowCard] = useState(false);
+  // Loja de merchandising (indisponível)
+  const [showMerch, setShowMerch] = useState(false);
+  // Agregado familiar
+  const [showFamily, setShowFamily] = useState(false);
 
   useEffect(() => {
     api.get("/club/info").then((r) => setClub(r.data)).catch(() => {});
@@ -701,6 +712,27 @@ export default function SocioPortal() {
                 className="text-xs px-3 py-1.5 rounded-md bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30 hover:bg-fuchsia-500/25 flex items-center gap-1.5"
               >
                 <ChatCircle size={13} weight="duotone" /> Mensagens
+              </button>
+              <button
+                data-testid="socio-card-btn"
+                onClick={() => setShowCard(true)}
+                className="text-xs px-3 py-1.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1.5"
+              >
+                <IdentificationCard size={13} weight="duotone" /> Cartão de Sócio
+              </button>
+              <button
+                data-testid="socio-merch-btn"
+                onClick={() => setShowMerch(true)}
+                className="text-xs px-3 py-1.5 rounded-md bg-sky-500/15 text-sky-300 border border-sky-500/30 hover:bg-sky-500/25 flex items-center gap-1.5"
+              >
+                <Storefront size={13} weight="duotone" /> Loja
+              </button>
+              <button
+                data-testid="socio-family-btn"
+                onClick={() => setShowFamily(true)}
+                className="text-xs px-3 py-1.5 rounded-md bg-teal-500/15 text-teal-300 border border-teal-500/30 hover:bg-teal-500/25 flex items-center gap-1.5"
+              >
+                <Users size={13} weight="duotone" /> Agregado familiar
               </button>
               <button
                 data-testid="socio-community-btn"
@@ -1436,6 +1468,12 @@ export default function SocioPortal() {
           </div>
         </div>
       )}
+
+      {showCard && <SocioDigitalCard client={c} onClose={() => setShowCard(false)} />}
+
+      {showMerch && <SocioMerch onClose={() => setShowMerch(false)} />}
+
+      {showFamily && <SocioFamily titular={c} onClose={() => setShowFamily(false)} />}
     </div>
   );
 }

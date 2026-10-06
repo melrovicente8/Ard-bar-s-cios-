@@ -155,6 +155,56 @@ App de gestão integrada de bar/clube ARD Nespereira em **PT-PT**. Combina:
 - Sócio pode pagar via MBWay (\`POST /api/socio/quotas/pay\`)
 - Sócio fica \`quotas_up_to_date\` quando paga 12/12 (campo derivado em \`/api/admin/clients\`)
 
+### Portal do sócio — pedidos de consumo
+- Só com **bar aberto** (bar fechado esconde o botão e mostra banner "Estamos Fechados")
+- O pedido vai para o staff validar em **/pedidos** ("Pedidos sócio")
+- **Disponibilidade** considera o stock já **reservado em pedidos pendentes** (stock − pendentes)
+- Se o sócio tiver a **cota do mês em dívida**, o portal pergunta e permite pagá-la junto ao pedido
+- Aprovar → cria venda na ficha do sócio (balance + total) e desconta stock; rejeitar → sem efeito na conta
+- Se o pedido exceder o **teto de crédito (fiado)**, é bloqueado automaticamente
+
+### MBWay com pontos (portal)
+- O pagamento MBWay pode descontar **pontos** em múltiplos de **5** (5 pts = 1 €)
+- Campo 'tendered' guarda **estritamente o numerário entregue**
+
+### Cotas — sincronização e estado
+- A sincronização de cotas pagas analisa **todas as vendas** do cliente
+- Estado do sócio: "Cotas pagas" ('is_member': true) / "Por regularizar" — badge no portal e na ficha
+- Dívida do sócio = balance > 0.004 (epsilon evita resíduos de vírgula flutuante)
+
+### Aniversários
+- No dia de aniversário o sócio recebe pontos **idade ÷ 4** + mensagem de parabéns (SMS/email se configurado)
+- Aniversários dos próximos 7 dias no dashboard
+
+### Caixa & retiradas
+- Ao **abrir o bar** é obrigatório declarar o dinheiro em caixa (valor inicial)
+- **Retirada de caixa** (POST /api/cash-withdrawals) registada nas transações/financeiro (admin)
+- Modal de abertura do bar renderizado no portal, centrado, com campo de valor
+
+### Cartão de Sócio Digital (QR dinâmico)
+- GET /api/socio/card-code → código ARD-<nº>-<assinatura HMAC> que **roda a cada minuto**
+- Portal do sócio: botão "Cartão de Sócio" → QR que atualiza sozinho ao fim de valid_seconds
+- Staff valida com POST /api/socio/card-verify (aceita janela atual e anterior)
+
+### Loja de merchandising (adeptos)
+- GET /api/socio/merch → produtos da categoria Merchandising
+- **Visíveis mas indisponíveis** para venda (badge "Indisponível" no portal)
+
+### Agregado familiar
+- Titular inscreve dependentes: POST /api/socio/family (máx. 15)
+- Dependente: cliente ligado por family_head_client_id
+- Titular paga cotas do dependente por MBWay: POST /api/socio/family/quotas/pay
+- Consulta: GET /api/socio/family (dependentes + cotas + estado)
+
+### Recuperação de PIN
+- POST /api/socio/recover-pin — nº de sócio + telemóvel (validado contra o registado)
+- Gera mensagem à direção; novo PIN entregue por staff (ficha do cliente)
+
+### Acesso de funcionários (restrições)
+- Financeiro (Contas/Transações) limitado à **janela de 30 dias**
+- Aba Contas com filtros restritos; "Ofertas da casa" filtradas por email do funcionário
+- Retirada de caixa só para administração
+
 ### Numeração universal (\`tx_number\`)
 - Counter atómico em \`db.counters\`
 - Cobre: \`sales\`, \`payments\`, \`supplier_orders\`, \`supplier_expenses\`
@@ -307,6 +357,28 @@ Relatórios PDF/print disponíveis em:
 - **Iter 9 (Fase B+C)**: Cotas 12/ano, keep_change toggle, points history, página /pedidos, mobile sidebar
 - **Iter 10**: Backfill tx_number + endpoint /socio/products + carrinho com +/- no portal
 - **Iter 11**: Foto+data na ficha, cotas mensais na ficha, aba "Cotas em dia", \`tip\`, \`sale_ids\`, estorno 5min, conta da casa, horário comida, indisponível, dashboard mascarado, saudação, alertas
+- **Iter 12+ (Base44)**: resumo de todas as indicações solicitadas e implementadas:
+  1. **Reconstrução da base de dados** segregada por funcionalidades (clube, vendas, utilizadores, chat)
+  2. **Notificação/chat** restaurados (mensagens sócio ↔ direção, chat da comunidade, HeaderAlerts global com relógio + pedidos/MBWay/mensagens)
+  3. **Filtros avançados** nas listas (clientes, histórico, transações, stock)
+  4. **Alertas de aniversários** — pontos (idade ÷ 4) + parabéns + lista de 7 dias no dashboard
+  5. **Relatórios financeiros PDF** — helper partilhado unifica relatório mensal e fecho diário (Contas)
+  6. **MBWay com desconto de pontos** do sócio (múltiplos de 5, validado no backend)
+  7. **Disponibilidade de produtos** considera reservas em pedidos pendentes
+  8. **Campo tendered** guarda estritamente o numerário entregue
+  9. **Sincronização de cotas** analisa todas as vendas do cliente
+  10. **Bloqueio automático** de pedidos que excedam o teto de crédito (fiado)
+  11. **Janela horária de Comida** 16h–20h no portal do sócio
+  12. **Declaração de caixa obrigatória** ao abrir o bar + modal centrado no portal
+  13. **Retirada de caixa** integrada nas transações/financeiro (admin)
+  14. **Acesso de funcionários** a Contas (filtros restritos), Transações e Ofertas da casa (30 dias / por email)
+  15. **Unificação Clientes + Sócios** na navegação
+  16. **Campos de direção e histórico** na ficha do sócio/cliente
+  17. **Validação ponta a ponta** do fluxo de pedido no portal (sócio nº 88): submissão → pendente → aprovação → venda (#152) + stock descontado; input do nº de sócio mantém estado após re-render
+  18. **Cartão de Sócio Digital** com QR dinâmico (roda a cada minuto) + validação pelo staff
+  19. **Loja de merchandising** no portal — artigos visíveis mas indisponíveis
+  20. **Agregado Familiar** no painel do sócio — inscrição de dependentes e pagamento de quotas por MBWay
+  21. **Recuperação de PIN** pública (nº sócio + telemóvel → mensagem à direção)
 
 ---
 
