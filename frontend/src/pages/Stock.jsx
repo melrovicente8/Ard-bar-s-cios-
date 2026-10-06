@@ -32,6 +32,8 @@ export default function Stock() {
   const [showAdd, setShowAdd] = useState(false);
   const [showEdit, setShowEdit] = useState(null);
   const [showReplenish, setShowReplenish] = useState(null);
+  const [suppliers, setSuppliers] = useState([]);
+  const [autoOrdering, setAutoOrdering] = useState(false);
 
   const [form, setForm] = useState({
     name: "",
@@ -44,6 +46,7 @@ export default function Stock() {
     is_food: false,
     unavailable: false,
     is_house_account: false,
+    supplier_id: "",
   });
   const [replForm, setReplForm] = useState({ quantity: "", cost_price: "", note: "" });
 
@@ -59,7 +62,24 @@ export default function Stock() {
 
   useEffect(() => {
     load();
+    api.get("/suppliers").then((r) => setSuppliers(r.data || [])).catch(() => {});
   }, []);
+
+  const autoOrder = async () => {
+    if (!window.confirm("Criar encomendas automáticas para os fornecedores de todos os produtos com stock baixo?")) return;
+    setAutoOrdering(true);
+    try {
+      const { data } = await api.post("/supplier-orders/auto", {});
+      const n = (data.created || []).length;
+      if (n) toast.success(`${n} encomenda(s) criada(s) · vê em Fornecedores › Encomendas`);
+      else toast.info("Nada a encomendar ou produtos sem fornecedor definido");
+      if ((data.no_supplier || []).length) toast.warning(`Sem fornecedor definido: ${data.no_supplier.join(", ")}`);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setAutoOrdering(false);
+    }
+  };
 
   const openAdd = () => {
     setForm({
@@ -73,6 +93,7 @@ export default function Stock() {
       is_food: false,
       unavailable: false,
       is_house_account: false,
+      supplier_id: "",
     });
     setShowAdd(true);
   };
@@ -89,6 +110,7 @@ export default function Stock() {
       is_food: !!p.is_food,
       unavailable: !!p.unavailable,
       is_house_account: !!p.is_house_account,
+      supplier_id: p.supplier_id || "",
     });
     setShowEdit(p);
   };
@@ -107,6 +129,7 @@ export default function Stock() {
         is_food: !!form.is_food,
         unavailable: !!form.unavailable,
         is_house_account: !!form.is_house_account,
+        supplier_id: form.supplier_id || null,
       });
       toast.success("Produto adicionado");
       setShowAdd(false);
@@ -130,6 +153,7 @@ export default function Stock() {
         is_food: !!form.is_food,
         unavailable: !!form.unavailable,
         is_house_account: !!form.is_house_account,
+        supplier_id: form.supplier_id || null,
       });
       toast.success("Produto atualizado");
       setShowEdit(null);

@@ -98,7 +98,7 @@ export default function SocioPortal() {
   const [editingReq, setEditingReq] = useState(null);
   const [editItemInfo, setEditItemInfo] = useState({}); // nome/preço de itens do pedido em edição (fallback quando o produto sai da lista)
   const [top5, setTop5] = useState([]);
-  const [staffUnread, setStaffUnread] = useState([]);
+  const [notif, setNotif] = useState({ unread_messages: 0, community_unseen: 0 });
   const [showPin, setShowPin] = useState(false);
   const [pinForm, setPinForm] = useState({ current: "", next: "", confirm: "" });
 
@@ -109,12 +109,11 @@ export default function SocioPortal() {
     } catch { /* sem pedidos */ }
   };
 
-  // Notificações do clube (pedidos aceites/recusados, respostas) — banner até serem vistas
-  const loadStaffMessages = async () => {
+  // Notificações do clube (mensagens/respostas do staff) — lidas no servidor, o emissor vê a confirmação
+  const loadNotifications = async () => {
     try {
-      const { data } = await api.get("/socio/messages");
-      const lastSeen = Number(localStorage.getItem("socio_staff_seen_at") || 0);
-      setStaffUnread((data || []).filter((m) => m.from_staff && new Date(m.created_at).getTime() > lastSeen));
+      const { data } = await api.get("/socio/notifications");
+      setNotif({ unread_messages: data.unread_messages || 0, community_unseen: data.community_unseen || 0 });
     } catch { /* ignore */ }
   };
 
@@ -128,7 +127,7 @@ export default function SocioPortal() {
     // Cotas em dia? Se não, o sócio não vê saldos do clube — vê aviso
     api.get("/socio/can-see-finance").then((r) => setCanSeeFinance(!!r.data.can_see)).catch(() => setCanSeeFinance(null));
     loadMyRequests();
-    loadStaffMessages();
+    loadNotifications();
   }, []);
 
   useEffect(() => {
@@ -220,7 +219,7 @@ export default function SocioPortal() {
       api.get("/socio/balance-quarterly").then((r) => setQuarterly(r.data)).catch(() => {});
       api.get("/socio/can-see-finance").then((r) => setCanSeeFinance(!!r.data.can_see)).catch(() => {});
       loadMyRequests();
-      loadStaffMessages();
+      loadNotifications();
       toast.success("Dados atualizados");
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
@@ -229,8 +228,9 @@ export default function SocioPortal() {
 
   const openMessagesSeen = async () => {
     await loadMessages();
-    localStorage.setItem("socio_staff_seen_at", String(Date.now()));
-    setStaffUnread([]);
+    // O sócio abriu as notificações → marca como lidas no servidor (o staff vê a confirmação)
+    api.post("/socio/messages/read", {}).catch(() => {});
+    setNotif((n) => ({ ...n, unread_messages: 0 }));
   };
 
   const reqStatusLabel = { pending: "Pendente", approved: "Aceito · pronto a levantar no balcão", delivered: "Entregue", rejected: "Recusado", cancelled: "Anulado" };
@@ -616,6 +616,22 @@ export default function SocioPortal() {
           </div>
           <div className="flex items-center gap-2">
             <button
+              data-testid="socio-bell-btn"
+              onClick={openMessagesSeen}
+              title="Notificações do clube"
+              className="relative flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-slate-400 hover:text-white hover:bg-slate-900 transition-colors"
+            >
+              <Bell size={16} />
+              {(notif.unread_messages + notif.community_unseen) > 0 && (
+                <span
+                  data-testid="socio-bell-badge"
+                  className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white text-[10px] font-bold flex items-center justify-center"
+                >
+                  {notif.unread_messages + notif.community_unseen}
+                </span>
+              )}
+            </button>
+            <button
               data-testid="socio-refresh-btn"
               onClick={onRefresh}
               title="Atualizar dados"
@@ -636,7 +652,7 @@ export default function SocioPortal() {
 
       <main className="max-w-5xl mx-auto p-5 md:p-8 space-y-6 animate-in">
         {/* Notificações do clube — pedido aceito/recusado, respostas da direção */}
-        {staffUnread.length > 0 && (
+        {notif.unread_messages > 0 && (
           <button
             onClick={openMessagesSeen}
             data-testid="socio-notifications-banner"
@@ -645,10 +661,7 @@ export default function SocioPortal() {
             <Bell size={18} weight="duotone" className="text-emerald-400" />
             <div className="flex-1 min-w-0">
               <div className="text-sm font-bold text-emerald-300">
-                {staffUnread.length} novidade(s) do clube
-              </div>
-              <div className="text-xs text-emerald-200/70 truncate">
-                {staffUnread[0].subject} — {new Date(staffUnread[0].created_at).toLocaleString("pt-PT")}
+                {notif.unread_messages} notificação(ões) do clube — abre para ler e marcar como lidas
               </div>
             </div>
             <span className="text-xs text-emerald-300 font-bold shrink-0">Ver ›</span>
@@ -1495,7 +1508,7 @@ export default function SocioPortal() {
 
             {/* Carrinho actual (com +/- e remover) */}
             {Object.entries(reqCart).filter(([, q]) => q > 0).length > 0 && (
-              <div className="mb-3 bg-slate-950 border border-amber-500/30 rounded-lg p-2 max-h-64 overflow-y-auto" data-testid="req-cart-list">
+              <div className="mb-3 bg-slate-950 border border-amber-500/30 rounded-lg p-2 max-h-[45vh] overflow-y-auto" data-testid="req-cart-list">
                 <div className="text-[10px] uppercase tracking-wider text-amber-400 font-bold mb-1.5 px-1">No carrinho</div>
                 {Object.entries(reqCart).filter(([, q]) => q > 0).map(([pid, q]) => {
                   const isQuota = pid.startsWith("quota-");
@@ -1506,7 +1519,7 @@ export default function SocioPortal() {
                   return (
                     <div key={pid} className="flex items-center justify-between gap-2 py-1.5 px-1 border-b border-slate-800 last:border-0">
                       <div className="flex-1 min-w-0">
-                        <div className="truncate text-sm font-medium">{pname}</div>
+                        <div className="text-sm font-medium break-words">{pname}</div>
                         <div className="text-[10px] text-slate-500">{euro(price)} · subtotal {euro(price * q)}{!isQuota && !p && <span className="text-amber-500"> · indisponível agora</span>}</div>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">

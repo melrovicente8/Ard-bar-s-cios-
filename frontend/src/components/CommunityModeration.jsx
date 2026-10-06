@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import api, { formatApiErrorDetail } from "../lib/api";
-import { EyeSlash, Eye, Trash, Flag } from "@phosphor-icons/react";
+import { EyeSlash, Eye, Trash, Flag, ChatCircleDots, PaperPlaneTilt } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 /**
@@ -10,6 +10,23 @@ export default function CommunityModeration() {
   const [data, setData] = useState({ messages: [], pending_reports_count: 0 });
   const [filter, setFilter] = useState("all"); // all | visible | hidden | reported
   const [loading, setLoading] = useState(true);
+  const [postText, setPostText] = useState("");
+  const [posting, setPosting] = useState(false);
+
+  const publish = async () => {
+    if (!postText.trim()) return;
+    setPosting(true);
+    try {
+      await api.post("/community/messages/staff-post", { message: postText.trim() });
+      toast.success("Mensagem publicada no chat da comunidade");
+      setPostText("");
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setPosting(false);
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -88,6 +105,34 @@ export default function CommunityModeration() {
         </div>
         <div className="text-xs text-slate-500">{filtered.length} mensagem(ns)</div>
       </div>
+
+      {/* O staff também responde/publica no chat da comunidade — como a Direção */}
+      <form
+        onSubmit={(e) => { e.preventDefault(); publish(); }}
+        data-testid="community-staff-composer"
+        className="mb-4 bg-slate-950/60 border border-amber-500/30 rounded-lg p-3 space-y-2"
+      >
+        <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80 flex items-center gap-1.5">
+          <ChatCircleDots size={12} weight="duotone" /> Publicar no chat da comunidade (como Direção)
+        </div>
+        <textarea
+          data-testid="community-staff-post-input"
+          value={postText}
+          onChange={(e) => setPostText(e.target.value)}
+          rows={2}
+          maxLength={2000}
+          placeholder="Comunicado da direção aos sócios…"
+          className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+        />
+        <button
+          data-testid="community-staff-post-btn"
+          type="submit"
+          disabled={posting || !postText.trim()}
+          className="bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold rounded-lg px-4 py-2 text-sm flex items-center gap-2"
+        >
+          <PaperPlaneTilt size={14} weight="bold" /> Publicar
+        </button>
+      </form>
 
       {loading ? (
         <div className="text-slate-500 p-10 text-center">A carregar...</div>

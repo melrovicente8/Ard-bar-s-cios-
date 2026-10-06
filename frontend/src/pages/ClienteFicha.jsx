@@ -64,7 +64,11 @@ export default function ClienteFicha() {
     pin: "",
     direction_role: "",
     direction_history: [],
+    is_minor: false,
+    family_head_client_id: "",
+    consumption_limit: "",
   });
+  const [titulares, setTitulares] = useState([]);
   // Sell modal state
   const [showSell, setShowSell] = useState(false);
   const [products, setProducts] = useState([]);
@@ -492,7 +496,7 @@ export default function ClienteFicha() {
     }
   };
 
-  const openEdit = () => {
+  const openEdit = async () => {
     const c = data.client;
     setEditForm({
       name: c.name || "",
@@ -505,8 +509,18 @@ export default function ClienteFicha() {
       pin: "",
       direction_role: c.direction_role || "",
       direction_history: (c.direction_history || []).map((h) => ({ role: h.role || "", start_year: h.start_year || "", end_year: h.end_year || "" })),
+      is_minor: !!c.is_minor,
+      family_head_client_id: c.family_head_client_id || "",
+      consumption_limit: c.consumption_limit != null ? String(c.consumption_limit) : "",
     });
     setShowEdit(true);
+    // Titulares para escolher a tutela (só admin/tesoureiro)
+    if (user?.role === "admin" || user?.role === "tesoureiro") {
+      try {
+        const { data: all } = await api.get("/clients");
+        setTitulares((all || []).filter((x) => x.is_member && x.id !== c.id));
+      } catch { /* ignore */ }
+    }
   };
 
   const submitEdit = async (e) => {
@@ -520,6 +534,12 @@ export default function ClienteFicha() {
       body.is_member = editForm.is_member;
       if (editForm.pin) body.pin = editForm.pin;
       body.direction_role = editForm.direction_role || ""; // "" limpa o cargo no backend
+      // Tutela de menor: criar/alterar (" " vazio = sem tutela); sócio titular definido no backend
+      if (user?.role === "admin" || user?.role === "tesoureiro") {
+        body.is_minor = editForm.is_minor;
+        body.family_head_client_id = editForm.family_head_client_id || ""; // "" limpa a tutela no backend
+        body.consumption_limit = editForm.consumption_limit === "" ? "" : Number(editForm.consumption_limit);
+      }
       body.direction_history = (editForm.direction_history || [])
         .filter((h) => h.role || h.start_year)
         .map((h) => ({ role: h.role, start_year: Number(h.start_year) || null, end_year: h.end_year ? Number(h.end_year) : null }));
@@ -1424,6 +1444,50 @@ export default function ClienteFicha() {
                       Permite ao sócio fazer login em <code className="text-amber-400">/socio/login</code> com o nº de sócio e PIN.
                     </p>
                   </div>
+                  {/* Tutela de menor: criar/alterar/remover (sócio titular como guardião) */}
+                  {(user?.role === "admin" || user?.role === "tesoureiro") && (
+                    <div className="border-t border-slate-800 pt-4 space-y-3">
+                      <label className="flex items-center gap-2 cursor-pointer w-fit">
+                        <input
+                          data-testid="edit-is-minor-toggle"
+                          type="checkbox"
+                          checked={editForm.is_minor}
+                          onChange={(e) => setEditForm({ ...editForm, is_minor: e.target.checked })}
+                          className="w-4 h-4 accent-sky-500"
+                        />
+                        <span className="text-xs font-medium text-slate-200">Menor de idade (tutelado)</span>
+                      </label>
+                      <div>
+                        <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
+                          Tutela — sócio titular responsável (vazio = sem tutela)
+                        </label>
+                        <select
+                          data-testid="edit-family-head-select"
+                          value={editForm.family_head_client_id}
+                          onChange={(e) => setEditForm({ ...editForm, family_head_client_id: e.target.value })}
+                          className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                        >
+                          <option value="">— Sem tutela —</option>
+                          {titulares.map((t) => (
+                            <option key={t.id} value={t.id}>{t.name}{t.member_number ? ` · nº ${t.member_number}` : ""}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
+                          Limite de consumo mensal do menor (€ · vazio = sem limite)
+                        </label>
+                        <input
+                          data-testid="edit-consumption-limit-input"
+                          type="number" min="0" step="0.5"
+                          value={editForm.consumption_limit}
+                          onChange={(e) => setEditForm({ ...editForm, consumption_limit: e.target.value })}
+                          placeholder="Ex.: 15"
+                          className="mt-1.5 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                        />
+                      </div>
+                    </div>
+                  )}
                   {/* Direção: cargo atual + mandatos anteriores */}
                   <div className="border-t border-slate-800 pt-4">
                     <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">

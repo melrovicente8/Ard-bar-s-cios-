@@ -166,8 +166,13 @@ export default function CommunityChat({ me }) {
                       </div>
                     )}
                     {!own && (
-                      <div className="text-[10px] font-bold text-slate-300 mb-0.5">
-                        {m.author_name}{m.member_number ? ` · nº ${m.member_number}` : ""}
+                      <div className="text-[10px] font-bold text-slate-300 mb-0.5 flex items-center gap-1 flex-wrap">
+                        <span>{m.author_name}{m.member_number ? ` · nº ${m.member_number}` : ""}</span>
+                        {m.from_staff && (
+                          <span className="px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[9px] font-bold" data-testid="community-staff-badge">
+                            DIREÇÃO
+                          </span>
+                        )}
                       </div>
                     )}
                     <p className="text-slate-100 whitespace-pre-wrap break-words">{m.message}</p>

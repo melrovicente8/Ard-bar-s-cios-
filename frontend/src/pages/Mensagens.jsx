@@ -155,6 +155,35 @@ export default function Mensagens() {
                 <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${m.status === "open" ? "bg-amber-500/15 text-amber-300 border-amber-500/30" : "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"}`}>
                   {m.status === "open" ? "Por responder" : "Respondida"}
                 </span>
+                {/* Recibo de leitura: o emissor (staff) vê se o sócio já leu */}
+                {(m.from_staff || m.status === "replied") && (
+                  m.read_at ? (
+                    <span data-testid={`msg-read-${m.id}`} className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30" title={new Date(m.read_at).toLocaleString("pt-PT")}>
+                      ✓ Lida pelo sócio
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-700/50 text-slate-400 border border-slate-600/30">Não lida</span>
+                  )
+                )}
+                {/* O staff marca mensagens como lidas (sem responder) */}
+                {m.status === "open" && (
+                  m.staff_read_at ? (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/15 text-sky-300 border border-sky-500/30">✓ Lida pelo staff</span>
+                  ) : (
+                    <button
+                      data-testid={`staff-read-${m.id}`}
+                      onClick={async () => {
+                        try {
+                          await api.post(`/socio-messages/${m.id}/staff-read`, {});
+                          await load();
+                        } catch (e) { toast.error(formatApiErrorDetail(e.response?.data?.detail)); }
+                      }}
+                      className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700"
+                    >
+                      Marcar como lida
+                    </button>
+                  )
+                )}
               </div>
               <div className="font-semibold text-slate-200 mb-1">{m.subject}</div>
               <p className="text-sm text-slate-300 whitespace-pre-wrap">{m.message}</p>

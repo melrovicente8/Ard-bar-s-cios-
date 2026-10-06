@@ -209,7 +209,7 @@ export default function SocioGifts({ me }) {
               <li
                 key={g.id}
                 data-testid={`socio-gift-${g.id}`}
-                className="flex items-start gap-3 px-4 py-3 rounded-lg border bg-slate-950/40 border-slate-800"
+                className="flex flex-wrap items-start gap-3 px-4 py-3 rounded-lg border bg-slate-950/40 border-slate-800"
               >
                 <div className="flex-1 min-w-0">
                   <div className="text-xs text-slate-500">
@@ -246,6 +246,8 @@ export default function SocioGifts({ me }) {
               <Gift size={22} weight="duotone" className="text-pink-400" />
               <h3 className="font-outfit text-xl font-semibold">{editingGift ? "Editar itens a pagar" : giftKind === "prepaid" ? "Deixar pago a outro sócio" : "Pedir a outro sócio para pagar"}</h3>
             </div>
+            {/* Corpo com scroll — os botões de confirmação ficam sempre visíveis */}
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1 -mr-1">
             {!editingGift && (
               <>
                 <div className="inline-flex rounded-lg border border-slate-800 bg-slate-950/60 p-1 mb-3" data-testid="socio-gift-kind">
@@ -293,7 +295,7 @@ export default function SocioGifts({ me }) {
                   return (
                     <div key={pid} className="flex items-center justify-between gap-2 py-1.5 px-1 border-b border-slate-800 last:border-0">
                       <div className="flex-1 min-w-0">
-                        <div className="truncate text-sm font-medium">{p ? p.name : "Produto"}</div>
+                        <div className="text-sm font-medium break-words">{p ? p.name : "Produto"}</div>
                         <div className="text-[10px] text-slate-500">{euro(p ? p.price : 0)} · subtotal {euro((p ? p.price : 0) * q)}</div>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
@@ -334,6 +336,7 @@ export default function SocioGifts({ me }) {
               )}
             </div>
 
+            </div>
             <input
               data-testid="socio-gift-note"
               value={giftNote}

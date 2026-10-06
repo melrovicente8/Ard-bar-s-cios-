@@ -72,6 +72,7 @@ class ProductIn(BaseModel):
     is_food: bool = False   # Comida — só disponível entre 16h e 20h
     unavailable: bool = False  # Marcado como indisponível mesmo havendo stock
     is_house_account: bool = False  # "Conta da casa" — venda gratuita, conta como despesa fornecedor
+    supplier_id: Optional[str] = None  # fornecedor habitual — usado pela encomenda automática de stock baixo
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -84,6 +85,7 @@ class ProductUpdate(BaseModel):
     is_food: Optional[bool] = None
     unavailable: Optional[bool] = None
     is_house_account: Optional[bool] = None
+    supplier_id: Optional[str] = None
 
 class StockReplenishIn(BaseModel):
     product_id: str
@@ -453,6 +455,7 @@ async def create_product(body: ProductIn, user: dict = Depends(require_role("adm
         "is_food": bool(body.is_food),
         "unavailable": bool(body.unavailable),
         "is_house_account": bool(body.is_house_account),
+        "supplier_id": body.supplier_id or None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.products.insert_one(doc)
@@ -597,6 +600,16 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
             raise HTTPException(status_code=403, detail="Funcionários só podem editar nome (se não-sócio), contacto, email e morada")
     # PIN, is_member, member_number, tutela de menor e limite de consumo só por admin/tesoureiro
     update = dict(raw)
+    # Sentinelas de limpeza: "" significa remover — ex.: retirar a tutela do menor ou o limite de consumo
+    if update.get("family_head_client_id") == "":
+        update["family_head_client_id"] = None
+    if update.get("consumption_limit") == "":
+        update["consumption_limit"] = None
+    # Tutela: o titular tem de ser um sócio
+    if update.get("family_head_client_id"):
+        head = await db.clients.find_one({"id": update["family_head_client_id"]}, {"is_member": 1})
+        if not head or not head.get("is_member"):
+            raise HTTPException(status_code=400, detail="O titular da tutela tem de ser um sócio")
     sensitive = {"pin", "is_member", "member_number", "is_minor", "family_head_client_id"}
     if any(k in update for k in sensitive) and user.get("role") not in ("admin", "tesoureiro"):
         raise HTTPException(status_code=403, detail="Sem permissão para alterar estes campos")
@@ -3582,6 +3595,89 @@ async def staff_reply_message(msg_id: str, body: SocioMessageReplyIn, user: dict
     )
     return await db.socio_messages.find_one({"id": msg_id}, {"_id": 0})
 
+
+@api_router.post("/socio-messages/{msg_id}/staff-read")
+async def staff_mark_message_read(msg_id: str, user: dict = Depends(get_current_user)):
+    """O staff marca uma mensagem de sócio como lida (sem responder)."""
+    msg = await db.socio_messages.find_one({"id": msg_id})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Mensagem não encontrada")
+    await db.socio_messages.update_one(
+        {"id": msg_id},
+        {"$set": {"staff_read_at": datetime.now(timezone.utc).isoformat(), "staff_read_by": user["email"]}},
+    )
+    return await db.socio_messages.find_one({"id": msg_id}, {"_id": 0})
+
+
+# ---------- Notificações do sócio (mensagens do staff) com confirmação de leitura ----------
+def _socio_notif_query(client_id: str, unread_only: bool = False):
+    """Mensagens que são notificações para o sócio: enviadas pelo staff ou respostas do staff."""
+    q: dict = {"client_id": client_id, "$or": [{"from_staff": True}, {"status": "replied"}]}
+    if unread_only:
+        q["read_at"] = {"$exists": False}
+    return q
+
+
+class SocioMessagesReadIn(BaseModel):
+    ids: Optional[List[str]] = None  # None/todos = marcar todas as notificações como lidas
+
+
+@api_router.post("/socio/messages/read")
+async def socio_mark_messages_read(body: SocioMessagesReadIn, socio: dict = Depends(get_current_socio)):
+    """O sócio abre a mensagem → marca como lida. O emissor (staff) vê a confirmação."""
+    q = _socio_notif_query(socio["id"], unread_only=True)
+    if body.ids:
+        q["id"] = {"$in": body.ids}
+    res = await db.socio_messages.update_many(q, {"$set": {"read_at": datetime.now(timezone.utc).isoformat()}})
+    return {"ok": True, "count": res.modified_count}
+
+
+@api_router.get("/socio/notifications")
+async def socio_notifications(socio: dict = Depends(get_current_socio)):
+    """Contadores do sino de notificações do portal do sócio."""
+    unread_messages = await db.socio_messages.count_documents(_socio_notif_query(socio["id"], unread_only=True))
+    # mensagens da comunidade ainda não vistas (mesma lógica do GET /community/messages)
+    items = await db.community_messages.find({"status": "visible"}, {"_id": 0, "created_at": 1}).sort("created_at", -1).to_list(200)
+    last_seen = await db.clients.find_one({"id": socio["id"]}, {"community_last_seen": 1, "_id": 0}) or {}
+    community_unseen = sum(1 for m in items if (last_seen.get("community_last_seen") or "") < m["created_at"])
+    return {"unread_messages": unread_messages, "community_unseen": community_unseen}
+
+
+# ---------- Staff responde/publica no chat da comunidade ----------
+class CommunityStaffPostIn(BaseModel):
+    message: str
+    reply_to: Optional[str] = None
+
+
+@api_router.post("/community/messages/staff-post")
+async def staff_post_community_message(body: CommunityStaffPostIn, user: dict = Depends(require_role("admin", "tesoureiro", "presidente", "funcionario"))):
+    msg = (body.message or "").strip()
+    if not msg:
+        raise HTTPException(status_code=400, detail="Mensagem vazia")
+    masked = _mask_profanity(msg[:2000])
+    parent = None
+    if body.reply_to:
+        parent = await db.community_messages.find_one({"id": body.reply_to, "status": "visible"}, {"_id": 0, "id": 1})
+        if not parent:
+            raise HTTPException(status_code=404, detail="Mensagem original não encontrada")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "client_id": None,
+        "author_name": user.get("name") or user.get("email") or "Direção",
+        "message": masked,
+        "original_masked": masked != msg,
+        "reply_to": body.reply_to if body.reply_to else None,
+        "status": "visible",
+        "reports": [],
+        "from_staff": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.community_messages.insert_one(doc)
+    doc.pop("_id", None)
+    await _audit("community_staff_post", user["email"], entity="community_message", entity_id=doc["id"], summary="Mensagem publicada pela direção no chat da comunidade")
+    return doc
+
+
 # ---------- Relatório de contas (Deve / Haver) ----------
 async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> dict:
     dfrom = date_from + "T00:00:00" if (date_from and "T" not in date_from) else date_from
@@ -4129,6 +4225,54 @@ async def create_supplier_order(body: SupplierOrderIn, user: dict = Depends(requ
     await db.supplier_orders.insert_one(doc)
     doc.pop("_id", None)
     return doc
+
+
+@api_router.post("/supplier-orders/auto")
+async def auto_supplier_orders(user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
+    """Encomenda automática por stock baixo — critérios já definidos:
+    · produto com quantity <= low_stock_threshold (e não-cota, disponível);
+    · quantidade a encomendar = 2× o limiar de alerta − stock atual (mínimo 1);
+    · custo unitário = o da última encomenda do produto; sem histórico, o preço de venda;
+    · agrupa tudo num encomenda por fornecedor do produto (supplier_id da ficha de produto).
+    Devolve as encomendas criadas (uma por fornecedor) e produtos sem fornecedor."""
+    prods = await db.products.find({"is_quota": {"$ne": True}}, {"_id": 0}).to_list(500)
+    low = [p for p in prods if not p.get("unavailable") and int(p.get("quantity", 0) or 0) <= int(p.get("low_stock_threshold", 5) or 0)]
+    by_supplier: dict = {}
+    no_supplier: list = []
+    for p in low:
+        sid = p.get("supplier_id")
+        if not sid:
+            no_supplier.append(p["name"])
+            continue
+        last = await db.supplier_orders.find_one(
+            {"items.product_id": p["id"]}, {"_id": 0, "items": {"$elemMatch": {"product_id": p["id"]}}, "created_at": 1},
+            sort=[("created_at", -1)],
+        )
+        unit = None
+        try:
+            unit = (last or {}).get("items", [{}])[0].get("unit_cost")
+        except (IndexError, AttributeError):
+            unit = None
+        if not unit:
+            unit = float(p.get("price", 0) or 0)
+        qty = max(int(p.get("low_stock_threshold", 5) or 5) * 2 - int(p.get("quantity", 0) or 0), 1)
+        by_supplier.setdefault(sid, []).append({
+            "product_id": p["id"], "product_name": p["name"],
+            "quantity": qty, "unit_cost": round(float(unit), 2),
+        })
+    created = []
+    for sid, items in by_supplier.items():
+        try:
+            doc = await create_supplier_order(
+                SupplierOrderIn(supplier_id=sid, items=[SupplierOrderItemIn(**it) for it in items],
+                                paid=False, note="Encomenda automática · stock baixo"),
+                user,
+            )
+            created.append({"supplier_id": sid, "supplier_name": doc["supplier_name"], "id": doc["id"], "total": doc["total"], "items": len(items)})
+        except HTTPException:
+            no_supplier.extend(it["product_name"] for it in items)
+    await _audit("supplier_order_auto", user["email"], summary=f"Encomendas automáticas de stock baixo: {len(created)} encomenda(s)" + (f" · sem fornecedor: {', '.join(no_supplier[:5])}" if no_supplier else ""))
+    return {"created": created, "no_supplier": no_supplier}
 
 @api_router.get("/supplier-orders")
 async def list_supplier_orders(supplier_id: Optional[str] = None, only_unpaid: bool = False, user: dict = Depends(get_current_user)):
