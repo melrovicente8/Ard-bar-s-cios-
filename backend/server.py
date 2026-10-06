@@ -3970,7 +3970,7 @@ async def report_community_message(msg_id: str, socio: dict = Depends(get_curren
     return {"ok": True}
 
 @api_router.get("/community/messages/staff")
-async def community_messages_staff(status_filter: Optional[str] = None, user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
+async def community_messages_staff(status_filter: Optional[str] = None, user: dict = Depends(require_role("admin", "tesoureiro", "presidente", "funcionario"))):
     """Painel de moderação: todas as mensagens + denúncias pendentes."""
     q = {"status": status_filter} if status_filter else {}
     items = await db.community_messages.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
@@ -3978,7 +3978,7 @@ async def community_messages_staff(status_filter: Optional[str] = None, user: di
     return {"messages": items, "pending_reports_count": pending_reports}
 
 @api_router.post("/community/messages/{msg_id}/hide")
-async def hide_community_message(msg_id: str, user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
+async def hide_community_message(msg_id: str, user: dict = Depends(require_role("admin", "tesoureiro", "presidente", "funcionario"))):
     msg = await db.community_messages.find_one({"id": msg_id}, {"_id": 0})
     if not msg:
         raise HTTPException(status_code=404, detail="Mensagem não encontrada")
@@ -3987,13 +3987,13 @@ async def hide_community_message(msg_id: str, user: dict = Depends(require_role(
     return {"ok": True}
 
 @api_router.post("/community/messages/{msg_id}/unhide")
-async def unhide_community_message(msg_id: str, user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
+async def unhide_community_message(msg_id: str, user: dict = Depends(require_role("admin", "tesoureiro", "presidente", "funcionario"))):
     await db.community_messages.update_one({"id": msg_id}, {"$set": {"status": "visible"}, "$unset": {"hidden_by": "", "hidden_at": ""}})
     await _audit("community_unhide", user["email"], entity="community_message", entity_id=msg_id, summary="Mensagem da comunidade reexibida (moderação)")
     return {"ok": True}
 
 @api_router.delete("/community/messages/{msg_id}")
-async def delete_community_message(msg_id: str, user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
+async def delete_community_message(msg_id: str, user: dict = Depends(require_role("admin", "tesoureiro", "presidente", "funcionario"))):
     msg = await db.community_messages.find_one({"id": msg_id}, {"_id": 0})
     if not msg:
         raise HTTPException(status_code=404, detail="Mensagem não encontrada")

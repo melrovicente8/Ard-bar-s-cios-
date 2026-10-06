@@ -8,7 +8,7 @@ import { useAuth } from "../context/AuthContext";
 
 export default function Mensagens() {
   const { user } = useAuth();
-  const canModerate = ["admin", "tesoureiro", "presidente"].includes(user?.role);
+  const canModerate = ["admin", "tesoureiro", "presidente", "funcionario"].includes(user?.role);
   const [view, setView] = useState("socio"); // socio | community
   const [filter, setFilter] = useState("open");
   const [items, setItems] = useState([]);

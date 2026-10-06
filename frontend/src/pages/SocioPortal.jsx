@@ -803,7 +803,7 @@ export default function SocioPortal() {
               </button>
               <button
                 data-testid="socio-quotas-btn"
-                onClick={loadQuotas}
+                onClick={() => loadQuotas()}
                 className="text-xs px-3 py-1.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1.5"
               >
                 <CalendarBlank size={13} weight="duotone" /> Pagar cotas

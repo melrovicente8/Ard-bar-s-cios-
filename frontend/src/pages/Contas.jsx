@@ -3,10 +3,14 @@ import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { openFinanceDoc } from "../lib/financeDoc";
 import { Bank, Printer, ArrowDown, ArrowUp, Equals } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { useAuth } from "../context/AuthContext";
 
 const MONTHS_PT = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 
 export default function Contas() {
+  const { user } = useAuth();
+  // Funcionários: apenas presets Ontem/Hoje/Mês e sem impressão (máx. 1 mês — backend faz cumprir)
+  const isFuncionario = user?.role === "funcionario";
   const today = new Date().toISOString().slice(0, 10);
   const monthStart = today.slice(0, 7) + "-01";
   const [range, setRange] = useState({ from: monthStart, to: today });
@@ -79,38 +83,49 @@ export default function Contas() {
 
       {/* Filtros */}
       <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-4 mb-6 flex flex-wrap items-end gap-3">
-        <div>
-          <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">De</label>
-          <input
-            data-testid="contas-from"
-            type="date"
-            value={range.from}
-            onChange={(e) => setRange({ ...range, from: e.target.value })}
-            className="mt-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm"
-          />
-        </div>
-        <div>
-          <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Até</label>
-          <input
-            data-testid="contas-to"
-            type="date"
-            value={range.to}
-            onChange={(e) => setRange({ ...range, to: e.target.value })}
-            className="mt-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm"
-          />
-        </div>
-        <button data-testid="contas-apply" onClick={load} className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg px-4 py-2 text-sm">
-          Aplicar
-        </button>
-        <div className="flex gap-2 ml-auto flex-wrap">
-          {[
-            { v: "day", l: "Hoje" },
-            { v: "yesterday", l: "Ontem" },
-            { v: "week", l: "Semana" },
-            { v: "month", l: "Mês" },
-            { v: "year", l: "Ano" },
-            { v: "all", l: "Sempre" },
-          ].map((p) => (
+        {!isFuncionario && (
+          <>
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">De</label>
+              <input
+                data-testid="contas-from"
+                type="date"
+                value={range.from}
+                onChange={(e) => setRange({ ...range, from: e.target.value })}
+                className="mt-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Até</label>
+              <input
+                data-testid="contas-to"
+                type="date"
+                value={range.to}
+                onChange={(e) => setRange({ ...range, to: e.target.value })}
+                className="mt-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm"
+              />
+            </div>
+            <button data-testid="contas-apply" onClick={load} className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg px-4 py-2 text-sm">
+              Aplicar
+            </button>
+          </>
+        )}
+        <div className={isFuncionario ? "flex gap-2 flex-wrap" : "flex gap-2 ml-auto flex-wrap"}>
+          {(isFuncionario
+            ? [
+                { v: "yesterday", l: "Ontem" },
+                { v: "day", l: "Hoje" },
+                { v: "month", l: "Mês" },
+              ]
+            : [
+                { v: "day", l: "Hoje" },
+                { v: "yesterday", l: "Ontem" },
+                { v: "week", l: "Semana" },
+                { v: "month", l: "Mês" },
+                { v: "year", l: "Ano" },
+                { v: "all", l: "Sempre" },
+              ]
+          ).map((p) => (
             <button
               key={p.v}
               data-testid={`contas-preset-${p.v}`}
@@ -118,12 +133,16 @@ export default function Contas() {
               className="text-xs px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300"
             >{p.l}</button>
           ))}
-          <button data-testid="contas-print" onClick={printReport} disabled={!data} className="text-xs px-3 py-1.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1.5">
-            <Printer size={13} weight="duotone" /> Imprimir
-          </button>
-          <button data-testid="contas-print-monthly" onClick={printMonthly} className="text-xs px-3 py-1.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 flex items-center gap-1.5">
-            <Printer size={13} weight="duotone" /> PDF mensal
-          </button>
+          {!isFuncionario && (
+            <>
+              <button data-testid="contas-print" onClick={printReport} disabled={!data} className="text-xs px-3 py-1.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1.5">
+                <Printer size={13} weight="duotone" /> Imprimir
+              </button>
+              <button data-testid="contas-print-monthly" onClick={printMonthly} className="text-xs px-3 py-1.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 flex items-center gap-1.5">
+                <Printer size={13} weight="duotone" /> PDF mensal
+              </button>
+            </>
+          )}
         </div>
       </div>
 

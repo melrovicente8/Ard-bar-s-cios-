@@ -7,6 +7,10 @@ import { euro } from "./api";
 export function openQuarterlyDoc(d) {
   const w = window.open("", "_blank");
   if (!w) return false;
+  // Retiradas de caixa transitam para conta bancária — não são despesa real.
+  const despesasReais = (d.expenses.supplier_orders || 0) + (d.expenses.supplier_expenses || 0);
+  const saldo = d.income.total - despesasReais;
+  const banco = d.expenses.cash_withdrawals || 0;
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Balanço trimestral ${d.quarter} · ${d.club_name}</title>
 <style>
   body{font-family:Arial;color:#0f172a;margin:24px;font-size:13px}
@@ -47,14 +51,18 @@ export function openQuarterlyDoc(d) {
   <table><tbody>
     <tr><td>Encomendas a fornecedores</td><td class="right neg"><strong>${euro(d.expenses.supplier_orders)}</strong></td></tr>
     <tr><td>Despesas mensais</td><td class="right neg"><strong>${euro(d.expenses.supplier_expenses)}</strong></td></tr>
-    <tr><td>Retiradas de caixa</td><td class="right neg"><strong>${euro(d.expenses.cash_withdrawals || 0)}</strong></td></tr>
-    <tr style="border-top:2px solid #0f172a"><td><strong>TOTAL DESPESAS</strong></td><td class="right neg"><strong>${euro(d.expenses.total)}</strong></td></tr>
+    <tr style="border-top:2px solid #0f172a"><td><strong>TOTAL DESPESAS</strong></td><td class="right neg"><strong>${euro(despesasReais)}</strong></td></tr>
+  </tbody></table>
+
+  <h2 style="font-size:14px;margin:22px 0 6px;color:#475569">VALOR EM CONTA BANCÁRIA</h2>
+  <table><tbody>
+    <tr><td>Retiradas de caixa depositadas no banco</td><td class="right" style="color:#15803d"><strong>${euro(banco)}</strong></td></tr>
   </tbody></table>
 
   <div class="totals">
     <div class="box in"><div class="lbl">TOTAL RECEITAS</div><div class="val">${euro(d.income.total)}</div></div>
-    <div class="box out"><div class="lbl">TOTAL DESPESAS</div><div class="val">${euro(d.expenses.total)}</div></div>
-    <div class="box bal"><div class="lbl">SALDO DO TRIMESTRE</div><div class="val ${d.balance >= 0 ? "pos" : "neg"}">${d.balance >= 0 ? "+" : ""}${euro(d.balance)}</div></div>
+    <div class="box out"><div class="lbl">TOTAL DESPESAS</div><div class="val">${euro(despesasReais)}</div></div>
+    <div class="box bal"><div class="lbl">SALDO DO TRIMESTRE</div><div class="val ${saldo >= 0 ? "pos" : "neg"}">${saldo >= 0 ? "+" : ""}${euro(saldo)}</div></div>
   </div>
 
   <p class="note">Documento destinado aos sócios da associação (apenas totalizadores). Consulta as contas junto da direção para esclarecimentos.</p>
