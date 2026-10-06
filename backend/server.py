@@ -515,7 +515,8 @@ async def create_client(body: ClientIn, user: dict = Depends(get_current_user)):
             auto = auto_pin_from_member_number(member_number)
             if auto:
                 pin_hash = hash_password(auto)
-                pin_visible = auto
+                # PIN automático (original) NÃO fica visível na ficha —
+                # só fica visível se o sócio o alterar depois.
     doc = {
         "id": cid,
         "name": body.name,
@@ -568,11 +569,17 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
     sensitive = {"pin", "is_member", "member_number"}
     if any(k in update for k in sensitive) and user.get("role") not in ("admin", "tesoureiro"):
         raise HTTPException(status_code=403, detail="Sem permissão para alterar estes campos")
+    existing_doc = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not existing_doc:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
     if "pin" in update:
         pin_value = update.pop("pin")
         if pin_value:
+            mn = update.get("member_number") or existing_doc.get("member_number")
+            auto = auto_pin_from_member_number(mn)
             update["pin_hash"] = hash_password(str(pin_value))
-            update["pin_visible"] = str(pin_value)
+            # PIN visível na ficha só se NÃO for o PIN automático original
+            update["pin_visible"] = None if (auto and str(pin_value) == auto) else str(pin_value)
         else:
             update["pin_hash"] = None
             update["pin_visible"] = None
@@ -580,16 +587,13 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
     if "member_number" in update and "pin_hash" not in update:
         target_mn = update.get("member_number")
         if target_mn:
-            target_client = await db.clients.find_one({"id": client_id}, {"_id": 0})
-            if not (target_client and target_client.get("pin_hash")):
+            if not (existing_doc and existing_doc.get("pin_hash")):
                 auto = auto_pin_from_member_number(target_mn)
                 if auto:
                     update["pin_hash"] = hash_password(auto)
-                    update["pin_visible"] = auto
+                    update["pin_visible"] = None  # PIN automático (original) → não visível
     # Audit: ler o estado antes
-    before_doc = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
-    if not before_doc:
-        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    before_doc = existing_doc
     res = await db.clients.update_one({"id": client_id}, {"$set": update})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
@@ -1462,6 +1466,64 @@ async def staff_edit_consumption_request(req_id: str, body: ConsumptionReqEditIn
         }},
     )
     return await db.consumption_requests.find_one({"id": req_id}, {"_id": 0})
+
+@api_router.post("/consumption-requests/{req_id}/notify-pickup")
+async def notify_request_pickup(req_id: str, user: dict = Depends(get_current_user)):
+    """Notifica o sócio de que o pedido aprovado já pode ser levantado no balcão."""
+    req = await db.consumption_requests.find_one({"id": req_id}, {"_id": 0})
+    if not req:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if req["status"] != "approved":
+        raise HTTPException(status_code=400, detail="Só pedidos aprovados podem ser notificados para levantamento")
+    await db.socio_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "client_id": req["client_id"],
+        "client_name": req["client_name"],
+        "subject": "📦 Podes levantar o pedido no balcão",
+        "message": f"O teu pedido ({euro_fmt(req['total'])}) já está pronto — passa no balcão para o levantar.",
+        "from_staff": True,
+        "reply": None,
+        "request_id": req_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    await db.consumption_requests.update_one(
+        {"id": req_id},
+        {"$set": {"notified_pickup_at": datetime.now(timezone.utc).isoformat(), "notified_pickup_by": user["email"]}},
+    )
+    await _audit("request_notify_pickup", user["email"], entity="consumption_request", entity_id=req_id,
+                 summary=f"Notificado levantamento no balcão · {req['client_name']} · {euro_fmt(req['total'])}")
+    return {"ok": True}
+
+@api_router.post("/consumption-requests/{req_id}/deliver")
+async def deliver_consumption_request(req_id: str, user: dict = Depends(get_current_user)):
+    """Marca o pedido aprovado como ENTREGUE no balcão — o valor fica na conta
+    corrente do sócio, pronto para pagamento."""
+    req = await db.consumption_requests.find_one({"id": req_id}, {"_id": 0})
+    if not req:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if req["status"] == "delivered":
+        raise HTTPException(status_code=400, detail="Pedido já foi entregue")
+    if req["status"] != "approved":
+        raise HTTPException(status_code=400, detail="Só pedidos aprovados podem ser dados como entregues")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.consumption_requests.update_one(
+        {"id": req_id},
+        {"$set": {"status": "delivered", "delivered_at": now_iso, "delivered_by": user["email"]}},
+    )
+    await db.socio_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "client_id": req["client_id"],
+        "client_name": req["client_name"],
+        "subject": "✅ Pedido entregue — pronto para pagamento",
+        "message": f"O teu pedido ({euro_fmt(req['total'])}) foi entregue no balcão. O valor ({euro_fmt(req['total'])}) está na tua conta corrente, pronto para pagamento.",
+        "from_staff": True,
+        "reply": None,
+        "request_id": req_id,
+        "created_at": now_iso,
+    })
+    await _audit("request_deliver", user["email"], entity="consumption_request", entity_id=req_id,
+                 summary=f"Pedido entregue no balcão · {req['client_name']} · {euro_fmt(req['total'])} · pronto para pagamento")
+    return {"ok": True}
 
 # ---------- Payments ----------
 @api_router.post("/payments")
@@ -3618,21 +3680,30 @@ async def on_startup():
     if count:
         logging.getLogger(__name__).info(f"Auto-PIN atribuído a {count} sócios")
 
-    # Backfill pin_visible — PIN visível na ficha do cliente (admin/tesoureiro).
-    # Prioridade: último PIN registado no histórico de alterações pelo sócio;
-    # caso contrário, PIN automático derivado do nº de sócio.
+    # PIN visível na ficha: SÓ quando o sócio alterou o PIN automático (pin_history).
+    # PINs originais/automáticos derivados do nº de sócio NÃO ficam visíveis.
     latest_pin = {}
     async for h in db.pin_history.find({}, {"_id": 0, "client_id": 1, "new_pin": 1, "changed_at": 1}).sort("changed_at", 1):
         if h.get("client_id") and h.get("new_pin"):
             latest_pin[h["client_id"]] = h["new_pin"]
     pin_visible_count = 0
     async for c in db.clients.find({"pin_hash": {"$ne": None}, "$or": [{"pin_visible": {"$exists": False}}, {"pin_visible": None}]}, {"_id": 0, "id": 1, "member_number": 1}):
-        plain = latest_pin.get(c["id"]) or auto_pin_from_member_number(c.get("member_number"))
-        if plain:
+        plain = latest_pin.get(c["id"])
+        auto = auto_pin_from_member_number(c.get("member_number"))
+        if plain and (not auto or plain != auto):
             await db.clients.update_one({"id": c["id"]}, {"$set": {"pin_visible": plain}})
             pin_visible_count += 1
     if pin_visible_count:
         logging.getLogger(__name__).info(f"pin_visible preenchido para {pin_visible_count} sócios")
+    # Limpeza de dados legados: esconder PINs iguais ao automático (não alterados pelo sócio)
+    legacy_cleared = 0
+    async for c in db.clients.find({"pin_visible": {"$ne": None}}, {"_id": 0, "id": 1, "member_number": 1, "pin_visible": 1}):
+        auto = auto_pin_from_member_number(c.get("member_number"))
+        if auto and c.get("pin_visible") == auto:
+            await db.clients.update_one({"id": c["id"]}, {"$set": {"pin_visible": None}})
+            legacy_cleared += 1
+    if legacy_cleared:
+        logging.getLogger(__name__).info(f"pin_visible limpo (PIN automático original) para {legacy_cleared} sócios")
 
     # Backfill tx_number — TODAS as transações têm de ter nº (regra do utilizador)
     from pymongo import ReturnDocument as _RD

@@ -127,8 +127,11 @@ export default function Banco() {
         >
           <div className="flex items-center gap-2">
             <Money size={20} weight="duotone" className="text-amber-400" />
-            <h3 className="font-outfit text-lg font-semibold">Retirar valor da caixa → depósito bancário</h3>
+            <h3 className="font-outfit text-lg font-semibold">Transferir dinheiro da caixa para o banco</h3>
           </div>
+          <p className="text-xs text-slate-500 -mt-2">
+            1. Retiras o dinheiro da caixa (gaveta) e depositas no banco &nbsp;·&nbsp; 2. Registas aqui o valor, a nota de depósito e a data &nbsp;·&nbsp; 3. O <b className="text-amber-300">Valor em caixa</b> desce e o <b className="text-emerald-400">Valor em banco</b> sobe.
+          </p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="block text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-1.5">
@@ -180,7 +183,7 @@ export default function Banco() {
             data-testid="banco-submit"
             className="px-5 py-2.5 rounded-lg bg-amber-500 text-slate-950 text-sm font-bold hover:bg-amber-400 disabled:opacity-50 transition-colors"
           >
-            {saving ? "A registar..." : "Registar depósito"}
+            {saving ? "A transferir..." : "Transferir caixa → banco"}
           </button>
         </form>
       ) : (

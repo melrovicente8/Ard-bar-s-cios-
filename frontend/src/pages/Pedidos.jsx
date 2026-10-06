@@ -1,13 +1,21 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
-import { ShoppingCart, Check, X as XIcon, PencilSimple } from "@phosphor-icons/react";
+import { ShoppingCart, Check, X as XIcon, PencilSimple, Package, PaperPlaneTilt } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const STATUS_CLASS = {
   pending: "bg-amber-500/15 text-amber-300 border-amber-500/30",
   approved: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+  delivered: "bg-sky-500/15 text-sky-300 border-sky-500/30",
   rejected: "bg-rose-500/15 text-rose-300 border-rose-500/30",
+};
+
+const STATUS_LABEL = {
+  pending: "Pendente",
+  approved: "Aprovado · pronto a levantar",
+  delivered: "Entregue",
+  rejected: "Rejeitado",
 };
 
 export default function Pedidos() {
@@ -50,6 +58,26 @@ export default function Pedidos() {
     try {
       await api.post(`/consumption-requests/${r.id}/reject`);
       toast.success("Pedido rejeitado");
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const notifyPickup = async (r) => {
+    try {
+      await api.post(`/consumption-requests/${r.id}/notify-pickup`);
+      toast.success(`Notificação enviada a ${r.client_name} — pronto a levantar no balcão`);
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+  const deliver = async (r) => {
+    if (!window.confirm(`Marcar o pedido de ${r.client_name} (${euro(r.total)}) como ENTREGUE no balcão? O valor fica na conta corrente, pronto para pagamento.`)) return;
+    try {
+      await api.post(`/consumption-requests/${r.id}/deliver`);
+      toast.success("Pedido entregue · pronto para pagamento");
       await load();
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
@@ -106,7 +134,8 @@ export default function Pedidos() {
       <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900/60 p-1 mb-5" data-testid="pedidos-filter">
         {[
           { v: "pending", l: "Pendentes" },
-          { v: "approved", l: "Aprovados" },
+          { v: "approved", l: "Prontos a levantar" },
+          { v: "delivered", l: "Entregues" },
           { v: "rejected", l: "Rejeitados" },
           { v: "", l: "Todos" },
         ].map((opt) => (
@@ -139,7 +168,7 @@ export default function Pedidos() {
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${STATUS_CLASS[r.status]}`}>
-                    {r.status === "pending" ? "Pendente" : r.status === "approved" ? "Aprovado" : "Rejeitado"}
+                    {STATUS_LABEL[r.status] || r.status}
                   </span>
                   <span className="font-outfit text-xl font-bold text-amber-300">{euro(r.total)}</span>
                 </div>
@@ -182,10 +211,33 @@ export default function Pedidos() {
                     <XIcon size={16} weight="bold" /> Rejeitar
                   </button>
                 </div>
+              ) : r.status === "approved" ? (
+                <div className="space-y-2">
+                  <div className="text-[11px] text-slate-500">
+                    Aprovado por {r.decided_by} · venda <Link to={`/clientes/${r.client_id}`} className="text-amber-400 hover:underline">#{r.sale_id.slice(0,8)}</Link>
+                    {r.notified_pickup_at && <> · notificado em {new Date(r.notified_pickup_at).toLocaleString("pt-PT")}</>}
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      data-testid={`notify-pickup-${r.id}`}
+                      onClick={() => notifyPickup(r)}
+                      className="bg-sky-500/10 text-sky-300 hover:bg-sky-500/20 border border-sky-500/30 font-bold rounded-lg px-4 py-2.5 flex items-center justify-center gap-2"
+                    >
+                      <PaperPlaneTilt size={16} weight="bold" /> Notificar levantamento
+                    </button>
+                    <button
+                      data-testid={`deliver-${r.id}`}
+                      onClick={() => deliver(r)}
+                      className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-lg py-2.5 flex items-center justify-center gap-2"
+                    >
+                      <Package size={16} weight="bold" /> Marcar como entregue · pronto para pagamento
+                    </button>
+                  </div>
+                </div>
               ) : (
                 <div className="text-[11px] text-slate-500">
-                  {r.status === "approved" && r.sale_id ? (
-                    <>Aprovado por {r.decided_by} · venda <Link to={`/clientes/${r.client_id}`} className="text-amber-400 hover:underline">#{r.sale_id.slice(0,8)}</Link></>
+                  {r.status === "delivered" ? (
+                    <>Entregue por {r.delivered_by} em {new Date(r.delivered_at).toLocaleString("pt-PT")} · valor na conta corrente, pronto para pagamento</>
                   ) : (
                     <>Decidido por {r.decided_by} em {new Date(r.decided_at).toLocaleString("pt-PT")}</>
                   )}

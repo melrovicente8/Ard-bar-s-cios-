@@ -16,6 +16,7 @@ import {
   EyeSlash,
   Vault,
   Bank,
+  ArrowsLeftRight,
   Coffee,
   Cake,
   Trophy,
@@ -253,6 +254,28 @@ export default function Dashboard() {
           unmaskedDefault
         />
       </div>
+
+      {/* Transferência caixa → banco (chamada de atenção para a aba Banco) */}
+      {cashBank && (user?.role === "admin" || user?.role === "tesoureiro") && (
+        <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center gap-4 justify-between" data-testid="dashboard-transfer-cta">
+          <div className="flex items-center gap-3">
+            <div className="p-3 rounded-lg bg-sky-500/10 text-sky-400">
+              <ArrowsLeftRight size={22} weight="duotone" />
+            </div>
+            <div>
+              <div className="font-outfit text-lg font-semibold text-slate-100">Transferir dinheiro da caixa para o banco</div>
+              <div className="text-xs text-slate-500">Vais ao banco depositar o dinheiro da caixa? Regista aqui a retirada para o valor do banco subir e a caixa descer.</div>
+            </div>
+          </div>
+          <Link
+            to="/banco"
+            data-testid="dashboard-transfer-cta-button"
+            className="shrink-0 px-5 py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-sm font-bold transition-colors inline-flex items-center justify-center gap-2"
+          >
+            Transferir caixa → banco
+          </Link>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Chart */}

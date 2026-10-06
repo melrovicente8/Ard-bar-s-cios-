@@ -214,10 +214,11 @@ export default function SocioPortal() {
     setStaffUnread([]);
   };
 
-  const reqStatusLabel = { pending: "Pendente", approved: "Aceito", rejected: "Recusado", cancelled: "Anulado" };
+  const reqStatusLabel = { pending: "Pendente", approved: "Aceito · pronto a levantar no balcão", delivered: "Entregue", rejected: "Recusado", cancelled: "Anulado" };
   const reqStatusClass = {
     pending: "bg-amber-500/15 text-amber-300 border-amber-500/30",
     approved: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+    delivered: "bg-sky-500/15 text-sky-300 border-sky-500/30",
     rejected: "bg-rose-500/15 text-rose-300 border-rose-500/30",
     cancelled: "bg-slate-800 text-slate-400 border-slate-700",
   };
