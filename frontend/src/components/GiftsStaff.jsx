@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import api, { euro } from "../lib/api";
-import { Gift, Package, Users } from "@phosphor-icons/react";
+import { Check, Gift, Package, Users } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { formatApiErrorDetail } from "../lib/api";
 
@@ -11,7 +11,7 @@ const GIFT_STATUS = {
   paid: { label: "Pago · por solicitar", cls: "bg-slate-500/15 text-slate-300 border-slate-500/30" },
   claimed: { label: "Solicitado · por servir", cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
   pending: { label: "Pendente a servir", cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
-  served: { label: "Servido · por confirmar", cls: "bg-sky-500/15 text-sky-300 border-sky-500/30" },
+  served: { label: "Pode recolher ao balcão", cls: "bg-sky-500/15 text-sky-300 border-sky-500/30" },
   consumed: { label: "Consumido", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" },
 };
 
@@ -31,6 +31,16 @@ export default function GiftsStaff() {
     try {
       await api.post(`/socio-gifts/${g.id}/serve`);
       toast.success(`Consumo servido a ${g.recipient_name} · fica por confirmar no portal`);
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const confirmConsumed = async (g) => {
+    try {
+      await api.post(`/socio-gifts/${g.id}/confirm-consumed`);
+      toast.success(`Recolha confirmada · consumo de ${g.recipient_name} fechado`);
       await load();
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
@@ -77,6 +87,15 @@ export default function GiftsStaff() {
                         className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-lg px-3 py-1.5 flex items-center gap-1.5 text-xs"
                       >
                         <Package size={13} weight="bold" /> Servir
+                      </button>
+                    )}
+                    {g.status === "served" && (
+                      <button
+                        data-testid={`gift-confirm-${g.id}`}
+                        onClick={() => confirmConsumed(g)}
+                        className="bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold rounded-lg px-3 py-1.5 flex items-center gap-1.5 text-xs"
+                      >
+                        <Check size={13} weight="bold" /> Confirmar
                       </button>
                     )}
                   </div>

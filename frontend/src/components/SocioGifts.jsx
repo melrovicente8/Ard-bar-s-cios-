@@ -20,7 +20,7 @@ const GIFT_STATUS = {
   paid: { label: "Pago · disponível", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" },
   claimed: { label: "Solicitado · a servir", cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
   pending: { label: "Pendente a servir", cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
-  served: { label: "Servido", cls: "bg-sky-500/15 text-sky-300 border-sky-500/30" },
+  served: { label: "Pode recolher ao balcão", cls: "bg-sky-500/15 text-sky-300 border-sky-500/30" },
   consumed: { label: "Consumido", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" },
 };
 
@@ -173,6 +173,17 @@ export default function SocioGifts({ me }) {
           className="text-[10px] px-2 py-1 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1 font-bold"
         >
           <Gift size={11} weight="bold" /> Pedir ao balcão
+        </button>
+      );
+    }
+    if (isPayer && g.status === "served") {
+      return (
+        <button
+          data-testid={`socio-gift-consume-${g.id}`}
+          onClick={() => action(g, "consume", "Confirmado · obrigado!")}
+          className="text-[10px] px-2 py-1 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 flex items-center gap-1 font-bold"
+        >
+          <Check size={11} weight="bold" /> Confirmar
         </button>
       );
     }

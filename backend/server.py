@@ -3448,8 +3448,8 @@ async def socio_consume_gift(gift_id: str, socio: dict = Depends(get_current_soc
     gift = await db.socio_gifts.find_one({"id": gift_id}, {"_id": 0})
     if not gift:
         raise HTTPException(status_code=404, detail="Consumo não encontrado")
-    if gift.get("recipient_id") != socio["id"]:
-        raise HTTPException(status_code=403, detail="Só o destinatário pode confirmar o consumo")
+    if socio["id"] not in (gift.get("recipient_id"), gift.get("payer_id")):
+        raise HTTPException(status_code=403, detail="Só o consumidor ou quem pagou pode confirmar o consumo")
     if gift.get("status") != "served":
         raise HTTPException(status_code=400, detail="Só consumos já servidos podem ser confirmados")
     await db.socio_gifts.update_one({"id": gift_id}, {"$set": {"status": "consumed", "consumed_at": datetime.now(timezone.utc).isoformat()}})
@@ -3491,6 +3491,32 @@ async def staff_serve_gift(gift_id: str, user: dict = Depends(get_current_user))
     )
     await _audit("socio_gift_served", user["email"], entity="socio_gift", entity_id=gift_id,
                  summary=f"Consumo de {euro_fmt(gift['total'])} servido a {gift['recipient_name']} (pago por {gift['payer_name']})")
+    return {"ok": True}
+
+
+@api_router.post("/socio-gifts/{gift_id}/confirm-consumed")
+async def staff_confirm_gift_consumed(gift_id: str, user: dict = Depends(get_current_user)):
+    """Staff confirma a recolha/consumo no balcão."""
+    gift = await db.socio_gifts.find_one({"id": gift_id}, {"_id": 0})
+    if not gift:
+        raise HTTPException(status_code=404, detail="Consumo não encontrado")
+    if gift.get("status") != "served":
+        raise HTTPException(status_code=400, detail="Só consumos já servidos podem ser confirmados")
+    await db.socio_gifts.update_one({"id": gift_id}, {"$set": {"status": "consumed", "consumed_at": datetime.now(timezone.utc).isoformat(), "consumed_by": user["email"]}})
+    await _gift_notify(
+        gift["recipient_id"], gift["recipient_name"],
+        "✅ Consumo confirmado",
+        f"O staff confirmou a recolha do teu consumo ({euro_fmt(gift['total'])}). Obrigado!",
+        gift_id,
+    )
+    await _gift_notify(
+        gift["payer_id"], gift["payer_name"],
+        "✅ Consumo confirmado",
+        f"O staff confirmou a recolha do consumo que pagaste para {gift['recipient_name']} ({euro_fmt(gift['total'])}). Obrigado!",
+        gift_id,
+    )
+    await _audit("socio_gift_consumed", user["email"], entity="socio_gift", entity_id=gift_id,
+                 summary=f"Recolha confirmada pelo staff — consumo de {euro_fmt(gift['total'])} ({gift['recipient_name']}, pago por {gift['payer_name']})")
     return {"ok": True}
 
 
