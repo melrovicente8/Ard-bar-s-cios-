@@ -543,6 +543,17 @@ export default function ClienteFicha() {
   const debt = Math.max(balance, 0);
   const credit = Math.max(-balance, 0);
 
+  const refundCredit = async () => {
+    if (!window.confirm(`Devolver ${euro(credit)} em numerário ao cliente ${c.name}?`)) return;
+    try {
+      const { data: pay } = await api.post(`/clients/${id}/refund-credit`);
+      toast.success(`Devolvidos ${euro(pay.amount)} em numerário (tx #${pay.tx_number})`);
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
   // Marcar cada venda como paga/em dívida.
   // Step 1: pagamentos com sale_ids específicos marcam directamente
   // Step 2: pagamentos sem sale_ids contribuem para um "pool" FIFO sobre as restantes vendas
@@ -795,7 +806,18 @@ export default function ClienteFicha() {
             {euro(credit > 0 ? credit : debt)}
           </div>
           {credit > 0 && (
-            <div data-testid="ficha-credit-badge" className="mt-1 text-[10px] text-emerald-400/80">Cliente tem saldo positivo</div>
+            <>
+              <div data-testid="ficha-credit-badge" className="mt-1 text-[10px] text-emerald-400/80">Cliente tem saldo positivo</div>
+              {canEditAll && (
+                <button
+                  data-testid="ficha-refund-credit-btn"
+                  onClick={refundCredit}
+                  className="mt-3 w-full bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-200 font-bold py-2 rounded-lg flex items-center justify-center gap-2 text-sm"
+                >
+                  <Coins size={15} weight="bold" /> Devolver dinheiro
+                </button>
+              )}
+            </>
           )}
         </div>
         <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-5">

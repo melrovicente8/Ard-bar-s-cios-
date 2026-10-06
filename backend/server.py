@@ -1122,6 +1122,42 @@ async def update_sale(sale_id: str, body: SaleEditIn, user: dict = Depends(get_c
     await _sync_quota_paid_status(new_client_id)
     return await db.sales.find_one({"id": sale_id}, {"_id": 0})
 
+# ---------- Devolução de crédito (dinheiro a favor do cliente) ----------
+@api_router.post("/clients/{client_id}/refund-credit")
+async def refund_client_credit(client_id: str, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    """Devolve em numerário ao cliente o crédito que tem a favor (saldo negativo → 0)."""
+    c = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
+    if not c:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    credit = round(-float(c.get("balance", 0) or 0), 2)
+    if credit <= 0.004:
+        raise HTTPException(status_code=400, detail="O cliente não tem crédito a favor para devolver")
+    pay = {
+        "id": str(uuid.uuid4()),
+        "tx_number": await _next_tx_number(),
+        "client_id": client_id,
+        "client_name": c["name"],
+        "amount": credit,
+        "tendered": 0.0,
+        "total_credited": 0.0,  # não abate dívida — é uma devolução de dinheiro
+        "change_returned": 0.0,
+        "points_used": 0,
+        "points_value": 0.0,
+        "note": "Devolução de crédito em numerário",
+        "source": "refund",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "user_email": user["email"],
+    }
+    await db.payments.insert_one(pay)
+    # Saldo negativo (crédito) volta a 0
+    await db.clients.update_one({"id": client_id}, {"$inc": {"balance": credit}})
+    await _audit(
+        "credit_refund", user["email"], entity="client", entity_id=client_id,
+        summary=f"Devolução de crédito de {credit:.2f} € em numerário a {c['name']}",
+    )
+    pay.pop("_id", None)
+    return pay
+
 # ---------- Sales Report (filtros) ----------
 @api_router.get("/reports/sales")
 async def report_sales(
@@ -4053,6 +4089,11 @@ async def socio_balance_quarterly(socio: dict = Depends(get_current_socio)):
     date_from = f"{year}-{quarter_start_month:02d}-01"
     date_to = now.strftime("%Y-%m-%d")
     data = await _finance_summary(date_from, date_to)
+    # Valor em caixa: o dinheiro declarado quando o bar foi aberto
+    bar_doc = await db.club_state.find_one({"_id": "bar"}, {"_id": 0})
+    cash_in_drawer = 0.0
+    if bar_doc:
+        cash_in_drawer = float(bar_doc.get("opening_cash_declared") or bar_doc.get("cash_in_drawer") or 0)
     return {
         "quarter": f"T{quarter}/{year}",
         "period": data["period"],
@@ -4062,6 +4103,7 @@ async def socio_balance_quarterly(socio: dict = Depends(get_current_socio)):
         "counts": data["counts"],
         "generated_at": data["generated_at"],
         "club_name": data["club_name"],
+        "cash_in_drawer": round(cash_in_drawer, 2),
     }
 
 

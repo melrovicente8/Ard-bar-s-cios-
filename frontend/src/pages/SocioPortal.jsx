@@ -28,6 +28,7 @@ import {
   Users,
   Crown,
   ChartLine,
+  ArrowClockwise,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import CommunityChat from "../components/CommunityChat";
@@ -157,6 +158,17 @@ export default function SocioPortal() {
   const onLogout = async () => {
     await logout();
     navigate("/socio/login");
+  };
+
+  const onRefresh = async () => {
+    try {
+      await refresh();
+      api.get("/socio/finance").then((r) => setMonthly(r.data)).catch(() => {});
+      api.get("/socio/balance-quarterly").then((r) => setQuarterly(r.data)).catch(() => {});
+      toast.success("Dados atualizados");
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
   };
 
   const saveProfile = async () => {
@@ -449,13 +461,23 @@ export default function SocioPortal() {
               </div>
             </div>
           </div>
-          <button
-            data-testid="socio-logout-btn"
-            onClick={onLogout}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-slate-400 hover:text-white hover:bg-slate-900 transition-colors"
-          >
-            <SignOut size={16} /> Sair
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              data-testid="socio-refresh-btn"
+              onClick={onRefresh}
+              title="Atualizar dados"
+              className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-slate-400 hover:text-white hover:bg-slate-900 transition-colors"
+            >
+              <ArrowClockwise size={16} /> Atualizar
+            </button>
+            <button
+              data-testid="socio-logout-btn"
+              onClick={onLogout}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-slate-400 hover:text-white hover:bg-slate-900 transition-colors"
+            >
+              <SignOut size={16} /> Sair
+            </button>
+          </div>
         </div>
       </header>
 

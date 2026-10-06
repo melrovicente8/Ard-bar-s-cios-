@@ -74,9 +74,9 @@ const navGroups = [
     section: "Administração",
     items: [
       { to: "/equipa", label: "Equipa", icon: UsersThree, testid: "nav-equipa", roles: ["admin"] },
-      { to: "/contas", label: "Contas", icon: Bank, testid: "nav-contas", roles: STAFF_ROLES },
+      { to: "/contas", label: "Contas", icon: Bank, testid: "nav-contas", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/historico", label: "Histórico", icon: ClockCounterClockwise, testid: "nav-historico", roles: STAFF_ROLES },
-      { to: "/transacoes", label: "Transações", icon: ListDashes, testid: "nav-transacoes", roles: STAFF_ROLES },
+      { to: "/transacoes", label: "Transações", icon: ListDashes, testid: "nav-transacoes", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/ofertas", label: "Ofertas casa", icon: Gift, testid: "nav-ofertas", roles: STAFF_ROLES },
       { to: "/documentacao", label: "Documentação", icon: Book, testid: "nav-documentacao", roles: ["admin"] },
     ],

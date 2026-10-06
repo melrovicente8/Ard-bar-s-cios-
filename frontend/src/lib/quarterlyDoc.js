@@ -11,6 +11,7 @@ export function openQuarterlyDoc(d) {
   const despesasReais = (d.expenses.supplier_orders || 0) + (d.expenses.supplier_expenses || 0);
   const saldo = d.income.total - despesasReais;
   const banco = d.expenses.cash_withdrawals || 0;
+  const caixa = d.cash_in_drawer || 0; // valor em caixa (declarado ao abrir o bar)
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Balanço trimestral ${d.quarter} · ${d.club_name}</title>
 <style>
   body{font-family:Arial;color:#0f172a;margin:24px;font-size:13px}
@@ -56,7 +57,8 @@ export function openQuarterlyDoc(d) {
 
   <h2 style="font-size:14px;margin:22px 0 6px;color:#475569">VALOR EM CONTA BANCÁRIA</h2>
   <table><tbody>
-    <tr><td>Retiradas de caixa depositadas no banco</td><td class="right" style="color:#15803d"><strong>${euro(banco)}</strong></td></tr>
+    <tr><td>Saldo Contabilístico (banco)</td><td class="right" style="color:#15803d"><strong>${euro(banco)}</strong></td></tr>
+    <tr><td>Saldo Disponível · Valor em caixa</td><td class="right" style="color:#b45309"><strong>${euro(caixa)}</strong></td></tr>
   </tbody></table>
 
   <div class="totals">
