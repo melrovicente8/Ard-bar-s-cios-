@@ -4608,7 +4608,15 @@ async def socio_top_products(scope: str = "mine", socio: dict = Depends(get_curr
             e["quantity"] += int(it.get("quantity", 0))
             e["total"] += float(it.get("subtotal", 0))
     top = sorted(agg.values(), key=lambda x: x["total"], reverse=True)[:5]
-    return top
+    if top:
+        return top
+    # Sem histórico pessoal de vendas (ex.: início de mandato) — fallback:
+    # os 5 primeiros produtos disponíveis por ordem alfabética.
+    prods = await db.products.find(
+        {"is_quota": {"$ne": True}, "is_house_account": {"$ne": True}, "unavailable": {"$ne": True}, "quantity": {"$gt": 0}},
+        {"_id": 0, "name": 1, "price": 1},
+    ).sort("name", 1).to_list(5)
+    return [{"product_name": p["name"], "quantity": 0, "total": float(p.get("price", 0))} for p in prods]
 
 @api_router.get("/socio/quota-status")
 async def socio_quota_status(socio: dict = Depends(get_current_socio)):
@@ -4692,7 +4700,14 @@ async def _top_products_global(limit: int) -> list:
         if not p or p.get("is_quota"):
             continue
         out.append({**p, "sold_qty": qty})
-    return out
+    if out:
+        return out
+    # Sem histórico de vendas (ex.: início de mandato) — a venda rápida mostra
+    # os produtos disponíveis por ordem alfabética.
+    return await db.products.find(
+        {"is_quota": {"$ne": True}, "is_house_account": {"$ne": True}, "unavailable": {"$ne": True}, "quantity": {"$gt": 0}},
+        {"_id": 0},
+    ).sort("name", 1).to_list(limit)
 
 
 # ---------- Cartão de Sócio Digital (QR dinâmico) ----------

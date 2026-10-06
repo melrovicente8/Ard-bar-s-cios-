@@ -73,6 +73,7 @@ export default function SocioPortal() {
   const [showRequest, setShowRequest] = useState(false);
   const [products, setProducts] = useState([]);
   const [reqCart, setReqCart] = useState({});
+  const [reqView, setReqView] = useState("list"); // list | grid
   // Bar aberto/fechado (pedir consumo bloqueado quando fechado)
   const [barOpen, setBarOpen] = useState(null);
   // Alerta de cota em dívida ao fazer pedido
@@ -170,6 +171,20 @@ export default function SocioPortal() {
   const nameOf = (pid) => (pid.startsWith("quota-") ? quotaItem(pid).label : (products.find((x) => x.id === pid)?.name || ""));
   // Disponível = stock menos o que já está reservado em pedidos pendentes (vem do backend)
   const availOf = (p) => (p.available_quantity != null ? p.available_quantity : p.quantity || 0);
+
+  // Produtos disponíveis ordenados por categoria e ordem alfabética, agrupados
+  const availProducts = products
+    .filter((p) => !p.is_quota && availOf(p) > 0)
+    .sort((a, b) =>
+      (a.category || "Outros").localeCompare(b.category || "Outros", "pt") || a.name.localeCompare(b.name, "pt")
+    );
+  const groups = Object.entries(
+    availProducts.reduce((acc, p) => {
+      const cat = p.category || "Outros";
+      (acc[cat] = acc[cat] || []).push(p);
+      return acc;
+    }, {})
+  ).sort((a, b) => a[0].localeCompare(b[0], "pt"));
 
   // Vendas ainda em dívida (FIFO igual ao histórico do clube)
   const debtSales = (() => {
@@ -782,7 +797,7 @@ export default function SocioPortal() {
             <span>Despesas <span className="text-slate-300 font-medium">{euro(monthly.expenses.total)}</span></span>
             <span>Saldo <span className="text-slate-300 font-medium">{euro(monthly.balance)}</span></span>
             {quarterly && (
-              <span title="Saldos contabilísticos (banco + caixa)">Saldos <span className="text-slate-300 font-medium">{euro(quarterly.total_balance ?? 0)}</span> <span className="text-slate-600">(banco {euro(quarterly.bank_balance ?? 0)} + caixa {euro(quarterly.cash_balance ?? 0)})</span></span>
+              <span title="Saldo final financeiro — dinheiro contabilístico em caixa e banco">Saldo final financeiro <span className="text-slate-300 font-medium">{euro(quarterly.total_balance ?? 0)}</span> <span className="text-slate-600">(banco {euro(quarterly.bank_balance ?? 0)} + caixa {euro(quarterly.cash_balance ?? 0)})</span></span>
             )}
             {quarterly && (
               <button
@@ -1480,22 +1495,69 @@ export default function SocioPortal() {
               </div>
             )}
 
-            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1 px-1">Produtos disponíveis</div>
-            <div className="flex-1 overflow-y-auto grid grid-cols-2 md:grid-cols-3 gap-2 mb-3">
-              {products.filter((p) => !p.is_quota && availOf(p) > 0).map((p) => (
-                <button
-                  key={p.id}
-                  type="button"
-                  data-testid={`req-prod-${p.id}`}
-                  disabled={!!reqCart[p.id] && reqCart[p.id] >= availOf(p)}
-                  onClick={() => setReqCart({ ...reqCart, [p.id]: (reqCart[p.id] || 0) + 1 })}
-                  className="text-left px-2 py-2 rounded bg-slate-950 border border-slate-800 hover:border-amber-500/40 text-xs disabled:opacity-30 disabled:cursor-not-allowed"
-                >
-                  <div className="truncate font-medium">{p.name}</div>
-                  <div className="text-amber-400 font-bold text-[11px]">{euro(p.price)}</div>
-                  <div className="text-[10px] text-slate-500">{availOf(p)} disp.</div>
-                  {reqCart[p.id] && <div className="text-emerald-400 text-[10px] mt-0.5">× {reqCart[p.id]} no carrinho</div>}
-                </button>
+            <div className="flex items-center justify-between mb-1 px-1">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Produtos disponíveis</div>
+              <div className="inline-flex rounded-md border border-slate-800 bg-slate-900/60 p-0.5" data-testid="req-view-toggle">
+                {[
+                  { v: "list", l: "Lista" },
+                  { v: "grid", l: "Grelha" },
+                ].map((o) => (
+                  <button
+                    key={o.v}
+                    type="button"
+                    data-testid={`req-view-${o.v}`}
+                    onClick={() => setReqView(o.v)}
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${reqView === o.v ? "bg-slate-700 text-white" : "text-slate-400 hover:text-white"}`}
+                  >{o.l}</button>
+                ))}
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto mb-3 pr-1" data-testid="req-products">
+              {groups.map(([cat, arr]) => (
+                <div key={cat} className="mb-2">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400/80 bg-slate-950/60 rounded px-2 py-1 mb-1">{cat}</div>
+                  {reqView === "list" ? (
+                    <div className="divide-y divide-slate-800/60 border border-slate-800 rounded-lg overflow-hidden">
+                      {arr.map((p) => (
+                        <button
+                          type="button"
+                          key={p.id}
+                          data-testid={`req-prod-${p.id}`}
+                          disabled={!!reqCart[p.id] && reqCart[p.id] >= availOf(p)}
+                          onClick={() => setReqCart({ ...reqCart, [p.id]: (reqCart[p.id] || 0) + 1 })}
+                          className="w-full text-left px-3 py-2 bg-slate-950 hover:bg-slate-900 flex items-center justify-between gap-2 text-xs disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="truncate font-medium">{p.name}</div>
+                            {reqCart[p.id] && <div className="text-emerald-400 text-[10px]">× {reqCart[p.id]} no carrinho</div>}
+                          </div>
+                          <div className="text-right shrink-0">
+                            <div className="text-amber-400 font-bold">{euro(p.price)}</div>
+                            <div className="text-[10px] text-slate-500">{availOf(p)} disp.</div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                      {arr.map((p) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          data-testid={`req-prod-${p.id}`}
+                          disabled={!!reqCart[p.id] && reqCart[p.id] >= availOf(p)}
+                          onClick={() => setReqCart({ ...reqCart, [p.id]: (reqCart[p.id] || 0) + 1 })}
+                          className="text-left px-2 py-2 rounded bg-slate-950 border border-slate-800 hover:border-amber-500/40 text-xs disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          <div className="truncate font-medium">{p.name}</div>
+                          <div className="text-amber-400 font-bold text-[11px]">{euro(p.price)}</div>
+                          <div className="text-[10px] text-slate-500">{availOf(p)} disp.</div>
+                          {reqCart[p.id] && <div className="text-emerald-400 text-[10px] mt-0.5">× {reqCart[p.id]} no carrinho</div>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               ))}
             </div>
             <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 mb-3 flex items-center justify-between">

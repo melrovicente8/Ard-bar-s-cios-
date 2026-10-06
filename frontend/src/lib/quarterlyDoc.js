@@ -13,6 +13,8 @@ export function openQuarterlyDoc(d) {
   // Saldos contabilísticos (todas as datas): banco = depósitos registados; caixa = numerário em gaveta
   const banco = d.bank_balance ?? (d.expenses.cash_withdrawals || 0);
   const caixa = d.cash_balance ?? (d.cash_in_drawer || 0);
+  // Saldo final financeiro do trimestre — dinheiro contabilístico (banco + caixa)
+  const saldoFinal = d.total_balance ?? (banco + caixa);
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Balanço trimestral ${d.quarter} · ${d.club_name}</title>
 <style>
   body{font-family:Arial;color:#0f172a;margin:24px;font-size:13px}
@@ -62,6 +64,10 @@ export function openQuarterlyDoc(d) {
     <tr><td>Saldo em caixa (numerário em gaveta)</td><td class="right" style="color:#b45309"><strong>${euro(caixa)}</strong></td></tr>
     <tr style="border-top:2px solid #0f172a"><td><strong>TOTAL (banco + caixa)</strong></td><td class="right"><strong>${euro(banco + caixa)}</strong></td></tr>
   </tbody></table>
+
+  <div class="totals" style="margin-top:10px">
+    <div class="box bal" style="min-width:260px"><div class="lbl">SALDO FINAL FINANCEIRO DO TRIMESTRE (caixa + banco)</div><div class="val ${saldoFinal >= 0 ? "pos" : "neg"}">${euro(saldoFinal)}</div></div>
+  </div>
 
   <div class="totals">
     <div class="box in"><div class="lbl">TOTAL RECEITAS</div><div class="val">${euro(d.income.total)}</div></div>
