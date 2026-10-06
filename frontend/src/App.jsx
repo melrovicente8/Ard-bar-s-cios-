@@ -12,7 +12,6 @@ import Vender from "./pages/Vender";
 import Stock from "./pages/Stock";
 import Clientes from "./pages/Clientes";
 import ClienteFicha from "./pages/ClienteFicha";
-import Socios from "./pages/Socios";
 import MBWay from "./pages/MBWay";
 import Fornecedores from "./pages/Fornecedores";
 import DividasHoje from "./pages/DividasHoje";
@@ -62,9 +61,16 @@ function AdminOnly({ children }) {
 }
 
 function StaffOnly({ children }) {
-  // admin or tesoureiro
+  // admin, tesoureiro or presidente
   const { user } = useAuth();
-  if (!user || (user.role !== "admin" && user.role !== "tesoureiro")) return <Navigate to="/" replace />;
+  if (!user || !["admin", "tesoureiro", "presidente"].includes(user.role)) return <Navigate to="/" replace />;
+  return children;
+}
+
+function AllStaffOnly({ children }) {
+  // admin, tesoureiro, presidente e funcionário (funcionário tem acesso de consulta)
+  const { user } = useAuth();
+  if (!user || !["admin", "tesoureiro", "presidente", "funcionario"].includes(user.role)) return <Navigate to="/" replace />;
   return children;
 }
 
@@ -100,11 +106,8 @@ function App() {
                 <Route path="clientes/:id" element={<ClienteFicha />} />
                 <Route path="mbway" element={<MBWay />} />
                 <Route path="dividas" element={<DividasHoje />} />
-                <Route path="fornecedores" element={<StaffOnly><Fornecedores /></StaffOnly>} />
-                <Route
-                  path="socios"
-                  element={<AdminOnly><Socios /></AdminOnly>}
-                />
+                <Route path="fornecedores" element={<AllStaffOnly><Fornecedores /></AllStaffOnly>} />
+                <Route path="socios" element={<Navigate to="/clientes" replace />} />
                 <Route
                   path="equipa"
                   element={<AdminOnly><Equipa /></AdminOnly>}
@@ -115,13 +118,13 @@ function App() {
                 />
                 <Route
                   path="contas"
-                  element={<StaffOnly><Contas /></StaffOnly>}
+                  element={<AllStaffOnly><Contas /></AllStaffOnly>}
                 />
                 <Route path="mensagens" element={<Mensagens />} />
                 <Route path="pedidos" element={<Pedidos />} />
                 <Route path="transacoes/:tx_number" element={<Transacao />} />
-                <Route path="transacoes" element={<StaffOnly><Transacoes /></StaffOnly>} />
-                <Route path="ofertas" element={<StaffOnly><OfertasCasa /></StaffOnly>} />
+                <Route path="transacoes" element={<AllStaffOnly><Transacoes /></AllStaffOnly>} />
+                <Route path="ofertas" element={<AllStaffOnly><OfertasCasa /></AllStaffOnly>} />
                 <Route path="bilhetes" element={<Bilhetes />} />
                 <Route path="documentacao" element={<AdminOnly><Documentacao /></AdminOnly>} />
               </Route>

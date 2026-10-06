@@ -102,6 +102,8 @@ class ClientIn(BaseModel):
     pin: Optional[str] = None  # set by admin/tesoureiro to enable sócio portal login
     credit_limit: Optional[float] = None  # teto de fiado (None = sem limite)
     family_head_client_id: Optional[str] = None  # dependente do agregado familiar
+    direction_role: Optional[str] = None  # cargo na direção (ex.: "Presidente da Direção")
+    direction_history: Optional[List[dict]] = None  # [{role, start_year, end_year}]
 
 class ClientUpdate(BaseModel):
     name: Optional[str] = None
@@ -114,6 +116,8 @@ class ClientUpdate(BaseModel):
     pin: Optional[str] = None
     credit_limit: Optional[float] = None
     family_head_client_id: Optional[str] = None
+    direction_role: Optional[str] = None
+    direction_history: Optional[List[dict]] = None
 
 class SaleItemIn(BaseModel):
     product_id: str
@@ -208,6 +212,7 @@ class SupplierOrderPay(BaseModel):
 class SupplierExpenseIn(BaseModel):
     supplier_id: Optional[str] = None
     description: str  # ex: "Renda", "Eletricidade", "Internet"
+    invoice_no: Optional[str] = None  # nº da factura / nota
     amount: float
     due_date: Optional[str] = None  # ISO date string
     paid: bool = False
@@ -220,6 +225,7 @@ class SupplierExpenseIn(BaseModel):
 class SupplierExpenseUpdate(BaseModel):
     supplier_id: Optional[str] = None
     description: Optional[str] = None
+    invoice_no: Optional[str] = None  # nº da factura / nota
     amount: Optional[float] = None
     due_date: Optional[str] = None
     paid: Optional[bool] = None
@@ -522,6 +528,8 @@ async def create_client(body: ClientIn, user: dict = Depends(get_current_user)):
         "total_spent": 0.0,
         "credit_limit": body.credit_limit,
         "family_head_client_id": body.family_head_client_id if role in ("admin", "tesoureiro") else None,
+        "direction_role": body.direction_role if role in ("admin", "tesoureiro", "presidente") else None,
+        "direction_history": body.direction_history if role in ("admin", "tesoureiro", "presidente") else None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.clients.insert_one(doc)
@@ -756,12 +764,14 @@ async def _house_offer_allowance(user: dict) -> dict:
     used = await _house_offer_used_month(user["email"])
     return {"limit": limit, "used": used, "remaining": round(max(limit - used, 0.0), 2)}
 
-async def _record_house_offers(entries: list, user: dict, client_name: str):
-    """Regista ofertas da casa: histórico (house_offers) + despesa de bar 'Conta da Casa'."""
+async def _record_house_offers(entries: list, user: dict, client_name: str, member_number: Optional[str] = None):
+    """Regista ofertas da casa: histórico (house_offers) + despesa de bar 'Conta da Casa'.
+    Na descrição usa o nº de sócio em vez do nome (relatório de contas)."""
     total = round(sum(float(e["amount"]) for e in entries), 2)
     if total <= 0:
         return
     now_iso = datetime.now(timezone.utc).isoformat()
+    who = f"Sócio nº {member_number}" if member_number else client_name
     await db.house_offers.insert_many([
         {**e, "user_email": user["email"], "user_role": user.get("role"), "client_name": client_name, "created_at": now_iso}
         for e in entries
@@ -773,7 +783,7 @@ async def _record_house_offers(entries: list, user: dict, client_name: str):
         "tx_number": expense_tx,
         "supplier_id": "_house",
         "supplier_name": "Conta da Casa",
-        "description": f"Oferta da casa · pagamento em conta corrente · {client_name} · por {user['email']}",
+        "description": f"Oferta da casa · pagamento em conta corrente · {who} · por {user['email']}",
         "amount": float(total),
         "paid": True,
         "due_date": None,
@@ -1479,7 +1489,7 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
             {"sale_id": t.sale_id, "product_name": t.product_name, "unit_price": float(t.unit_price), "qty": int(t.qty_offer), "amount": round(float(t.unit_price) * t.qty_offer, 2), "client_id": body.client_id, "source": "payment"}
             for t in body.item_targets if t.qty_offer > 0
         ]
-        await _record_house_offers(entries, user, c["name"])
+        await _record_house_offers(entries, user, c["name"], c.get("member_number"))
     if tip > 0:
         await _audit("payment_tip", user["email"], entity="payment", entity_id=pid, after={"tip": tip, "client": c["name"]}, summary=f"Gratificação {tip:.2f} € de {c['name']}")
     await _audit("payment_create", user["email"], entity="payment", entity_id=pid, summary=f"Pagamento tx #{tx_no} · {c['name']} · abatido {credit_total:.2f} €" + (f" · oferta {offer_amount:.2f} €" if offer_amount else "") + (f" · vendas {sale_tx_numbers}" if sale_tx_numbers else ""))
@@ -1501,7 +1511,11 @@ async def list_house_offers(year: Optional[int] = None, month: Optional[int] = N
     year = year or now.year
     month = month or now.month
     prefix = f"{year}-{month:02d}"
-    items = await db.house_offers.find({"created_at": {"$regex": f"^{prefix}"}}, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    offers_q: dict = {"created_at": {"$regex": f"^{prefix}"}}
+    # Funcionário consulta apenas as SUAS ofertas da casa
+    if user.get("role") == "funcionario":
+        offers_q["user_email"] = user["email"]
+    items = await db.house_offers.find(offers_q, {"_id": 0}).sort("created_at", -1).to_list(2000)
     by_user = {}
     for it in items:
         u = by_user.setdefault(it["user_email"], {"user_email": it["user_email"], "role": it.get("user_role") or "—", "total": 0.0, "count": 0})
@@ -2783,6 +2797,7 @@ async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> 
     sales = await db.sales.find(sale_q, {"_id": 0}).sort("created_at", -1).to_list(10000)
     orders = await db.supplier_orders.find(exp_q, {"_id": 0}).sort("created_at", -1).to_list(5000)
     expenses = await db.supplier_expenses.find(exp_q, {"_id": 0}).sort("created_at", -1).to_list(5000)
+    withdrawals = await db.cash_withdrawals.find(exp_q, {"_id": 0}).sort("created_at", -1).to_list(5000)
 
     # Nº de sócio de cada cliente (para o PDF usar o nº em vez do nome)
     cids = list({s["client_id"] for s in sales if s.get("client_id")})
@@ -2799,7 +2814,8 @@ async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> 
 
     exp_orders = sum(o.get("total", 0) for o in orders)
     exp_expenses = sum(e.get("amount", 0) for e in expenses)
-    exp_total = exp_orders + exp_expenses
+    exp_withdrawals = sum(w.get("amount", 0) for w in withdrawals)
+    exp_total = exp_orders + exp_expenses + exp_withdrawals
 
     return {
         "period": {"from": date_from, "to": date_to},
@@ -2811,6 +2827,7 @@ async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> 
         "expenses": {
             "supplier_orders": exp_orders,
             "supplier_expenses": exp_expenses,
+            "cash_withdrawals": exp_withdrawals,
             "total": exp_total,
         },
         "balance": rev_total - exp_total,
@@ -2819,27 +2836,32 @@ async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> 
             "quotas": len(sales_cotas),
             "orders": len(orders),
             "expenses": len(expenses),
+            "withdrawals": len(withdrawals),
         },
         "details": {
             "sales": sales_consumo,
             "quotas": sales_cotas,
             "orders": orders,
             "expenses": expenses,
+            "withdrawals": withdrawals,
         },
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "club_name": CLUB_NAME,
     }
 
 @api_router.get("/reports/finance")
-async def report_finance(date_from: Optional[str] = None, date_to: Optional[str] = None, user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
+async def report_finance(date_from: Optional[str] = None, date_to: Optional[str] = None, user: dict = Depends(get_current_user)):
+    if user.get("role") == "funcionario":
+        date_from, date_to = _clamp_month_range(date_from, date_to)
     return await _finance_summary(date_from, date_to)
 
 @api_router.get("/socio/finance")
 async def socio_finance_summary(date_from: Optional[str] = None, date_to: Optional[str] = None, socio: dict = Depends(get_current_socio)):
-    """Resumo para sócios — só visível se cotas do ano em dia."""
-    year = datetime.now(timezone.utc).year
-    if await _socio_has_open_quotas(socio["id"], year):
-        raise HTTPException(status_code=403, detail="Disponível apenas para sócios com cotas em dia")
+    """Resumo financeiro do clube para TODOS os sócios — apenas totalizadores (sem detalhes nominais).
+    Por omissão: mês corrente."""
+    now = datetime.now(timezone.utc)
+    date_from = date_from or now.strftime("%Y-%m-01")
+    date_to = date_to or now.strftime("%Y-%m-%d")
     data = await _finance_summary(date_from, date_to)
     # Sócio vê apenas totalizadores (sem detalhes nominais)
     return {
@@ -3317,6 +3339,7 @@ async def create_supplier_expense(body: SupplierExpenseIn, user: dict = Depends(
         "supplier_id": body.supplier_id,
         "supplier_name": sup_name,
         "description": body.description,
+        "invoice_no": body.invoice_no,
         "amount": float(body.amount),
         "due_date": body.due_date,
         "paid": bool(body.paid),
@@ -3632,11 +3655,13 @@ async def ata_daily(date: Optional[str] = None, user: dict = Depends(require_rol
 async def list_transactions(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
-    kind: Optional[str] = None,  # sale | payment | order | expense | cash_close
+    kind: Optional[str] = None,  # sale | payment | order | expense | cash_close | cash_withdrawal
     q: Optional[str] = None,
     limit: int = 1000,
-    user: dict = Depends(require_role("admin", "tesoureiro", "presidente")),
+    user: dict = Depends(get_current_user),
 ):
+    if user.get("role") == "funcionario":
+        date_from, date_to = _clamp_month_range(date_from, date_to)
     dfrom = date_from + "T00:00:00" if (date_from and "T" not in date_from) else date_from
     dto = date_to + "T23:59:59" if (date_to and "T" not in date_to) else date_to
     rng = {}
@@ -3648,11 +3673,12 @@ async def list_transactions(
     limit = min(max(limit, 1), 5000)
     out = []
     defs = [
-        ("sales", "sale", {"client_name": 1, "total": 1, "source": 1}),
+        ("sales", "sale", {"client_name": 1, "total": 1, "source": 1, "items": 1}),
         ("payments", "payment", {"client_name": 1, "total_credited": 1, "amount": 1, "source": 1}),
-        ("supplier_orders", "order", {"supplier_name": 1, "total": 1}),
-        ("supplier_expenses", "expense", {"supplier_name": 1, "description": 1, "amount": 1}),
+        ("supplier_orders", "order", {"supplier_name": 1, "total": 1, "invoice_ref": 1}),
+        ("supplier_expenses", "expense", {"supplier_name": 1, "description": 1, "invoice_no": 1, "amount": 1}),
         ("cash_closes", "cash_close", {"cash_counted": 1, "expected_cash": 1, "difference": 1}),
+        ("cash_withdrawals", "cash_withdrawal", {"amount": 1, "note": 1}),
     ]
     for coll, k, proj in defs:
         if kind and kind != k:
@@ -3661,6 +3687,19 @@ async def list_transactions(
         async for d in db[coll].find(base_q, proj):
             d["_kind"] = k
             out.append(d)
+    # Detalhe das vendas = categoria de consumo (bebida, comida, cotas, snack, …)
+    sale_rows = [r for r in out if r["_kind"] == "sale"]
+    if sale_rows:
+        pids = sorted({it.get("product_id") for r in sale_rows for it in (r.get("items") or []) if it.get("product_id")})
+        prods = {p["id"]: p for p in await db.products.find({"id": {"$in": pids}}, {"_id": 0, "id": 1, "category": 1}).to_list(len(pids))} if pids else {}
+        for r in sale_rows:
+            cats = []
+            for it in r.get("items") or []:
+                pid = it.get("product_id") or ""
+                cat = "Cotas" if pid.startswith("quota-") else ((prods.get(pid) or {}).get("category") or "Consumo")
+                if cat not in cats:
+                    cats.append(cat)
+            r["categories"] = cats
     if q:
         needle = q.strip().lower()
         out = [d for d in out if needle in str(d.get("client_name", "")).lower()
@@ -3669,6 +3708,58 @@ async def list_transactions(
                or str(d.get("tx_number")) == needle]
     out.sort(key=lambda x: (x.get("tx_number") or 0), reverse=True)
     return out[:limit]
+
+
+# ---------- Retirada de caixa (admin/tesoureiro) ----------
+class CashWithdrawalIn(BaseModel):
+    amount: float
+    note: Optional[str] = None
+
+
+@api_router.post("/cash-withdrawals")
+async def create_cash_withdrawal(body: CashWithdrawalIn, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    """Retirada de caixa (levanta dinheiro físico do bar) — fica nas transações,
+    no relatório financeiro e reduz o valor em caixa do bar."""
+    if body.amount <= 0:
+        raise HTTPException(status_code=400, detail="Valor inválido")
+    tx_no = await _next_tx_number()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "tx_number": tx_no,
+        "amount": float(body.amount),
+        "note": (body.note or "").strip()[:300] or None,
+        "created_at": now_iso,
+        "user_email": user["email"],
+        "user_role": user.get("role"),
+    }
+    await db.cash_withdrawals.insert_one(doc)
+    await db.club_state.update_one({"_id": "bar"}, {"$inc": {"cash_in_drawer": -float(body.amount)}})
+    await _audit("cash_withdrawal", user["email"], entity="cash_withdrawal", entity_id=doc["id"], summary=f"Retirada de caixa de {euro_fmt(body.amount)}")
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/cash-withdrawals")
+async def list_cash_withdrawals(date_from: Optional[str] = None, date_to: Optional[str] = None, user: dict = Depends(get_current_user)):
+    dfrom = date_from + "T00:00:00" if (date_from and "T" not in date_from) else date_from
+    dto = date_to + "T23:59:59" if (date_to and "T" not in date_to) else date_to
+    q = {"created_at": {"$gte": dfrom, "$lte": dto}} if (dfrom and dto) else ({"created_at": {"$gte": dfrom}} if dfrom else ({"created_at": {"$lte": dto}} if dto else {}))
+    return await db.cash_withdrawals.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+def _clamp_month_range(date_from: Optional[str], date_to: Optional[str]) -> tuple:
+    """Janela máxima de UM MÊS (30 dias) para funcionários — hoje fechado no fim."""
+    today = datetime.now(timezone.utc).date()
+    earliest = today - timedelta(days=30)
+    if not date_to or date_to > today.isoformat():
+        date_to = today.isoformat()
+    try:
+        d = datetime.fromisoformat(date_from).date() if date_from else None
+    except ValueError:
+        d = None
+    if not d or d < earliest:
+        d = earliest
+    return d.isoformat(), date_to
 
 # ---------- PIN: alteração pelo sócio + histórico visível à administração ----------
 class SocioChangePinIn(BaseModel):
@@ -3956,6 +4047,22 @@ async def socio_balance_quarterly(socio: dict = Depends(get_current_socio)):
     not_paid = [(y, m) for (y, m) in months_to_check if by_year.get(y, {}).get(m, {}).get("status") != "paid"]
     if not_paid:
         raise HTTPException(status_code=403, detail="Cotas por regularizar — consulta as contas junto à ARDN.")
+    # Balanço do trimestre corrente (T1/T2/T3/T4) — resumo Deve/Haver sem detalhes nominais
+    quarter = (now.month - 1) // 3 + 1
+    quarter_start_month = 3 * (quarter - 1) + 1
+    date_from = f"{year}-{quarter_start_month:02d}-01"
+    date_to = now.strftime("%Y-%m-%d")
+    data = await _finance_summary(date_from, date_to)
+    return {
+        "quarter": f"T{quarter}/{year}",
+        "period": data["period"],
+        "income": data["income"],
+        "expenses": data["expenses"],
+        "balance": data["balance"],
+        "counts": data["counts"],
+        "generated_at": data["generated_at"],
+        "club_name": data["club_name"],
+    }
 
 
 # ---------- Venda rápida: produtos mais vendidos (global, top 10) ----------
