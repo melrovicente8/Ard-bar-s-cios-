@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { NavLink, Outlet, useNavigate, useLocation, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
@@ -85,6 +86,7 @@ const navGroups = [
 function BarStatusButton() {
   const [bar, setBar] = useState(null); // {open, cash_in_drawer}
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [cashInput, setCashInput] = useState("");
 
   const load = () => {
     api.get("/bar-status").then(({ data }) => {
@@ -99,15 +101,16 @@ function BarStatusButton() {
     /* eslint-disable-next-line */
   }, []);
 
-  const toggle = async () => {
+  const toggle = async (cash_declared) => {
     const next = !bar?.open;
     try {
-      const { data } = await api.post("/bar-status", { open: next });
+      const { data } = await api.post("/bar-status", { open: next, cash_declared: next && cash_declared !== undefined ? cash_declared : undefined });
       setBar(data);
       toast.success(
         `Bar ${data.open ? "ABERTO" : "FECHADO"} · valor em caixa: ${euro(data.cash_in_drawer)} (consta na ata)`
       );
       setConfirmOpen(false);
+      setCashInput("");
       // Ao fechar o bar: gera o PDF de fecho de contas do dia (Deve / Haver)
       if (!data.open) {
         try {
@@ -151,9 +154,9 @@ function BarStatusButton() {
           />
         </span>
       </button>
-      {confirmOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setConfirmOpen(false)} data-testid="bar-status-modal">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-sm p-6" onClick={(e) => e.stopPropagation()}>
+      {confirmOpen && createPortal(
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4 overflow-y-auto" onClick={() => setConfirmOpen(false)} data-testid="bar-status-modal">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-sm p-6 my-auto" onClick={(e) => e.stopPropagation()}>
             <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-amber-400/80">Estado do bar</div>
             <h3 className="font-outfit text-xl font-semibold mt-1 mb-3">{isOpen ? "Fechar o bar?" : "Abrir o bar?"}</h3>
             <div className="bg-slate-950 border border-slate-800 rounded-lg p-4 mb-4 space-y-2 text-sm">
@@ -163,14 +166,36 @@ function BarStatusButton() {
               </div>
               <p className="text-[11px] text-slate-500">Este valor fica registado na ata diária e no audit log.</p>
             </div>
+            {!isOpen && (
+              <div className="mb-4">
+                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Dinheiro em caixa ao abrir (€)</label>
+                <input
+                  data-testid="bar-cash-input"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  inputMode="decimal"
+                  value={cashInput}
+                  onChange={(e) => setCashInput(e.target.value)}
+                  placeholder="0,00"
+                  className="mt-2 w-full bg-slate-950/80 border border-slate-800 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500"
+                />
+              </div>
+            )}
             <div className="flex gap-2">
               <button onClick={() => setConfirmOpen(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700">Cancelar</button>
-              <button data-testid="bar-status-confirm" onClick={toggle} className={`flex-1 px-4 py-2.5 rounded-lg font-bold ${isOpen ? "bg-rose-500 hover:bg-rose-400 text-slate-950" : "bg-emerald-500 hover:bg-emerald-400 text-slate-950"}`}>
+              <button
+                data-testid="bar-status-confirm"
+                onClick={() => toggle(!isOpen ? parseFloat(cashInput) : undefined)}
+                disabled={!isOpen && (cashInput === "" || isNaN(parseFloat(cashInput)) || parseFloat(cashInput) < 0)}
+                className={`flex-1 px-4 py-2.5 rounded-lg font-bold disabled:opacity-40 ${isOpen ? "bg-rose-500 hover:bg-rose-400 text-slate-950" : "bg-emerald-500 hover:bg-emerald-400 text-slate-950"}`}
+              >
                 {isOpen ? "Fechar bar" : "Abrir bar"}
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );
