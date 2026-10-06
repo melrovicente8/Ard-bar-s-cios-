@@ -640,6 +640,24 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
             changes[k] = {"before": old_v, "after": new_v}
     if changes:
         await _audit("client_edit", user["email"], entity="client", entity_id=client_id, changes=changes, summary=f"Cliente editado: {doc.get('name')}")
+    # Resposta formal automática no portal do sócio quando o PIN é (re)definido:
+    # mesmo que a direção já tenha falado ao telefone, o pedido de recuperação de PIN
+    # fica formalmente respondido via app (o sócio vê a resposta no portal).
+    if "pin_hash" in update:
+        formal_reply = (
+            f"Resposta formal da direção: o teu pedido de recuperação de PIN foi tratado. "
+            f"O novo PIN já está ativo — entra no portal do sócio com o teu nº de sócio e o novo PIN. "
+            f"A direção falou contigo por telefone. Com os melhores cumprimentos, a Direção do {CLUB_NAME}."
+        )
+        await db.socio_messages.update_many(
+            {"client_id": client_id, "status": "open", "subject": {"$regex": "recuperação de PIN", "$options": "i"}},
+            {"$set": {
+                "status": "replied",
+                "reply": formal_reply,
+                "replied_at": datetime.now(timezone.utc).isoformat(),
+                "replied_by": f"{user.get('email') or user.get('role') or 'direcao'} (resposta formal automática)",
+            }},
+        )
     return doc
 
 @api_router.delete("/clients/{client_id}")

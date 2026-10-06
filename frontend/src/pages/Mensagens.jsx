@@ -6,6 +6,10 @@ import { toast } from "sonner";
 import CommunityModeration from "../components/CommunityModeration";
 import { useAuth } from "../context/AuthContext";
 
+// Template de resposta formal a pedidos de recuperação de PIN — entregue via app do sócio
+const FORMAL_PIN_REPLY =
+  "Resposta formal da direção: o teu pedido de recuperação de PIN foi tratado. A direção falou contigo por telefone e o novo PIN já está ativo — entra no portal do sócio com o teu nº de sócio e o novo PIN. Com os melhores cumprimentos, a Direção da ARD Nespereira.";
+
 export default function Mensagens() {
   const { user } = useAuth();
   const canModerate = ["admin", "tesoureiro", "presidente", "funcionario"].includes(user?.role);
@@ -163,6 +167,15 @@ export default function Mensagens() {
               {m.status === "open" && (
                 replyOn === m.id ? (
                   <div className="mt-3 space-y-2">
+                    {(m.subject || "").toLowerCase().includes("pin") && (
+                      <button
+                        data-testid={`formal-reply-btn-${m.id}`}
+                        onClick={() => setReply(FORMAL_PIN_REPLY)}
+                        className="text-xs px-3 py-1.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/20 flex items-center gap-1.5 font-bold"
+                      >
+                        <EnvelopeSimpleOpen size={12} weight="duotone" /> Resposta formal (PIN)
+                      </button>
+                    )}
                     <textarea
                       data-testid={`reply-input-${m.id}`}
                       value={reply}

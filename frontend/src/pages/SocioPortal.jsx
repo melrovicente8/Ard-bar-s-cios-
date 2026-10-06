@@ -78,7 +78,8 @@ export default function SocioPortal() {
   // Bar aberto/fechado (pedir consumo bloqueado quando fechado)
   const [barOpen, setBarOpen] = useState(null);
   // Alerta de cota em dívida ao fazer pedido
-  const [quotaPrompt, setQuotaPrompt] = useState(null); // {year, month, label, amount}
+  const [quotaPrompt, setQuotaPrompt] = useState(null); // {list: [{year, month, label, amount}]}
+  const [quotaSel, setQuotaSel] = useState([]); // meses de cota selecionados no prompt (numbers)
   // Comprar bilhete (em breve)
   const [showTickets, setShowTickets] = useState(false);
   // Detalhe do que está por pagar
@@ -436,24 +437,37 @@ export default function SocioPortal() {
       const { data: tp } = await api.get("/socio/top-products", { params: { scope: "mine" } });
       setTop5((tp || []).filter((t) => !String(t.product_name || "").toLowerCase().startsWith("cota")));
     } catch { setTop5([]); }
-    // Alerta: cota do mês em dívida — pergunta se quer pagar junto ao pedido
+    // Alerta: cotas por regularizar (mês corrente e anteriores) — pergunta se quer
+    // pagar/juntar alguma(s) cota(s) ao pedido, e qual ou quais
     try {
       const y = new Date().getFullYear();
       const m = new Date().getMonth() + 1;
       const { data: qd } = await api.get("/socio/quotas", { params: { year: y } });
-      const cur = (qd.quotas || []).find((q) => q.month === m);
-      if (cur && cur.status !== "paid") {
-        setQuotaPrompt({ year: y, month: m, label: cur.label, amount: cur.amount });
+      const overdue = (qd.quotas || []).filter((q) => q.month <= m && !(q.status === "paid" && !q.reversed));
+      if (overdue.length) {
+        setQuotaPrompt({
+          list: overdue.map((q) => ({
+            year: y,
+            month: q.month,
+            label: q.label || `Cota ${MONTHS_PT[q.month - 1]}/${y}`,
+            amount: q.amount != null ? q.amount : (club.quota_monthly_value || 5),
+          })),
+        });
+        setQuotaSel(overdue.map((q) => q.month)); // por defeito todas selecionadas
         return;
       }
     } catch { /* sem info de cotas — segue o pedido */ }
     setShowRequest(true);
   };
 
-  const openRequestAfterQuota = (payQuota) => {
-    if (quotaPrompt && payQuota) {
-      setReqCart({ [`quota-${quotaPrompt.year}-${String(quotaPrompt.month).padStart(2, "0")}`]: 1 });
-    }
+  const openRequestAfterQuota = (selMonths) => {
+    // selMonths: array de números de mês a juntar ao pedido como pseudo-produto 'quota-YYYY-MM'
+    const next = { ...reqCart };
+    (selMonths || []).forEach((mo) => {
+      const pid = `quota-${new Date().getFullYear()}-${String(mo).padStart(2, "0")}`;
+      next[pid] = 1;
+    });
+    setReqCart(next);
     setQuotaPrompt(null);
     setShowRequest(true);
   };
@@ -1704,25 +1718,47 @@ export default function SocioPortal() {
           <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-2 mb-3">
               <CalendarBlank size={22} weight="duotone" className="text-amber-400" />
-              <h3 className="font-outfit text-xl font-semibold">Cota em dívida</h3>
+              <h3 className="font-outfit text-xl font-semibold">Cotas por regularizar</h3>
             </div>
-            <p className="text-sm text-slate-300 mb-5" data-testid="socio-quota-prompt-text">
-              Tens a cota de <strong className="text-amber-300">{quotaPrompt.label}</strong> ({euro(quotaPrompt.amount)}) em dívida. Queres pagar a cota em dívida junto a este pedido?
+            <p className="text-sm text-slate-300 mb-3" data-testid="socio-quota-prompt-text">
+              Tens <strong className="text-amber-300">{quotaPrompt.list.length} cota(s) por regularizar</strong>. Antes do consumo, queres juntar alguma(s) cota(s) a este pedido (pagas todas juntas no balcão)?
             </p>
+            <div className="space-y-1.5 mb-5 max-h-48 overflow-y-auto" data-testid="socio-quota-prompt-list">
+              {quotaPrompt.list.map((q) => {
+                const on = quotaSel.includes(q.month);
+                return (
+                  <label
+                    key={q.month}
+                    className={`flex items-center gap-3 rounded-lg border px-3 py-2.5 cursor-pointer transition-colors ${on ? "bg-amber-500/10 border-amber-500/40" : "bg-slate-950/60 border-slate-800 hover:border-slate-700"}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={() => setQuotaSel(on ? quotaSel.filter((x) => x !== q.month) : [...quotaSel, q.month])}
+                      className="w-4 h-4 accent-amber-500"
+                      data-testid={`socio-quota-prompt-check-${q.month}`}
+                    />
+                    <span className="flex-1 text-sm font-medium text-slate-200">{q.label}</span>
+                    <span className="text-sm font-bold text-amber-300">{euro(q.amount)}</span>
+                  </label>
+                );
+              })}
+            </div>
             <div className="flex gap-2">
               <button
                 data-testid="socio-quota-prompt-no"
-                onClick={() => openRequestAfterQuota(false)}
+                onClick={() => openRequestAfterQuota([])}
                 className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium"
               >
-                Não
+                Só o consumo
               </button>
               <button
                 data-testid="socio-quota-prompt-yes"
-                onClick={() => openRequestAfterQuota(true)}
-                className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold"
+                disabled={!quotaSel.length}
+                onClick={() => openRequestAfterQuota(quotaSel)}
+                className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold"
               >
-                Sim, juntar cota
+                Juntar {quotaSel.length ? `${quotaSel.length} cota(s)` : ""} ao pedido
               </button>
             </div>
           </div>
