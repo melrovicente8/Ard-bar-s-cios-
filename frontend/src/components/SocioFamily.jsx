@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from "react";
-import { Users, Plus, CalendarBlank, Warning, User, Check } from "@phosphor-icons/react";
+import { Users, Plus, CalendarBlank, Warning, User, Check, ShieldCheck } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 
 const MONTHS_PT = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+
+const LIMITS_PT = [2, 5, 10, 15, 20, 30];
 
 /**
  * Agregado familiar do titular — dependentes, inscrição e pagamento de quotas por MBWay.
@@ -50,6 +52,20 @@ export default function SocioFamily({ titular, onClose }) {
       const cur = s[depId] || [];
       return { ...s, [depId]: cur.includes(month) ? cur.filter((m) => m !== month) : [...cur, month] };
     });
+  };
+
+  const saveLimit = async (dep, value) => {
+    try {
+      const { data } = await api.post("/socio/family/limit", { dependent_id: dep.id, consumption_limit: value });
+      toast.success(
+        value
+          ? `Limite de consumo de ${dep.name}: ${euro(value)}/mês (usado: ${euro(data.used_this_month)})`
+          : `Limite de ${dep.name} removido — sem limite`
+      );
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
   };
 
   const payQuotas = async (dep) => {
@@ -155,6 +171,49 @@ export default function SocioFamily({ titular, onClose }) {
                     <div className={`text-sm font-bold ${unpaid.length ? "text-amber-300" : "text-emerald-300"}`}>
                       {quotas.filter((q) => q.status === "paid").length}/{quotas.length || 12}
                     </div>
+                  </div>
+                </div>
+                {/* Limite de consumo mensal — definido pelo titular */}
+                <div className="mt-3 pt-3 border-t border-slate-800" data-testid={`socio-family-limit-${d.id}`}>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5 flex items-center gap-1">
+                    <ShieldCheck size={11} weight="duotone" className="text-teal-400" /> Limite de consumo mensal — definido pelo titular
+                  </div>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <span className="text-[11px] text-slate-400">
+                      Usado este mês: <span className="text-amber-300 font-bold">{euro(d.used_this_month || 0)}</span>
+                      {d.consumption_limit ? <> / <span className="text-teal-300 font-bold">{euro(d.consumption_limit)}</span></> : " · sem limite"}
+                    </span>
+                    <div className="flex items-center gap-1 flex-wrap">
+                      {LIMITS_PT.map((v) => (
+                        <button
+                          key={v}
+                          type="button"
+                          data-testid={`socio-family-limit-${d.id}-${v}`}
+                          onClick={() => saveLimit(d, v)}
+                          className={`text-[10px] px-1.5 py-1 rounded border font-bold transition-colors ${
+                            Number(d.consumption_limit) === v
+                              ? "bg-teal-500 text-slate-950 border-teal-500"
+                              : "bg-slate-900 text-slate-300 border-slate-800 hover:border-teal-500/50"
+                          }`}
+                        >
+                          {v} €
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => saveLimit(d, null)}
+                        className={`text-[10px] px-1.5 py-1 rounded border font-bold transition-colors ${
+                          !d.consumption_limit
+                            ? "bg-slate-700 text-white border-slate-600"
+                            : "bg-slate-900 text-slate-400 border-slate-800 hover:border-slate-600"
+                        }`}
+                      >
+                        Sem limite
+                      </button>
+                    </div>
+                  </div>
+                  <div className="text-[10px] text-slate-600 mt-1.5">
+                    Menor tutelado: só pode pedir bebidas não alcoólicas, comida de cozinha ou snacks e gomas/doces.
                   </div>
                 </div>
                 <div className="mt-3">

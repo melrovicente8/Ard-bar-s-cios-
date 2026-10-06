@@ -31,6 +31,8 @@ import {
   CalendarBlank,
   Crown,
   Key,
+  Users,
+  ShieldCheck,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
@@ -685,6 +687,16 @@ export default function ClienteFicha() {
                   Não-sócio
                 </span>
               )}
+              {(c.is_minor || c.family_head_client_id) && (
+                <span
+                  className="px-3 py-1 rounded-full text-xs font-bold bg-sky-500/15 text-sky-300 border border-sky-500/30 flex items-center gap-1.5"
+                  data-testid="ficha-minor-badge"
+                  title="Menor tutelado: só pode pedir bebidas não alcoólicas, comida de cozinha, snacks e gomas/doces"
+                >
+                  <Users size={14} weight="duotone" />
+                  Menor de idade · Tutela de sócio titular{c.family_head_name ? `: ${c.family_head_name}` : ""}
+                </span>
+              )}
               {c.direction_role && (
                 <span
                   className="px-3 py-1 rounded-full text-xs font-bold bg-purple-500/15 text-purple-300 border border-purple-500/30 flex items-center gap-1.5"
@@ -712,6 +724,17 @@ export default function ClienteFicha() {
             {c.birthday && (
               <div className="text-xs text-slate-400 mt-1" data-testid="ficha-bday">
                 Data de nascimento: <span className="text-slate-300 font-medium">{new Date(c.birthday).toLocaleDateString("pt-PT")}</span>
+              </div>
+            )}
+            {(c.is_minor || c.family_head_client_id) && (
+              <div className="text-xs text-slate-400 mt-1 flex items-center gap-1.5" data-testid="ficha-minor-tutela">
+                <ShieldCheck size={13} weight="duotone" className="text-teal-400" />
+                <span>
+                  Tutela de sócio titular{c.family_head_name ? ` — ${c.family_head_name}${c.family_head_member_number ? ` (nº ${c.family_head_member_number})` : ""}` : ""} ·
+                  Limites de consumo definidos pelo titular · Limite mensal:{" "}
+                  <span className="text-slate-300 font-medium">{c.consumption_limit ? euro(c.consumption_limit) : "sem limite"}</span> ·
+                  <span className="text-sky-300 font-medium"> só bebidas não alcoólicas, comida, snacks e gomas/doces</span>
+                </span>
               </div>
             )}
             {(c.contact || c.email || c.morada) && (

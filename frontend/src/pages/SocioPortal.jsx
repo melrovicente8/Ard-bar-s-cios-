@@ -158,7 +158,8 @@ export default function SocioPortal() {
     );
   }
 
-  const { client: c, sales, payments, mbway } = data;
+  const { client: c, sales, payments, mbway, family } = data;
+  const isMinor = !!(c.is_minor || c.family_head_client_id);
   // Épsilon: resíduos de vírgula flutuante (ex.: 4e-16) não são dívida
   const debt = (c.balance || 0) > 0.004 ? c.balance : 0;
 
@@ -664,9 +665,37 @@ export default function SocioPortal() {
                   </span>
                 )}
               </div>
-              <p className="text-sm text-slate-400 mt-1">
-                Conta corrente do bar · {club.name || "ARD Nespereira"}
-              </p>
+              <div className="flex items-center gap-3 mt-1 flex-wrap">
+                <p className="text-sm text-slate-400">
+                  Conta corrente do bar · {club.name || "ARD Nespereira"}
+                </p>
+                {barOpen !== false && (
+                  <button
+                    data-testid="socio-hero-request-btn"
+                    onClick={loadRequest}
+                    title="Pedir consumo no bar"
+                    className="px-4 py-1.5 rounded-lg text-sm font-bold bg-emerald-500 text-slate-950 hover:bg-emerald-400 shadow-lg shadow-emerald-500/25 flex items-center gap-1.5 transition-all hover:scale-[1.03] active:scale-95"
+                  >
+                    <Plus size={15} weight="bold" /> Pedir consumo
+                  </button>
+                )}
+              </div>
+              {isMinor && family && (
+                <div className="flex items-center gap-2 mt-2 flex-wrap" data-testid="socio-minor-badge">
+                  <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-sky-500/15 text-sky-300 border border-sky-500/30 flex items-center gap-1.5">
+                    <Users size={12} weight="duotone" />
+                    Menor de idade · Tutela de sócio titular{family.head?.name ? ` · ${family.head.name}` : ""}
+                  </span>
+                  <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-teal-500/15 text-teal-300 border border-teal-500/30 flex items-center gap-1.5">
+                    {family.restriction}
+                  </span>
+                  {family.consumption_limit ? (
+                    <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
+                      Limite do titular: {euro(family.used_this_month)} / {euro(family.consumption_limit)} este mês
+                    </span>
+                  ) : null}
+                </div>
+              )}
               {c.direction_role && (
                 <div className="flex items-center gap-2 mt-2" data-testid="socio-direction">
                   <span className="px-2.5 py-1 rounded-full text-[11px] font-bold bg-purple-500/15 text-purple-300 border border-purple-500/30 flex items-center gap-1.5">
@@ -1412,6 +1441,13 @@ export default function SocioPortal() {
               <h3 className="font-outfit text-xl font-semibold">{editingReq ? "Editar pedido" : "Pedir consumo"}</h3>
             </div>
             <p className="text-xs text-slate-400 mb-3">O pedido vai para o staff validar. Quando aprovado, é lançado na tua conta.</p>
+            {isMinor && (
+              <div className="mb-3 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-200 font-semibold flex items-center gap-2" data-testid="req-minor-hint">
+                <Users size={14} weight="duotone" className="shrink-0" />
+                <span>{family?.restriction || "Menor tutelado: só podes pedir bebidas não alcoólicas, comida, snacks e gomas/doces."}
+                  {family?.consumption_limit ? <> Limite do titular: {euro(family.used_this_month)} / {euro(family.consumption_limit)} este mês.</> : null}</span>
+              </div>
+            )}
 
             {/* Os 5 itens mais pedidos deste sócio — venda rápida */}
             {top5.length > 0 && !editingReq && (

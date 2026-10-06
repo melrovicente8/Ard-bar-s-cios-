@@ -102,6 +102,8 @@ class ClientIn(BaseModel):
     pin: Optional[str] = None  # set by admin/tesoureiro to enable sócio portal login
     credit_limit: Optional[float] = None  # teto de fiado (None = sem limite)
     family_head_client_id: Optional[str] = None  # dependente do agregado familiar
+    is_minor: bool = False  # menor de idade com tutela de sócio titular
+    consumption_limit: Optional[float] = None  # limite de consumo mensal definido pelo titular (€/mês)
     direction_role: Optional[str] = None  # cargo na direção (ex.: "Presidente da Direção")
     direction_history: Optional[List[dict]] = None  # [{role, start_year, end_year}]
 
@@ -116,6 +118,8 @@ class ClientUpdate(BaseModel):
     pin: Optional[str] = None
     credit_limit: Optional[float] = None
     family_head_client_id: Optional[str] = None
+    is_minor: Optional[bool] = None
+    consumption_limit: Optional[float] = None
     direction_role: Optional[str] = None
     direction_history: Optional[List[dict]] = None
 
@@ -558,6 +562,8 @@ async def create_client(body: ClientIn, user: dict = Depends(get_current_user)):
         "total_spent": 0.0,
         "credit_limit": body.credit_limit,
         "family_head_client_id": body.family_head_client_id if role in ("admin", "tesoureiro") else None,
+        "is_minor": bool(body.is_minor) if role in ("admin", "tesoureiro") else False,
+        "consumption_limit": body.consumption_limit if role in ("admin", "tesoureiro") else None,
         "direction_role": body.direction_role if role in ("admin", "tesoureiro", "presidente") else None,
         "direction_history": body.direction_history if role in ("admin", "tesoureiro", "presidente") else None,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -589,9 +595,9 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
             allowed = allowed | {"name"}
         if any(k not in allowed for k in raw.keys()):
             raise HTTPException(status_code=403, detail="Funcionários só podem editar nome (se não-sócio), contacto, email e morada")
-    # PIN, is_member e member_number só podem ser definidos por admin/tesoureiro
+    # PIN, is_member, member_number, tutela de menor e limite de consumo só por admin/tesoureiro
     update = dict(raw)
-    sensitive = {"pin", "is_member", "member_number"}
+    sensitive = {"pin", "is_member", "member_number", "is_minor", "family_head_client_id"}
     if any(k in update for k in sensitive) and user.get("role") not in ("admin", "tesoureiro"):
         raise HTTPException(status_code=403, detail="Sem permissão para alterar estes campos")
     existing_doc = await db.clients.find_one({"id": client_id}, {"_id": 0})
@@ -657,6 +663,10 @@ async def client_detail(client_id: str, user: dict = Depends(get_current_user)):
         c.pop("pin_visible", None)
     c["quota_status"] = await _quota_overall_status(client_id)
     c["has_paid_prev_quota"] = bool(c["quota_status"] and c["quota_status"].get("status") == "paid")
+    if c.get("is_minor") or c.get("family_head_client_id"):
+        h = await db.clients.find_one({"id": c.get("family_head_client_id")}, {"_id": 0, "name": 1, "member_number": 1})
+        c["family_head_name"] = h.get("name") if h else None
+        c["family_head_member_number"] = h.get("member_number") if h else None
     sales = await db.sales.find({"client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
     payments = await db.payments.find({"client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
     # Consumption breakdown
@@ -2635,7 +2645,20 @@ async def socio_me(socio: dict = Depends(get_current_socio)):
     sales = await db.sales.find({"client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
     payments = await db.payments.find({"client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
     mbway = await db.mbway_payments.find({"client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
-    return {"client": socio, "sales": sales, "payments": payments, "mbway": mbway}
+    family = None
+    if _is_minor_client(socio):
+        head = None
+        if socio.get("family_head_client_id"):
+            h = await db.clients.find_one({"id": socio["family_head_client_id"]}, {"_id": 0, "name": 1, "member_number": 1})
+            if h:
+                head = {"name": h.get("name"), "member_number": h.get("member_number")}
+        family = {
+            "head": head,
+            "restriction": MINOR_RESTRICTION_TEXT,
+            "consumption_limit": socio.get("consumption_limit"),
+            "used_this_month": await _monthly_consumption(socio["id"]),
+        }
+    return {"client": socio, "sales": sales, "payments": payments, "mbway": mbway, "family": family}
 
 @api_router.put("/socio/me")
 async def socio_update_me(body: SocioUpdateIn, socio: dict = Depends(get_current_socio)):
@@ -2820,14 +2843,17 @@ async def socio_list_products(exclude_request_id: Optional[str] = None, socio: d
             if pid.startswith("quota-"):
                 continue
             reserved[pid] = reserved.get(pid, 0) + int(it.get("quantity", 0))
+    if _is_minor_client(socio):
+        items = [p for p in items if _minor_product_allowed(p)]
     for p in items:
         p["available_quantity"] = max(int(p.get("quantity", 0)) - reserved.get(p["id"], 0), 0)
     return [p for p in items if p["available_quantity"] > 0]
 
 
-async def _build_request_line_items(items, client_id: str) -> list:
+async def _build_request_line_items(items, client_id: str, minor: bool = False) -> list:
     """Constrói line_items de um pedido de consumo; aceita pseudo-produto de cota ('quota-YYYY-MM')
-    para o sócio pagar a cota em dívida junto ao pedido."""
+    para o sócio pagar a cota em dívida junto ao pedido.
+    Menores tutelados só podem pedir bebidas não alcoólicas, comida, snacks e gomas/doces."""
     pids = [it.product_id for it in items if not it.product_id.startswith("quota-")]
     prods = await db.products.find({"id": {"$in": pids}}, {"_id": 0}).to_list(len(pids))
     pmap = {p["id"]: p for p in prods}
@@ -2867,6 +2893,8 @@ async def _build_request_line_items(items, client_id: str) -> list:
             raise HTTPException(status_code=400, detail=f"'{prod['name']}' está indisponível")
         if prod.get("is_food") and not _food_window_open():
             raise HTTPException(status_code=400, detail=f"'{prod['name']}' (comida) só pode ser pedida entre as 16h e as 20h")
+        if minor and not _minor_product_allowed(prod):
+            raise HTTPException(status_code=403, detail=f"'{prod['name']}' não é permitido a menores tutelados — {MINOR_RESTRICTION_TEXT}")
         sub = float(prod["price"]) * int(it.quantity)
         total += sub
         line_items.append({
@@ -2877,6 +2905,57 @@ async def _build_request_line_items(items, client_id: str) -> list:
             "subtotal": sub,
         })
     return line_items
+
+
+# ---------- Menores tutelados (agregado familiar) ----------
+# Um menor tutelado por um sócio titular só pode pedir: bebidas não alcoólicas,
+# comida de cozinha ou snacks e gomas/doces. Bebidas alcoólicas (Cerveja, Vinho,
+# Licor e a categoria genérica "Bebida"), merchandising e encomendas ficam de fora.
+MINOR_ALLOWED_CATEGORIES = {
+    "Água", "Refrigerante", "Energética", "Café", "Chá", "Sumo", "Sumos",
+    "Snacks", "Comida", "Gomas", "Gomas/Doces", "Doces", "Gelados", "Lacticínios",
+}
+
+
+def _is_minor_client(client: dict) -> bool:
+    """Menor tutelado: ficha marcada is_minor ou ligada a um titular do agregado."""
+    return bool(client.get("is_minor")) or bool(client.get("family_head_client_id"))
+
+
+def _minor_product_allowed(prod: dict) -> bool:
+    return (prod.get("category") or "Outros") in MINOR_ALLOWED_CATEGORIES
+
+
+MINOR_RESTRICTION_TEXT = "Só podes pedir bebidas não alcoólicas, comida de cozinha, snacks e gomas/doces."
+
+
+async def _monthly_consumption(client_id: str) -> float:
+    """Consumo do mês corrente: vendas + pedidos de consumo ainda pendentes."""
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    used = 0.0
+    async for s in db.sales.find({"client_id": client_id, "created_at": {"$gte": month_start}}, {"total": 1}):
+        used += float(s.get("total", 0) or 0)
+    async for r in db.consumption_requests.find({"client_id": client_id, "status": "pending", "created_at": {"$gte": month_start}}, {"total": 1}):
+        used += float(r.get("total", 0) or 0)
+    return round(used, 2)
+
+
+async def _check_minor_limit(client_id: str, new_total: float):
+    """Limite de consumo mensal do menor, definido pelo titular (consumption_limit)."""
+    c = await db.clients.find_one({"id": client_id}, {"consumption_limit": 1, "family_head_client_id": 1, "name": 1})
+    if not c or not c.get("family_head_client_id"):
+        return
+    limit = c.get("consumption_limit")
+    if limit in (None, "", 0):
+        return  # titular ainda não definiu limite
+    used = await _monthly_consumption(client_id)
+    projected = float(used) + float(new_total)
+    if projected > float(limit) + 1e-9:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Limite de consumo do mês excedido — o titular definiu {float(limit):.2f} €/mês (já usaste {used:.2f} €). Fala com o titular do agregado.",
+        )
 
 
 async def _check_credit_limit(client_id: str, new_total: float):
@@ -2901,8 +2980,11 @@ async def socio_consumption_request(body: SocioConsumptionReqIn, socio: dict = D
         raise HTTPException(status_code=400, detail="Sem itens")
     pids = [it.product_id for it in body.items]
     prods = await db.products.find({"id": {"$in": pids}}, {"_id": 0}).to_list(len(pids))
-    line_items = await _build_request_line_items(body.items, socio["id"])
+    minor = _is_minor_client(socio)
+    line_items = await _build_request_line_items(body.items, socio["id"], minor=minor)
     total = round(sum(li["subtotal"] for li in line_items), 2)
+    if minor:
+        await _check_minor_limit(socio["id"], total)
     await _check_credit_limit(socio["id"], total)
     rid = str(uuid.uuid4())
     doc = {
@@ -4819,8 +4901,33 @@ async def socio_family(socio: dict = Depends(get_current_socio)):
     for d in deps:
         d["quotas"] = await db.quotas.find({"client_id": d["id"]}, {"_id": 0}).sort("year", 1).to_list(50)
         d["quota_status"] = await _quota_overall_status(d["id"])
+        d["used_this_month"] = await _monthly_consumption(d["id"])
         out.append(d)
     return out
+
+
+class DependentLimitIn(BaseModel):
+    dependent_id: str
+    consumption_limit: Optional[float] = None  # None = sem limite
+
+
+@api_router.post("/socio/family/limit")
+async def socio_family_set_limit(body: DependentLimitIn, socio: dict = Depends(get_current_socio)):
+    """Titular define o limite de consumo mensal de um menor do agregado (€/mês)."""
+    dep = await db.clients.find_one({"id": body.dependent_id, "family_head_client_id": socio["id"]}, {"_id": 0})
+    if not dep:
+        raise HTTPException(status_code=404, detail="Dependente não encontrado no teu agregado")
+    lim = body.consumption_limit
+    if lim is not None:
+        if lim < 0:
+            raise HTTPException(status_code=400, detail="Limite inválido")
+        lim = round(float(lim), 2)
+    await db.clients.update_one({"id": dep["id"]}, {"$set": {"consumption_limit": lim}})
+    await _audit(
+        "family_limit_set", socio.get("name") or socio["id"], entity="client", entity_id=dep["id"],
+        summary=f"Limite de consumo de {dep['name']}: {'sem limite' if lim in (None, 0) else f'{lim:.2f} €/mês'}",
+    )
+    return {"ok": True, "dependent_id": dep["id"], "consumption_limit": lim, "used_this_month": await _monthly_consumption(dep["id"])}
 
 
 @api_router.post("/socio/family")
