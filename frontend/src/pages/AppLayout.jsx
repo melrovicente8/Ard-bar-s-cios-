@@ -12,7 +12,6 @@ import {
   Users,
   SignOut,
   SoccerBall,
-  IdentificationCard,
   DeviceMobile,
   ArrowLeft,
   House,
@@ -64,8 +63,7 @@ const navGroups = [
   {
     section: "Clientes",
     items: [
-      { to: "/clientes", label: "Clientes", icon: Users, testid: "nav-clients", roles: [...STAFF_ROLES, "funcionario"] },
-      { to: "/socios", label: "Sócios", icon: IdentificationCard, testid: "nav-socios", roles: ["admin"] },
+      { to: "/clientes", label: "Clientes e Sócios", icon: Users, testid: "nav-clients", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/mbway", label: "MBWay", icon: DeviceMobile, testid: "nav-mbway", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/pedidos", label: "Pedidos sócio", icon: ShoppingCart, testid: "nav-pedidos", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/mensagens", label: "Mensagens", icon: ChatCircle, testid: "nav-mensagens", roles: [...STAFF_ROLES, "funcionario"] },

@@ -26,6 +26,7 @@ export default function Historico() {
     client_id: searchParams.get("client_id") || "",
     status: searchParams.get("status") || "",
   });
+  const [actaDate, setActaDate] = useState(today);
   const [salesData, setSalesData] = useState(null);
   const [auditData, setAuditData] = useState([]);
   const [users, setUsers] = useState([]);
@@ -166,6 +167,88 @@ export default function Historico() {
     w.document.close();
   };
 
+  const printDailyActa = async () => {
+    const day = actaDate || today;
+    try {
+      const [{ data: sales }, { data: audit }] = await Promise.all([
+        api.get("/reports/sales", { params: { date_from: day, date_to: day } }),
+        api.get("/audit-log", { params: { date_from: day, date_to: day } }),
+      ]);
+      const w = window.open("", "_blank");
+      if (!w) return toast.error("Permite popups");
+      const salesRows = (sales.sales || []).map((s) => `
+        <tr>
+          <td>${new Date(s.created_at).toLocaleString("pt-PT")}</td>
+          <td>#${s.tx_number ?? "—"}</td>
+          <td>${s.client_name}</td>
+          <td>${(s.items || []).map((it) => `${it.quantity}× ${it.product_name}`).join(", ")}</td>
+          <td><span class="badge ${s.status}">${STATUS_LABEL[s.status]}</span></td>
+          <td class="right"><strong>${euro(s.total)}</strong></td>
+        </tr>
+      `).join("");
+      const auditRows = (Array.isArray(audit) ? audit : []).map((e) => {
+        const sale = e.sale || e.before;
+        const changes = e.changes || {};
+        const detail = [
+          e.summary,
+          sale ? `${sale.client_name || ""} · ${euro(sale.total || 0)} · ${(sale.items || []).map((it) => `${it.quantity}× ${it.product_name}`).join(", ")}` : "",
+          changes.total !== undefined ? `Total: ${euro(changes.total.before)} → ${euro(changes.total.after)}` : "",
+        ].filter(Boolean).join(" — ");
+        return `<tr><td>${new Date(e.at).toLocaleTimeString("pt-PT")}</td><td>${TYPE_LABEL[e.type] || e.type}</td><td>${e.by}</td><td>${detail}</td></tr>`;
+      }).join("");
+      w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Acta diária · ${day}</title>
+<style>
+  body{font-family:Arial;color:#0f172a;margin:24px;font-size:12px}
+  header{border-bottom:3px solid #15803d;padding-bottom:12px;margin-bottom:16px}
+  .brand{font-size:20px;font-weight:800;color:#15803d;letter-spacing:.15em}
+  .sub{font-size:10px;letter-spacing:.3em;color:#666}
+  h1{font-size:16px;margin:6px 0}
+  h2{font-size:13px;margin:18px 0 6px}
+  table{width:100%;border-collapse:collapse;margin-top:8px}
+  th,td{padding:6px 8px;border-bottom:1px solid #e5e7eb;text-align:left;font-size:11px;vertical-align:top}
+  th{background:#f3f4f6;text-transform:uppercase;letter-spacing:.08em;font-size:10px}
+  .right{text-align:right}
+  .badge{font-size:9px;padding:2px 6px;border-radius:10px;border:1px solid;font-weight:700}
+  .paid{background:#dcfce7;color:#166534;border-color:#86efac}
+  .partial{background:#fef3c7;color:#92400e;border-color:#fcd34d}
+  .open{background:#fee2e2;color:#991b1b;border-color:#fca5a5}
+  .totals{display:flex;gap:12px;margin-top:14px}
+  .card{flex:1;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:10px}
+  .card .lbl{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.15em}
+  .card .val{font-size:16px;font-weight:800;margin-top:3px}
+  .meta{font-size:11px;color:#555}
+  @media print{button{display:none}body{margin:10mm}}
+</style></head><body>
+  <header>
+    <div class="brand">${sales.club_name || "ARD Nespereira"}</div>
+    <div class="sub">ACTA DIÁRIA · TRANSAÇÕES E REGISTOS</div>
+    <h1>Dia: ${new Date(day + "T12:00:00").toLocaleDateString("pt-PT", { weekday: "long", day: "2-digit", month: "long", year: "numeric" })}</h1>
+    <div class="meta">Emitido em ${new Date().toLocaleString("pt-PT")}</div>
+  </header>
+  <div class="totals">
+    <div class="card"><div class="lbl">Vendas do dia</div><div class="val">${sales.totals?.count ?? 0}</div></div>
+    <div class="card"><div class="lbl">Total faturado</div><div class="val">${euro(sales.totals?.amount || 0)}</div></div>
+    <div class="card"><div class="lbl">Registos de auditoria</div><div class="val">${(Array.isArray(audit) ? audit : []).length}</div></div>
+  </div>
+  <h2>Transações do dia</h2>
+  <table>
+    <thead><tr><th>Hora</th><th>Nº</th><th>Cliente</th><th>Itens</th><th>Estado</th><th class="right">Total</th></tr></thead>
+    <tbody>${salesRows || `<tr><td colspan="6" style="text-align:center;color:#666;padding:16px">Sem transações neste dia</td></tr>`}</tbody>
+  </table>
+  <h2>Registos e operações (audit log)</h2>
+  <table>
+    <thead><tr><th>Hora</th><th>Tipo</th><th>Utilizador</th><th>Detalhes</th></tr></thead>
+    <tbody>${auditRows || `<tr><td colspan="4" style="text-align:center;color:#666;padding:16px">Sem registos neste dia</td></tr>`}</tbody>
+  </table>
+  <p style="margin-top:18px;text-align:center"><button onclick="window.print()">Imprimir / Guardar PDF</button></p>
+  <script>setTimeout(()=>window.print(),300);</script>
+</body></html>`);
+      w.document.close();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
   const printAuditReport = () => {
     if (!auditData.length) return toast.error("Sem registos para imprimir");
     const w = window.open("", "_blank");
@@ -228,6 +311,25 @@ export default function Historico() {
           onClick={() => setTab("audit")}
           className={`px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider ${tab === "audit" ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"}`}
         >Audit log</button>
+      </div>
+
+      {/* Acta diária (PDF) */}
+      <div className="flex flex-wrap items-center gap-2 mb-6" data-testid="daily-acta-bar">
+        <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Acta diária</label>
+        <input
+          data-testid="acta-date"
+          type="date"
+          value={actaDate}
+          onChange={(e) => setActaDate(e.target.value)}
+          className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm"
+        />
+        <button
+          data-testid="acta-daily-btn"
+          onClick={printDailyActa}
+          className="bg-slate-800 hover:bg-slate-700 text-slate-100 rounded-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border border-slate-700"
+        >
+          <Printer size={14} weight="duotone" /> Abrir acta (PDF)
+        </button>
       </div>
 
       {/* Filtros */}

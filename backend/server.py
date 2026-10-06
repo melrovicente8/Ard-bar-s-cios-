@@ -505,6 +505,21 @@ async def list_replenishments(user: dict = Depends(get_current_user)):
 @api_router.get("/clients")
 async def list_clients(user: dict = Depends(get_current_user)):
     items = await db.clients.find({}, {"_id": 0, "pin_hash": 0}).sort("name", 1).to_list(2000)
+    # Enriquecer com resumo de cotas do ano corrente (X/12 pagas) — página Clientes unificada
+    year = datetime.now(timezone.utc).year
+    ids = [c["id"] for c in items]
+    quotas = await db.quotas.find(
+        {"client_id": {"$in": ids}, "year": year, "status": "paid"},
+        {"_id": 0, "client_id": 1},
+    ).to_list(50000)
+    paid_count: dict = {}
+    for q in quotas:
+        paid_count[q["client_id"]] = paid_count.get(q["client_id"], 0) + 1
+    for c in items:
+        c["quotas_paid"] = paid_count.get(c["id"], 0)
+        c["quotas_total"] = 12
+        c["quotas_year"] = year
+        c["quotas_up_to_date"] = paid_count.get(c["id"], 0) >= 12
     return items
 
 @api_router.post("/clients")
@@ -2365,6 +2380,95 @@ async def pay_quotas(body: QuotaPayIn, user: dict = Depends(get_current_user)):
     await _audit("quota_bill", user["email"], entity="client", entity_id=body.client_id, summary=f"Cotas {body.year} ({', '.join(MONTHS_PT[m-1] for m in body.months)}) lançadas na conta corrente · {total:.2f} € · tx #{tx_no}")
     sale.pop("_id", None)
     return {"sale": sale}
+
+class QuotaBulkLaunchIn(BaseModel):
+    year: int
+    months: List[int]
+    note: str = ""
+
+@api_router.post("/quotas/bulk-launch")
+async def bulk_launch_quotas(body: QuotaBulkLaunchIn, user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
+    """Direção (mandato): lança as cotas de TODOS os sócios na CONTA CORRENTE
+    (venda com nº de transação) e regista de imediato o pagamento —
+    as cotas ficam 'paid', o saldo da conta corrente volta a zero."""
+    if not body.months:
+        raise HTTPException(status_code=400, detail="Sem meses selecionados")
+    members = await db.clients.find({"is_member": True}, {"_id": 0}).to_list(5000)
+    launched = []
+    skipped = []
+    total_amount = 0.0
+    for c in sorted(members, key=lambda x: (x.get("member_number") or "999999")):
+        taken = await db.quotas.find(
+            {"client_id": c["id"], "year": body.year, "month": {"$in": body.months},
+             "status": {"$in": ["paid", "billed"]}, "reversed": {"$ne": True}},
+            {"_id": 0, "month": 1},
+        ).to_list(20)
+        months = [m for m in body.months if m not in {t["month"] for t in taken}]
+        if not months:
+            skipped.append(c["name"])
+            continue
+        total = round(QUOTA_MONTHLY_VALUE * len(months), 2)
+        sale_id = str(uuid.uuid4())
+        tx_no = await _next_tx_number()
+        items = [{
+            "product_id": f"quota-{body.year}-{m:02d}",
+            "product_name": f"Cota {MONTHS_PT[m-1]}/{body.year}",
+            "unit_price": QUOTA_MONTHLY_VALUE,
+            "quantity": 1,
+            "subtotal": QUOTA_MONTHLY_VALUE,
+        } for m in months]
+        sale = {
+            "id": sale_id,
+            "tx_number": tx_no,
+            "client_id": c["id"],
+            "client_name": c["name"],
+            "items": items,
+            "total": total,
+            "points_earned": 0,
+            "is_member_at_sale": True,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "user_email": user["email"],
+            "source": "quota",
+        }
+        await db.sales.insert_one(sale)
+        # pagamento imediato da venda de cotas (contas liquidadas)
+        pay_tx = await _next_tx_number()
+        pay = {
+            "id": str(uuid.uuid4()),
+            "tx_number": pay_tx,
+            "client_id": c["id"],
+            "client_name": c["name"],
+            "amount": total,
+            "tendered": total,
+            "points_used": 0,
+            "points_value": 0.0,
+            "total_credited": total,
+            "change_returned": 0.0,
+            "keep_change_as_credit": False,
+            "tip": 0.0,
+            "sale_ids": [sale_id],
+            "sale_tx_numbers": [tx_no],
+            "item_targets": None,
+            "offer_amount": 0.0,
+            "note": body.note or f"Lançamento de cotas {body.year} pago pela direção",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "user_email": user["email"],
+            "source": "cash",
+        }
+        await db.payments.insert_one(pay)
+        await db.clients.update_one({"id": c["id"]}, {"$inc": {"balance": -total, "total_spent": total}})
+        await _sync_quota_paid_status(c["id"])
+        total_amount += total
+        launched.append({
+            "client_id": c["id"], "client": c["name"], "member_number": c.get("member_number"),
+            "months": months, "amount": total, "tx_number": tx_no,
+        })
+    if launched:
+        await _audit(
+            "quota_bulk_launch", user["email"], entity="quota",
+            summary=f"Direção {body.year}: cotas {', '.join(MONTHS_PT[m-1] for m in body.months)} lançadas e pagas a {len(launched)} sócios · {total_amount:.2f} €",
+        )
+    return {"year": body.year, "months": body.months, "launched": launched, "skipped": skipped, "total": round(total_amount, 2)}
 
 class QuotaReverseIn(BaseModel):
     client_id: str

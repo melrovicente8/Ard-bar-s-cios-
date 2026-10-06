@@ -1,19 +1,24 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
-import { Plus, User, ArrowRight, MagnifyingGlass, Trash, Medal } from "@phosphor-icons/react";
+import { Plus, User, ArrowRight, MagnifyingGlass, Trash, Medal, Funnel, Star, SealCheck } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
+import MessageModal from "../components/MessageModal";
+import QuotaBulkLaunchModal from "../components/QuotaBulkLaunchModal";
 
 export default function Clientes() {
   const { user } = useAuth();
   const canDelete = user?.role === "admin";
+  const canManageQuotas = ["admin", "tesoureiro", "presidente"].includes(user?.role);
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
+  const [msgTarget, setMsgTarget] = useState(null);
+  const [showQuotaLaunch, setShowQuotaLaunch] = useState(false);
   const [search, setSearch] = useState("");
-  const [filterType, setFilterType] = useState("all"); // all | socios | clientes
-  const [sortKey, setSortKey] = useState("name"); // name | number | activity
+  const [filterType, setFilterType] = useState("all"); // all | socios | clientes | uptodate | notuptodate | debt
+  const [sortKey, setSortKey] = useState("name"); // name | number | activity | total_points
   const [viewMode, setViewMode] = useState("grid"); // grid | list
   const [form, setForm] = useState({ name: "", contact: "", email: "", note: "", member_number: "", is_member: false, morada: "", pin: "" });
 
@@ -64,10 +69,22 @@ export default function Clientes() {
     }
   };
 
+  const year = new Date().getFullYear();
+  const stats = (() => {
+    const socios = clients.filter((c) => c.is_member || c.member_number);
+    const uptodate = socios.filter((c) => c.quotas_up_to_date).length;
+    const debt = socios.reduce((s, c) => s + Math.max(c.balance || 0, 0), 0);
+    const points = clients.reduce((s, c) => s + (c.points || 0), 0);
+    return { total: socios.length, uptodate, behind: socios.length - uptodate, debt, points };
+  })();
+
   const q = search.trim().toLowerCase();
   const byType = (c) => {
     if (filterType === "socios") return !!(c.is_member || c.member_number);
     if (filterType === "clientes") return !c.is_member && !c.member_number;
+    if (filterType === "uptodate") return !!c.quotas_up_to_date;
+    if (filterType === "notuptodate") return !!(c.is_member || c.member_number) && !c.quotas_up_to_date;
+    if (filterType === "debt") return (c.balance || 0) > 0.004;
     return true;
   };
   const filtered = clients
@@ -107,6 +124,9 @@ export default function Clientes() {
       if (sortKey === "points") {
         return (b.points || 0) - (a.points || 0);
       }
+      if (sortKey === "total_points") {
+        return ((b.total_points_earned || 0) - (a.total_points_earned || 0)) || ((b.points || 0) - (a.points || 0));
+      }
       return a.name.localeCompare(b.name, "pt");
     });
 
@@ -118,16 +138,35 @@ export default function Clientes() {
             Diretório
           </div>
           <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">
-            Clientes
+            Clientes e Sócios
           </h1>
         </div>
-        <button
-          data-testid="add-client-btn"
-          onClick={() => setShowAdd(true)}
-          className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-5 py-2.5 rounded-lg flex items-center gap-2 transition-colors"
-        >
-          <Plus size={18} weight="bold" /> Novo cliente
-        </button>
+        <div className="flex items-center gap-2">
+          {canManageQuotas && (
+            <button
+              data-testid="quota-launch-btn"
+              onClick={() => setShowQuotaLaunch(true)}
+              className="bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 font-bold px-4 py-2.5 rounded-lg flex items-center gap-2 transition-colors"
+            >
+              <SealCheck size={18} weight="fill" /> Lançar cotas {year}
+            </button>
+          )}
+          <button
+            data-testid="add-client-btn"
+            onClick={() => setShowAdd(true)}
+            className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-5 py-2.5 rounded-lg flex items-center gap-2 transition-colors"
+          >
+            <Plus size={18} weight="bold" /> Novo cliente
+          </button>
+        </div>
+      </div>
+
+      {/* Estatísticas de sócios e cotas (da antiga aba Sócios) */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <StatBox label={`Sócios c/ cotas ${year} em dia`} value={stats.uptodate} accent="bg-green-500/10 text-green-300" />
+        <StatBox label="Cotas em atraso" value={stats.behind} accent="bg-amber-500/10 text-amber-300" />
+        <StatBox label="A receber" value={euro(stats.debt)} accent="bg-rose-500/10 text-rose-300" />
+        <StatBox label="Pontos atribuídos" value={stats.points} accent="bg-amber-500/10 text-amber-300" />
       </div>
 
       <div className="flex flex-col md:flex-row md:items-center gap-3 mb-5">
@@ -146,6 +185,9 @@ export default function Clientes() {
             { v: "all", label: "Todos" },
             { v: "socios", label: "Sócios" },
             { v: "clientes", label: "Clientes" },
+            { v: "uptodate", label: "Cotas em dia" },
+            { v: "notuptodate", label: "Cotas em atraso" },
+            { v: "debt", label: "Com dívida" },
           ].map((opt) => (
             <button
               key={opt.v}
@@ -175,6 +217,7 @@ export default function Clientes() {
           <option value="debt">A pagar</option>
           <option value="total">Total</option>
           <option value="points">Pontos</option>
+          <option value="total_points">Pontos totais</option>
         </select>
         <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900/60 p-1" data-testid="clientes-view-toggle">
           {[
@@ -211,6 +254,7 @@ export default function Clientes() {
                 <tr className="text-slate-500 text-xs uppercase tracking-wider bg-slate-950/40">
                   <th className="px-4 py-3 font-medium">Nome</th>
                   <th className="px-4 py-3 font-medium">Estatuto</th>
+                  <th className="px-4 py-3 font-medium">Cotas {year}</th>
                   <th className="px-4 py-3 font-medium">Contacto</th>
                   <th className="px-4 py-3 font-medium text-right">A pagar</th>
                   <th className="px-4 py-3 font-medium text-right">Total</th>
@@ -237,6 +281,17 @@ export default function Clientes() {
                           <span className="text-xs text-slate-400">Não-sócio</span>
                         )}
                       </td>
+                      <td className="px-4 py-2.5" data-testid={`quotas-cell-${c.id}`}>
+                        {c.is_member || c.member_number ? (
+                          c.quotas_up_to_date ? (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">✓ {c.quotas_paid || 0}/12</span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-200 border border-amber-500/30">{c.quotas_paid || 0}/12</span>
+                          )
+                        ) : (
+                          <span className="text-xs text-slate-600">—</span>
+                        )}
+                      </td>
                       <td className="px-4 py-2.5 text-slate-400 truncate max-w-[160px]">{c.contact || "—"}</td>
                       <td className="px-4 py-2.5 text-right">
                         <span className={debt ? "text-rose-400 font-semibold" : "text-slate-500"}>{euro(Math.max(c.balance || 0, 0))}</span>
@@ -244,11 +299,21 @@ export default function Clientes() {
                       <td className="px-4 py-2.5 text-right text-slate-200">{euro(c.total_spent || 0)}</td>
                       <td className="px-4 py-2.5 text-right text-amber-300 font-bold">{c.points || 0}</td>
                       <td className="px-4 py-2.5 text-right">
-                        {canDelete && (
-                          <button onClick={() => remove(c)} data-testid={`client-delete-list-${c.id}`} className="p-1.5 rounded-md bg-rose-500/10 text-rose-400 hover:bg-rose-500/20">
-                            <Trash size={12} />
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            data-testid={`msg-${c.id}`}
+                            disabled={!c.contact && !c.email}
+                            onClick={() => setMsgTarget(c)}
+                            className="px-3 py-1.5 rounded-md text-xs font-medium bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            Mensagem
                           </button>
-                        )}
+                          {canDelete && (
+                            <button onClick={() => remove(c)} data-testid={`client-delete-list-${c.id}`} className="p-1.5 rounded-md bg-rose-500/10 text-rose-400 hover:bg-rose-500/20">
+                              <Trash size={12} />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -283,6 +348,13 @@ export default function Clientes() {
                         <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-700/50 text-slate-300 border border-slate-600/30">
                           Não-sócio
                         </span>
+                      )}
+                      {(c.is_member || c.member_number) && (
+                        c.quotas_up_to_date ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">✓ {c.quotas_paid || 0}/12</span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-200 border border-amber-500/30">{c.quotas_paid || 0}/12</span>
+                        )
                       )}
                     </div>
                     {c.contact && <div className="text-xs text-slate-500 truncate">{c.contact}</div>}
@@ -323,6 +395,14 @@ export default function Clientes() {
                 </div>
 
                 <div className="mt-4 flex items-center gap-2">
+                  <button
+                    data-testid={`msg-${c.id}`}
+                    disabled={!c.contact && !c.email}
+                    onClick={() => setMsgTarget(c)}
+                    className="px-3 py-2 rounded-lg bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 disabled:opacity-40 text-sm font-medium"
+                  >
+                    Mensagem
+                  </button>
                   <Link
                     to={`/clientes/${c.id}`}
                     data-testid={`client-view-${c.id}`}
@@ -479,6 +559,20 @@ export default function Clientes() {
           </div>
         </div>
       )}
+
+      {msgTarget && <MessageModal client={msgTarget} onClose={() => setMsgTarget(null)} />}
+      {showQuotaLaunch && (
+        <QuotaBulkLaunchModal onClose={() => setShowQuotaLaunch(false)} onDone={load} />
+      )}
+    </div>
+  );
+}
+
+function StatBox({ label, value, accent }) {
+  return (
+    <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-4">
+      <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">{label}</div>
+      <div className={`font-outfit text-2xl font-bold mt-1 rounded-lg inline-block px-2 ${accent}`}>{value}</div>
     </div>
   );
 }
