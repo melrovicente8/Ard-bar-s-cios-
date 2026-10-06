@@ -1409,6 +1409,18 @@ async def reject_consumption_request(req_id: str, user: dict = Depends(get_curre
             "decided_by": user["email"],
         }},
     )
+    # Notificação ao sócio: o pedido foi recusado
+    await db.socio_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "client_id": req["client_id"],
+        "client_name": req["client_name"],
+        "subject": "❌ Pedido recusado",
+        "message": f"O teu pedido ({euro_fmt(req['total'])}) foi recusado pelo staff. Fala com o balcão se tiveres dúvidas.",
+        "from_staff": True,
+        "reply": None,
+        "request_id": req_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
     return {"ok": True}
 
 # ---------- Payments ----------
@@ -2336,6 +2348,35 @@ async def socio_login(body: SocioLoginIn, response: Response):
 async def socio_logout(response: Response):
     response.delete_cookie("socio_token", path="/")
     return {"ok": True}
+
+
+class SocioPinRecoveryIn(BaseModel):
+    member_number: str
+
+
+@api_router.post("/socio/pin-recovery-request")
+async def socio_pin_recovery_request(body: SocioPinRecoveryIn):
+    """Recuperação de PIN: o sócio indica o nº de sócio e fica registado um
+    pedido para a direção/tesouraria (entrega do novo PIN na receção)."""
+    mn = (body.member_number or "").strip()
+    if not mn:
+        raise HTTPException(status_code=400, detail="Indica o teu nº de sócio")
+    c = await db.clients.find_one({"member_number": mn}, {"_id": 0})
+    if c:
+        await db.socio_messages.insert_one({
+            "id": str(uuid.uuid4()),
+            "client_id": c["id"],
+            "client_name": c.get("name") or mn,
+            "subject": "🔑 Pedido de recuperação de PIN",
+            "message": f"O sócio {c.get('name') or mn} (nº {mn}) pediu a recuperação do PIN de acesso ao portal. Atribuir/entregar novo PIN.",
+            "from_staff": False,
+            "reply": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        await _audit("pin_recovery_request", mn, entity="client", entity_id=c["id"],
+                     summary=f"Sócio nº {mn} pediu recuperação de PIN")
+    # Resposta genérica — não revela se o nº existe
+    return {"ok": True, "message": "Pedido enviado. A direção vai tratar do teu PIN — passa na receção do clube."}
 
 async def _maybe_award_birthday(client_id: str):
     """No dia de aniversário: pontos = idade ÷ 4 + mensagem de parabéns com os pontos oferecidos."""
@@ -4158,6 +4199,8 @@ async def socio_balance_quarterly(socio: dict = Depends(get_current_socio)):
         "generated_at": data["generated_at"],
         "club_name": data["club_name"],
         "cash_in_drawer": round(cash_in_drawer, 2),
+        # Saldo bancário do trimestre = depósitos bancários registados no período
+        "bank_balance": round(float(data["expenses"]["cash_withdrawals"] or 0), 2),
     }
 
 

@@ -9,6 +9,7 @@ import {
   MagnifyingGlass,
   Wine,
   Gift,
+  Lightning,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -26,13 +27,19 @@ export default function Vender() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [houseOffer, setHouseOffer] = useState(false);
+  const [topProducts, setTopProducts] = useState([]);
 
   const load = async () => {
     setLoading(true);
     try {
-      const [p, c] = await Promise.all([api.get("/products"), api.get("/clients")]);
+      const [p, c, top] = await Promise.all([
+        api.get("/products"),
+        api.get("/clients"),
+        api.get("/products/top", { params: { limit: 10 } }).catch(() => ({ data: [] })),
+      ]);
       setProducts(p.data);
       setClients(c.data);
+      setTopProducts(top.data || []);
       if (!clientId && c.data.length) setClientId(c.data[0].id);
     } finally {
       setLoading(false);
@@ -189,6 +196,32 @@ export default function Vender() {
           </select>
         </div>
       </div>
+
+      {/* Venda rápida — os 10 itens mais vendidos */}
+      {topProducts.length > 0 && (
+        <div className="mb-6" data-testid="quick-sell-strip">
+          <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-amber-400/80 mb-2 flex items-center gap-1.5">
+            <Lightning size={12} weight="fill" /> Venda rápida · os 10 mais vendidos
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {topProducts.map((p) => (
+              <button
+                key={p.id}
+                data-testid={`quick-sell-${p.id}`}
+                disabled={p.quantity <= 0}
+                onClick={() => add(p)}
+                className="px-3 py-2 rounded-full bg-slate-900/60 border border-slate-800 hover:border-amber-500/40 text-xs flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <span className="font-medium text-slate-200">{p.name}</span>
+                <span className="text-amber-400 font-bold">{euro(p.price)}</span>
+                {inCart(p.id) > 0 && (
+                  <span className="w-4 h-4 rounded-full bg-amber-500 text-slate-950 text-[9px] font-bold flex items-center justify-center">{inCart(p.id)}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Products grid */}

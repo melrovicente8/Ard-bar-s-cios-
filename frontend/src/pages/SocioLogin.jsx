@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useSocio } from "../context/SocioContext";
-import api from "../lib/api";
-import { SoccerBall, IdentificationCard, SignIn, ArrowLeft } from "@phosphor-icons/react";
+import api, { formatApiErrorDetail } from "../lib/api";
+import { toast } from "sonner";
+import { SoccerBall, IdentificationCard, SignIn, ArrowLeft, Key, BookOpen } from "@phosphor-icons/react";
 
 export default function SocioLogin() {
   const { data, login } = useSocio();
@@ -12,6 +13,24 @@ export default function SocioLogin() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [club, setClub] = useState({});
+  const [showRecover, setShowRecover] = useState(false);
+  const [recoverNumber, setRecoverNumber] = useState("");
+  const [recoverLoading, setRecoverLoading] = useState(false);
+
+  const submitRecovery = async (e) => {
+    e.preventDefault();
+    setRecoverLoading(true);
+    try {
+      const { data } = await api.post("/socio/pin-recovery-request", { member_number: recoverNumber });
+      toast.success(data.message || "Pedido enviado");
+      setShowRecover(false);
+      setRecoverNumber("");
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setRecoverLoading(false);
+    }
+  };
 
   useEffect(() => {
     api.get("/club/info").then((r) => setClub(r.data)).catch(() => {});
@@ -118,11 +137,64 @@ export default function SocioLogin() {
             <SignIn size={20} weight="bold" /> {loading ? "A entrar..." : "Entrar"}
           </button>
 
+          <div className="flex items-center justify-center gap-4 text-xs">
+            <button
+              type="button"
+              data-testid="socio-login-recover-btn"
+              onClick={() => setShowRecover(true)}
+              className="text-amber-400 hover:text-amber-300 flex items-center gap-1.5 font-medium"
+            >
+              <Key size={13} weight="duotone" /> Recuperar PIN
+            </button>
+            <span className="text-slate-700">·</span>
+            <a
+              href="/manual.html"
+              target="_blank"
+              rel="noreferrer"
+              data-testid="socio-login-manual-link"
+              className="text-sky-400 hover:text-sky-300 flex items-center gap-1.5 font-medium"
+            >
+              <BookOpen size={13} weight="duotone" /> Manual
+            </a>
+          </div>
+
           <p className="text-xs text-slate-500 text-center">
             Não tens PIN? Pede na receção do clube ou ao tesoureiro.
           </p>
         </form>
       </div>
+
+      {showRecover && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setShowRecover(false)} data-testid="socio-recover-modal">
+          <form onClick={(e) => e.stopPropagation()} onSubmit={submitRecovery} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-sm p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <Key size={22} weight="duotone" className="text-amber-400" />
+              <h3 className="font-outfit text-xl font-semibold">Recuperar PIN</h3>
+            </div>
+            <p className="text-xs text-slate-400">
+              Indica o teu nº de sócio. A direção recebe um pedido e entrega/define o novo PIN na receção do clube.
+            </p>
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Nº de sócio</label>
+              <input
+                data-testid="socio-recover-number"
+                inputMode="numeric"
+                required
+                value={recoverNumber}
+                onChange={(e) => setRecoverNumber(e.target.value)}
+                className="mt-2 w-full bg-slate-950/80 border border-slate-800 rounded-lg px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500"
+                placeholder="Ex: 1982"
+              />
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button type="button" onClick={() => setShowRecover(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 font-medium">Cancelar</button>
+              <button data-testid="socio-recover-submit" type="submit" disabled={recoverLoading} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold disabled:opacity-60">
+                {recoverLoading ? "A enviar..." : "Enviar pedido"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

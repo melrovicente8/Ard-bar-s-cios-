@@ -29,6 +29,12 @@ import {
   Crown,
   ChartLine,
   ArrowClockwise,
+  ShoppingCart,
+  Key,
+  LockSimple,
+  Bell,
+  Lightning,
+  Trash,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import CommunityChat from "../components/CommunityChat";
@@ -83,6 +89,13 @@ export default function SocioPortal() {
   // Financeiro do clube: movimento do mês (todos os sócios) + balanço trimestral (cotas em dia)
   const [monthly, setMonthly] = useState(null);
   const [quarterly, setQuarterly] = useState(null);
+  const [canSeeFinance, setCanSeeFinance] = useState(null);
+  const [myRequests, setMyRequests] = useState([]);
+  const [editingReq, setEditingReq] = useState(null);
+  const [top5, setTop5] = useState([]);
+  const [staffUnread, setStaffUnread] = useState([]);
+  const [showPin, setShowPin] = useState(false);
+  const [pinForm, setPinForm] = useState({ current: "", next: "", confirm: "" });
 
   useEffect(() => {
     api.get("/club/info").then((r) => setClub(r.data)).catch(() => {});
@@ -91,6 +104,10 @@ export default function SocioPortal() {
     api.get("/socio/finance").then((r) => setMonthly(r.data)).catch(() => {});
     // Balanço trimestral — só devolve dados se as cotas estiverem em dia (403 caso contrário)
     api.get("/socio/balance-quarterly").then((r) => setQuarterly(r.data)).catch(() => {});
+    // Cotas em dia? Se não, o sócio não vê saldos do clube — vê aviso
+    api.get("/socio/can-see-finance").then((r) => setCanSeeFinance(!!r.data.can_see)).catch(() => setCanSeeFinance(null));
+    loadMyRequests();
+    loadStaffMessages();
   }, []);
 
   useEffect(() => {
@@ -165,7 +182,74 @@ export default function SocioPortal() {
       await refresh();
       api.get("/socio/finance").then((r) => setMonthly(r.data)).catch(() => {});
       api.get("/socio/balance-quarterly").then((r) => setQuarterly(r.data)).catch(() => {});
+      api.get("/socio/can-see-finance").then((r) => setCanSeeFinance(!!r.data.can_see)).catch(() => {});
+      loadMyRequests();
+      loadStaffMessages();
       toast.success("Dados atualizados");
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const loadMyRequests = async () => {
+    try {
+      const { data } = await api.get("/socio/consumption-requests");
+      setMyRequests(data);
+    } catch { /* sem pedidos */ }
+  };
+
+  // Notificações do clube (pedidos aceites/recusados, respostas) — banner até serem vistas
+  const loadStaffMessages = async () => {
+    try {
+      const { data } = await api.get("/socio/messages");
+      const lastSeen = Number(localStorage.getItem("socio_staff_seen_at") || 0);
+      setStaffUnread((data || []).filter((m) => m.from_staff && new Date(m.created_at).getTime() > lastSeen));
+    } catch { /* ignore */ }
+  };
+
+  const openMessagesSeen = async () => {
+    await loadMessages();
+    localStorage.setItem("socio_staff_seen_at", String(Date.now()));
+    setStaffUnread([]);
+  };
+
+  const reqStatusLabel = { pending: "Pendente", approved: "Aceito", rejected: "Recusado", cancelled: "Anulado" };
+  const reqStatusClass = {
+    pending: "bg-amber-500/15 text-amber-300 border-amber-500/30",
+    approved: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+    rejected: "bg-rose-500/15 text-rose-300 border-rose-500/30",
+    cancelled: "bg-slate-800 text-slate-400 border-slate-700",
+  };
+
+  const startEditRequest = (r) => {
+    const cart = {};
+    (r.items || []).forEach((it) => { cart[it.product_id] = (cart[it.product_id] || 0) + Number(it.quantity || 0); });
+    setReqCart(cart);
+    setEditingReq(r);
+    setShowRequest(true);
+  };
+
+  const cancelRequest = async (r) => {
+    if (!window.confirm(`Anular este pedido (${euro(r.total)})?`)) return;
+    try {
+      await api.delete(`/socio/consumption-requests/${r.id}`);
+      toast.success("Pedido anulado");
+      setEditingReq(null);
+      await loadMyRequests();
+      await refresh();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const submitPinChange = async (e) => {
+    e.preventDefault();
+    if (pinForm.next !== pinForm.confirm) return toast.error("A confirmação não coincide com o novo PIN");
+    try {
+      await api.post("/socio/change-pin", { current_pin: pinForm.current, new_pin: pinForm.next });
+      toast.success("PIN alterado com sucesso");
+      setShowPin(false);
+      setPinForm({ current: "", next: "", confirm: "" });
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
@@ -305,6 +389,12 @@ export default function SocioPortal() {
       } catch { setProducts([]); }
     }
     setReqCart({});
+    setEditingReq(null);
+    // Os 5 itens mais pedidos deste sócio — venda rápida no portal
+    try {
+      const { data: tp } = await api.get("/socio/top-products", { params: { scope: "mine" } });
+      setTop5((tp || []).filter((t) => !String(t.product_name || "").toLowerCase().startsWith("cota")));
+    } catch { setTop5([]); }
     // Alerta: cota do mês em dívida — pergunta se quer pagar junto ao pedido
     try {
       const y = new Date().getFullYear();
@@ -331,9 +421,17 @@ export default function SocioPortal() {
     const items = Object.entries(reqCart).filter(([, q]) => q > 0).map(([product_id, quantity]) => ({ product_id, quantity }));
     if (!items.length) return toast.error("Adiciona pelo menos um item");
     try {
-      await api.post("/socio/consumption-request", { items });
-      toast.success("Pedido enviado · aguarda validação do staff");
+      if (editingReq) {
+        await api.put(`/socio/consumption-requests/${editingReq.id}`, { items });
+        toast.success("Pedido atualizado · aguarda validação do staff");
+      } else {
+        await api.post("/socio/consumption-request", { items });
+        toast.success("Pedido enviado · aguarda validação do staff");
+      }
+      setEditingReq(null);
+      setReqCart({});
       setShowRequest(false);
+      await loadMyRequests();
       await refresh();
     } catch (err) {
       toast.error(formatApiErrorDetail(err.response?.data?.detail));
@@ -482,6 +580,26 @@ export default function SocioPortal() {
       </header>
 
       <main className="max-w-5xl mx-auto p-5 md:p-8 space-y-6 animate-in">
+        {/* Notificações do clube — pedido aceito/recusado, respostas da direção */}
+        {staffUnread.length > 0 && (
+          <button
+            onClick={openMessagesSeen}
+            data-testid="socio-notifications-banner"
+            className="w-full bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-4 py-3 flex items-center gap-3 text-left hover:bg-emerald-500/15 transition-colors"
+          >
+            <Bell size={18} weight="duotone" className="text-emerald-400" />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-bold text-emerald-300">
+                {staffUnread.length} novidade(s) do clube
+              </div>
+              <div className="text-xs text-emerald-200/70 truncate">
+                {staffUnread[0].subject} — {new Date(staffUnread[0].created_at).toLocaleString("pt-PT")}
+              </div>
+            </div>
+            <span className="text-xs text-emerald-300 font-bold shrink-0">Ver ›</span>
+          </button>
+        )}
+
         {/* Hero */}
         <div className="bg-gradient-to-br from-green-600/10 via-slate-900/40 to-amber-500/10 border border-slate-800 rounded-2xl p-6 md:p-8">
           <div className="flex items-start gap-4 flex-wrap">
@@ -618,8 +736,16 @@ export default function SocioPortal() {
           </div>
         </div>
 
-        {/* Movimento do clube no mês corrente — discreto, apenas totalizadores */}
-        {monthly && (
+        {/* Movimento do clube — sócio com cotas em dia; caso contrário, aviso em vez de saldos */}
+        {canSeeFinance === false ? (
+          <div
+            className="bg-amber-500/5 border border-amber-500/20 rounded-lg px-4 py-3 text-sm text-amber-300 flex items-center gap-2"
+            data-testid="socio-finance-locked"
+          >
+            <LockSimple size={16} weight="duotone" />
+            Consulta a tua associação · cotas por regularizar
+          </div>
+        ) : monthly && (
           <div
             className="bg-slate-900/30 border border-slate-800/60 rounded-lg px-4 py-2.5 text-[11px] text-slate-500 flex items-center gap-3 flex-wrap"
             data-testid="socio-finance-month"
@@ -630,6 +756,9 @@ export default function SocioPortal() {
             <span>Receitas <span className="text-slate-300 font-medium">{euro(monthly.income.total)}</span></span>
             <span>Despesas <span className="text-slate-300 font-medium">{euro(monthly.expenses.total)}</span></span>
             <span>Saldo <span className="text-slate-300 font-medium">{euro(monthly.balance)}</span></span>
+            {quarterly && (
+              <span>Banco <span className="text-slate-300 font-medium">{euro(quarterly.bank_balance ?? 0)}</span></span>
+            )}
             {quarterly && (
               <button
                 data-testid="socio-quarterly-pdf-btn"
@@ -663,32 +792,41 @@ export default function SocioPortal() {
         <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-6">
           <div className="flex items-center justify-between mb-5">
             <h3 className="font-outfit text-xl font-semibold">Os meus dados</h3>
-            {!editing ? (
+            <div className="flex items-center gap-2 flex-wrap">
               <button
-                data-testid="socio-edit-toggle"
-                onClick={() => setEditing(true)}
-                className="px-3 py-1.5 rounded-md text-xs font-medium bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 flex items-center gap-1.5"
+                data-testid="socio-pin-btn"
+                onClick={() => setShowPin(true)}
+                className="px-3 py-1.5 rounded-md text-xs font-medium bg-sky-500/10 text-sky-400 hover:bg-sky-500/20 flex items-center gap-1.5"
               >
-                <PencilSimple size={14} weight="bold" /> Editar
+                <Key size={14} weight="bold" /> Mudar PIN
               </button>
-            ) : (
-              <div className="flex gap-2">
+              {!editing ? (
                 <button
-                  data-testid="socio-save-btn"
-                  onClick={saveProfile}
-                  className="px-3 py-1.5 rounded-md text-xs font-bold bg-green-500/15 text-green-300 hover:bg-green-500/25 flex items-center gap-1.5"
+                  data-testid="socio-edit-toggle"
+                  onClick={() => setEditing(true)}
+                  className="px-3 py-1.5 rounded-md text-xs font-medium bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 flex items-center gap-1.5"
                 >
-                  <Check size={14} weight="bold" /> Guardar
+                  <PencilSimple size={14} weight="bold" /> Editar
                 </button>
-                <button
-                  data-testid="socio-cancel-btn"
-                  onClick={() => setEditing(false)}
-                  className="px-3 py-1.5 rounded-md text-xs bg-slate-800 hover:bg-slate-700 flex items-center gap-1.5"
-                >
-                  <X size={14} weight="bold" /> Cancelar
-                </button>
-              </div>
-            )}
+              ) : (
+                <>
+                  <button
+                    data-testid="socio-save-btn"
+                    onClick={saveProfile}
+                    className="px-3 py-1.5 rounded-md text-xs font-bold bg-green-500/15 text-green-300 hover:bg-green-500/25 flex items-center gap-1.5"
+                  >
+                    <Check size={14} weight="bold" /> Guardar
+                  </button>
+                  <button
+                    data-testid="socio-cancel-btn"
+                    onClick={() => setEditing(false)}
+                    className="px-3 py-1.5 rounded-md text-xs bg-slate-800 hover:bg-slate-700 flex items-center gap-1.5"
+                  >
+                    <X size={14} weight="bold" /> Cancelar
+                  </button>
+                </>
+              )}
+            </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Field label="Telemóvel">
@@ -753,6 +891,67 @@ export default function SocioPortal() {
             </p>
           </div>
         )}
+
+        {/* Os meus pedidos de consumo — visíveis, editáveis e anuláveis enquanto pendentes */}
+        <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-6" data-testid="socio-my-requests">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <ShoppingCart size={20} weight="duotone" className="text-emerald-500" />
+            <h3 className="font-outfit text-xl font-semibold">Os meus pedidos</h3>
+            <span className="text-xs text-slate-500 ml-auto">Edita ou anula enquanto estiver pendente · serás notificado quando for aceito</span>
+          </div>
+          {myRequests.length === 0 ? (
+            <div className="text-sm text-slate-500 py-6 text-center">Ainda não fizeste pedidos de consumo.</div>
+          ) : (
+            <ul className="space-y-2 mt-3">
+              {myRequests.slice(0, 10).map((r) => (
+                <li
+                  key={r.id}
+                  data-testid={`socio-myreq-${r.id}`}
+                  className={`flex items-start gap-3 px-4 py-3 rounded-lg border ${
+                    r.status === "pending"
+                      ? "bg-amber-500/5 border-amber-500/20"
+                      : "bg-slate-950/40 border-slate-800"
+                  }`}
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs text-slate-500">
+                      {new Date(r.created_at).toLocaleString("pt-PT")}{r.edited_at ? " · editado" : ""}
+                    </div>
+                    <ul className="text-xs text-slate-400 mt-1 space-y-0.5">
+                      {(r.items || []).map((it, j) => (
+                        <li key={j}>{it.quantity}× {it.product_name} · {euro(it.subtotal)}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="flex flex-col items-end gap-1.5 shrink-0">
+                    <div className="font-bold text-amber-300">{euro(r.total)}</div>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${reqStatusClass[r.status] || ""}`}>
+                      {reqStatusLabel[r.status] || r.status}
+                    </span>
+                    {r.status === "pending" && (
+                      <div className="flex gap-1.5">
+                        <button
+                          data-testid={`socio-myreq-edit-${r.id}`}
+                          onClick={() => startEditRequest(r)}
+                          className="text-[10px] px-2 py-1 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1"
+                        >
+                          <PencilSimple size={11} weight="bold" /> Editar
+                        </button>
+                        <button
+                          data-testid={`socio-myreq-cancel-${r.id}`}
+                          onClick={() => cancelRequest(r)}
+                          className="text-[10px] px-2 py-1 rounded bg-rose-500/10 text-rose-300 border border-rose-500/30 hover:bg-rose-500/20 flex items-center gap-1"
+                        >
+                          <Trash size={11} /> Anular
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
 
         {/* History */}
         <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-6">
@@ -1157,13 +1356,39 @@ export default function SocioPortal() {
       )}
 
       {showRequest && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setShowRequest(false)} data-testid="socio-request-modal">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => { setShowRequest(false); setEditingReq(null); }} data-testid="socio-request-modal">
           <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg p-6 max-h-[90vh] flex flex-col">
             <div className="flex items-center gap-2 mb-2">
               <Plus size={22} weight="bold" className="text-emerald-400" />
-              <h3 className="font-outfit text-xl font-semibold">Pedir consumo</h3>
+              <h3 className="font-outfit text-xl font-semibold">{editingReq ? "Editar pedido" : "Pedir consumo"}</h3>
             </div>
             <p className="text-xs text-slate-400 mb-3">O pedido vai para o staff validar. Quando aprovado, é lançado na tua conta.</p>
+
+            {/* Os 5 itens mais pedidos deste sócio — venda rápida */}
+            {top5.length > 0 && !editingReq && (
+              <div className="mb-3" data-testid="req-top5">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1 px-1">Os teus 5 mais pedidos</div>
+                <div className="flex flex-wrap gap-2">
+                  {top5.map((t) => {
+                    const p = products.find((x) => x.name === t.product_name && !x.is_quota && availOf(x) > 0);
+                    if (!p) return null;
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        data-testid={`req-top-${p.id}`}
+                        onClick={() => setReqCart({ ...reqCart, [p.id]: (reqCart[p.id] || 0) + 1 })}
+                        className="px-2.5 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 hover:bg-emerald-500/20 text-xs flex items-center gap-1.5"
+                      >
+                        <Lightning size={11} weight="fill" className="text-emerald-400" />
+                        <span className="font-medium text-slate-200">{p.name}</span>
+                        <span className="text-amber-400 font-bold">{euro(p.price)}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Carrinho actual (com +/- e remover) */}
             {Object.entries(reqCart).filter(([, q]) => q > 0).length > 0 && (
@@ -1244,8 +1469,8 @@ export default function SocioPortal() {
               </span>
             </div>
             <div className="flex gap-2">
-              <button type="button" onClick={() => setShowRequest(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700">Cancelar</button>
-              <button data-testid="req-submit" onClick={submitRequest} disabled={!Object.keys(reqCart).length} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold">Enviar pedido</button>
+              <button type="button" onClick={() => { setShowRequest(false); setEditingReq(null); }} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700">Cancelar</button>
+              <button data-testid="req-submit" onClick={submitRequest} disabled={!Object.keys(reqCart).length} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold">{editingReq ? "Guardar alterações" : "Enviar pedido"}</button>
             </div>
           </div>
         </div>
@@ -1547,6 +1772,65 @@ export default function SocioPortal() {
       {showMerch && <SocioMerch onClose={() => setShowMerch(false)} />}
 
       {showFamily && <SocioFamily titular={c} onClose={() => setShowFamily(false)} />}
+
+      {showPin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setShowPin(false)} data-testid="socio-pin-modal">
+          <form onClick={(e) => e.stopPropagation()} onSubmit={submitPinChange} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-sm p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <Key size={22} weight="duotone" className="text-sky-400" />
+              <h3 className="font-outfit text-xl font-semibold">Mudar PIN</h3>
+            </div>
+            <p className="text-xs text-slate-400">PIN de 4 a 6 dígitos, diferente do atual.</p>
+            <div className="space-y-3">
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">PIN atual</label>
+                <input
+                  data-testid="socio-pin-current"
+                  type="password"
+                  inputMode="numeric"
+                  required
+                  value={pinForm.current}
+                  onChange={(e) => setPinForm({ ...pinForm, current: e.target.value })}
+                  className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white tracking-widest focus:outline-none focus:ring-2 focus:ring-sky-500/50"
+                  placeholder="••••"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Novo PIN</label>
+                <input
+                  data-testid="socio-pin-new"
+                  type="password"
+                  inputMode="numeric"
+                  required
+                  minLength={4}
+                  maxLength={6}
+                  value={pinForm.next}
+                  onChange={(e) => setPinForm({ ...pinForm, next: e.target.value })}
+                  className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white tracking-widest focus:outline-none focus:ring-2 focus:ring-sky-500/50"
+                  placeholder="••••"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Confirmar novo PIN</label>
+                <input
+                  data-testid="socio-pin-confirm"
+                  type="password"
+                  inputMode="numeric"
+                  required
+                  value={pinForm.confirm}
+                  onChange={(e) => setPinForm({ ...pinForm, confirm: e.target.value })}
+                  className="mt-1 w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white tracking-widest focus:outline-none focus:ring-2 focus:ring-sky-500/50"
+                  placeholder="••••"
+                />
+              </div>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button type="button" onClick={() => setShowPin(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 font-medium">Cancelar</button>
+              <button data-testid="socio-pin-submit" type="submit" className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold">Alterar PIN</button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

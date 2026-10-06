@@ -18,6 +18,7 @@ import {
   Bank,
   Coffee,
   Cake,
+  Trophy,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -108,8 +109,11 @@ export default function Dashboard() {
 
   const load = async () => {
     try {
-      const { data } = await api.get("/dashboard");
-      setData(data);
+      const [dash, top] = await Promise.all([
+        api.get("/dashboard"),
+        api.get("/products/top", { params: { limit: 10 } }).catch(() => ({ data: [] })),
+      ]);
+      setData({ ...dash.data, top_products: top.data });
     } finally {
       setLoading(false);
     }
@@ -362,6 +366,33 @@ export default function Dashboard() {
         </div>
         </div>
       </div>
+
+      {/* Top 10 itens mais vendidos */}
+      {(data.top_products || []).length > 0 && (
+        <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-6" data-testid="top-products-panel">
+          <div className="flex items-center gap-3 mb-4">
+            <Trophy size={22} weight="duotone" className="text-amber-500" />
+            <div>
+              <div className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">
+                Mais saída
+              </div>
+              <h3 className="font-outfit text-xl font-semibold mt-1">
+                Os 10 itens mais vendidos
+              </h3>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {data.top_products.map((p, i) => (
+              <div key={p.id} data-testid={`top-product-${p.id}`} className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-slate-950/40 border border-slate-800">
+                <span className="w-6 h-6 shrink-0 rounded-full bg-amber-500/15 text-amber-400 text-xs font-bold flex items-center justify-center">{i + 1}</span>
+                <span className="flex-1 min-w-0 text-sm font-medium text-slate-200 truncate">{p.name}</span>
+                <span className="text-xs text-slate-500 shrink-0">{p.sold_qty} vend.</span>
+                <span className="text-sm font-bold text-amber-400 shrink-0">{euro(p.price)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Recent sales */}
       <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-6">
