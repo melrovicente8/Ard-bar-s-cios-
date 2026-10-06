@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import {
   Gift,
@@ -239,7 +240,7 @@ export default function SocioGifts({ me }) {
         </ul>
       )}
 
-      {showModal && (
+      {showModal && createPortal(
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => { setShowModal(false); setEditingGift(null); }} data-testid="socio-gift-modal">
           <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-2xl p-6 max-h-[90vh] flex flex-col">
             <div className="flex items-center gap-2 mb-2">
@@ -361,7 +362,8 @@ export default function SocioGifts({ me }) {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
