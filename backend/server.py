@@ -506,13 +506,16 @@ async def create_client(body: ClientIn, user: dict = Depends(get_current_user)):
     member_number = body.member_number if role in ("admin", "tesoureiro") else None
     # PIN: explícito (admin/tesoureiro) ou auto a partir do nº sócio
     pin_hash = None
+    pin_visible = None
     if role in ("admin", "tesoureiro"):
         if body.pin:
             pin_hash = hash_password(body.pin)
+            pin_visible = str(body.pin)
         elif member_number:
             auto = auto_pin_from_member_number(member_number)
             if auto:
                 pin_hash = hash_password(auto)
+                pin_visible = auto
     doc = {
         "id": cid,
         "name": body.name,
@@ -523,6 +526,7 @@ async def create_client(body: ClientIn, user: dict = Depends(get_current_user)):
         "is_member": is_member,
         "morada": body.morada,
         "pin_hash": pin_hash,
+        "pin_visible": pin_visible,
         "points": 0,
         "balance": 0.0,
         "total_spent": 0.0,
@@ -568,8 +572,10 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
         pin_value = update.pop("pin")
         if pin_value:
             update["pin_hash"] = hash_password(str(pin_value))
+            update["pin_visible"] = str(pin_value)
         else:
             update["pin_hash"] = None
+            update["pin_visible"] = None
     # Se nº sócio é definido/alterado e não há PIN explícito, gerar automaticamente
     if "member_number" in update and "pin_hash" not in update:
         target_mn = update.get("member_number")
@@ -579,6 +585,7 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
                 auto = auto_pin_from_member_number(target_mn)
                 if auto:
                     update["pin_hash"] = hash_password(auto)
+                    update["pin_visible"] = auto
     # Audit: ler o estado antes
     before_doc = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
     if not before_doc:
@@ -616,6 +623,9 @@ async def client_detail(client_id: str, user: dict = Depends(get_current_user)):
     c = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
     if not c:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    # PIN visível só para admin/tesoureiro/presidente
+    if user.get("role") == "funcionario":
+        c.pop("pin_visible", None)
     c["quota_status"] = await _quota_overall_status(client_id)
     c["has_paid_prev_quota"] = bool(c["quota_status"] and c["quota_status"].get("status") == "paid")
     sales = await db.sales.find({"client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
@@ -2935,6 +2945,32 @@ async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> 
     expenses = await db.supplier_expenses.find(exp_q, {"_id": 0}).sort("created_at", -1).to_list(5000)
     withdrawals = await db.cash_withdrawals.find(exp_q, {"_id": 0}).sort("created_at", -1).to_list(5000)
 
+    # Detalhe de despesas: sem nomes de sócios (substituídos pelo nº de sócio) e com nº de factura
+    all_members = await db.clients.find(
+        {"is_member": True, "member_number": {"$exists": True, "$ne": None}},
+        {"_id": 0, "name": 1, "member_number": 1},
+    ).to_list(2000)
+    member_names = {c["name"].strip().lower(): str(c["member_number"]) for c in all_members if c.get("name")}
+
+    def _no_member_names(text: str) -> str:
+        t = str(text or "")
+        for name, mn in member_names.items():
+            t = re.sub(re.escape(name), f"sócio nº {mn}", t, flags=re.IGNORECASE)
+        return t
+
+    for o in orders:
+        desc = ", ".join(f"{it.get('quantity', 1)}× {it.get('product_name')}" for it in (o.get("items") or []))
+        if o.get("invoice_ref"):
+            desc = f"{desc} · Factura {o['invoice_ref']}" if desc else f"Factura {o['invoice_ref']}"
+        o["description"] = _no_member_names(desc)
+        o["supplier_member_number"] = member_names.get((o.get("supplier_name") or "").strip().lower(), "")
+    for e in expenses:
+        desc = e.get("description") or ""
+        if e.get("invoice_no"):
+            desc = f"{desc} · Factura {e['invoice_no']}" if desc else f"Factura {e['invoice_no']}"
+        e["description"] = _no_member_names(desc)
+        e["supplier_member_number"] = member_names.get((e.get("supplier_name") or "").strip().lower(), "")
+
     # Nº de sócio de cada cliente (para o PDF usar o nº em vez do nome)
     cids = list({s["client_id"] for s in sales if s.get("client_id")})
     members = await db.clients.find({"id": {"$in": cids}}, {"id": 1, "member_number": 1}).to_list(len(cids)) if cids else []
@@ -3582,6 +3618,22 @@ async def on_startup():
     if count:
         logging.getLogger(__name__).info(f"Auto-PIN atribuído a {count} sócios")
 
+    # Backfill pin_visible — PIN visível na ficha do cliente (admin/tesoureiro).
+    # Prioridade: último PIN registado no histórico de alterações pelo sócio;
+    # caso contrário, PIN automático derivado do nº de sócio.
+    latest_pin = {}
+    async for h in db.pin_history.find({}, {"_id": 0, "client_id": 1, "new_pin": 1, "changed_at": 1}).sort("changed_at", 1):
+        if h.get("client_id") and h.get("new_pin"):
+            latest_pin[h["client_id"]] = h["new_pin"]
+    pin_visible_count = 0
+    async for c in db.clients.find({"pin_hash": {"$ne": None}, "$or": [{"pin_visible": {"$exists": False}}, {"pin_visible": None}]}, {"_id": 0, "id": 1, "member_number": 1}):
+        plain = latest_pin.get(c["id"]) or auto_pin_from_member_number(c.get("member_number"))
+        if plain:
+            await db.clients.update_one({"id": c["id"]}, {"$set": {"pin_visible": plain}})
+            pin_visible_count += 1
+    if pin_visible_count:
+        logging.getLogger(__name__).info(f"pin_visible preenchido para {pin_visible_count} sócios")
+
     # Backfill tx_number — TODAS as transações têm de ter nº (regra do utilizador)
     from pymongo import ReturnDocument as _RD
     backfill_total = 0
@@ -3939,7 +3991,7 @@ async def socio_change_pin(body: SocioChangePinIn, socio: dict = Depends(get_cur
     if new_pin == body.current_pin.strip():
         raise HTTPException(status_code=400, detail="O novo PIN tem de ser diferente do atual")
     ua = (request.headers.get("user-agent", "") if request else "") or "desconhecido"
-    await db.clients.update_one({"id": socio["id"]}, {"$set": {"pin_hash": hash_password(new_pin), "pin_changed_at": datetime.now(timezone.utc).isoformat()}})
+    await db.clients.update_one({"id": socio["id"]}, {"$set": {"pin_hash": hash_password(new_pin), "pin_visible": new_pin, "pin_changed_at": datetime.now(timezone.utc).isoformat()}})
     rec = {
         "id": str(uuid.uuid4()),
         "client_id": socio["id"],

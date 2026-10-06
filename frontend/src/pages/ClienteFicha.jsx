@@ -30,6 +30,7 @@ import {
   Camera,
   CalendarBlank,
   Crown,
+  Key,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
@@ -690,6 +691,15 @@ export default function ClienteFicha() {
                   data-testid="ficha-direction-badge"
                 >
                   <Crown size={14} weight="fill" /> Direção · {c.direction_role}
+                </span>
+              )}
+              {canEditAll && c.pin_visible && (
+                <span
+                  className="px-3 py-1 rounded-full text-xs font-bold bg-blue-500/15 text-blue-300 border border-blue-500/30 flex items-center gap-1.5"
+                  data-testid="ficha-pin-badge"
+                  title="PIN atual do portal do sócio"
+                >
+                  <Key size={14} weight="duotone" /> PIN do portal: {c.pin_visible}
                 </span>
               )}
             </div>

@@ -25,12 +25,13 @@ export function openFinanceDoc(d, fromLabel, toLabel, subtitle) {
     .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
     .map((s) => `<tr><td>${new Date(s.created_at).toLocaleDateString("pt-PT")}</td><td>${s.source === "quota" ? "Cota" : "Consumo"}</td><td>${memberLabel(s)}</td><td>${(s.items || []).map((it) => `${it.quantity}× ${it.product_name}`).join(", ")}</td><td class="right pos"><strong>${euro(s.total)}</strong></td></tr>`)
     .join("");
+  const supplierLabel = (r) => (r.supplier_member_number ? `Sócio nº ${r.supplier_member_number}` : (r.supplier_name || "—"));
   const expDetail = [
-    ...(d.details?.orders || []).map((o) => ({ ...o, _kind: "Encomenda", _desc: (o.items || []).map((it) => `${it.quantity}× ${it.product_name}`).join(", ") })),
+    ...(d.details?.orders || []).map((o) => ({ ...o, _kind: "Encomenda", _desc: o.description || (o.items || []).map((it) => `${it.quantity}× ${it.product_name}`).join(", ") })),
     ...(d.details?.expenses || []).map((x) => ({ ...x, _kind: "Despesa", _desc: x.description })),
   ]
     .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
-    .map((r) => `<tr><td>${new Date(r.created_at).toLocaleDateString("pt-PT")}</td><td>${r._kind}</td><td>${r.supplier_name || "—"}</td><td>${r._desc}</td><td class="right neg"><strong>${euro(r.total || r.amount)}</strong></td></tr>`)
+    .map((r) => `<tr><td>${new Date(r.created_at).toLocaleDateString("pt-PT")}</td><td>${r._kind}</td><td>${supplierLabel(r)}</td><td>${r._desc}</td><td class="right neg"><strong>${euro(r.total || r.amount)}</strong></td></tr>`)
     .join("");
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>${subtitle} · ${d.club_name}</title>
 <style>

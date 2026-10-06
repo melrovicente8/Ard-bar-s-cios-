@@ -212,13 +212,13 @@ export default function Contas() {
                 <thead><tr className="text-slate-500 text-xs uppercase bg-slate-950/40"><th className="px-5 py-3">Data</th><th className="px-5 py-3">Tipo</th><th className="px-5 py-3">Fornecedor</th><th className="px-5 py-3">Descrição</th><th className="px-5 py-3 text-right">Valor</th></tr></thead>
                 <tbody>
                   {[
-                    ...data.details.orders.map((o) => ({ ...o, _kind: "Encomenda", _desc: o.items.map((it) => `${it.quantity}× ${it.product_name}`).join(", ") })),
+                    ...data.details.orders.map((o) => ({ ...o, _kind: "Encomenda", _desc: o.description || o.items.map((it) => `${it.quantity}× ${it.product_name}`).join(", ") })),
                     ...data.details.expenses.map((e) => ({ ...e, _kind: "Despesa", _desc: e.description })),
                   ].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)).map((r) => (
                     <tr key={r.id} className="border-t border-slate-800/60">
                       <td className="px-5 py-2 text-xs text-slate-400">{new Date(r.created_at).toLocaleString("pt-PT")}</td>
                       <td className="px-5 py-2">{r._kind === "Encomenda" ? <span className="text-rose-300">Encomenda</span> : <span className="text-fuchsia-300">Despesa</span>}</td>
-                      <td className="px-5 py-2 text-slate-200">{r.supplier_name || "—"}</td>
+                      <td className="px-5 py-2 text-slate-200">{r.supplier_member_number ? `Sócio nº ${r.supplier_member_number}` : (r.supplier_name || "—")}</td>
                       <td className="px-5 py-2 text-xs text-slate-500 truncate max-w-xs">
                         {r._desc}
                         {r.attachment_data && (
