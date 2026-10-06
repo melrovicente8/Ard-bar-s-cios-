@@ -1,22 +1,23 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "../lib/api";
-import { Bell, ChatCircle, DeviceMobile, Package } from "@phosphor-icons/react";
+import { Bell, ChatCircle, DeviceMobile, Package, Gift } from "@phosphor-icons/react";
 
 /**
  * Relógio + notificações pendentes no topo — presente em todas as abas.
  */
 export default function HeaderAlerts() {
   const [clock, setClock] = useState("");
-  const [pending, setPending] = useState({ requests: 0, messages: 0, mbway: 0, toDeliver: 0 });
+  const [pending, setPending] = useState({ requests: 0, messages: 0, mbway: 0, toDeliver: 0, gifts: 0 });
 
   const loadPending = async () => {
     try {
-      const [r, m, mb, td] = await Promise.all([
+      const [r, m, mb, td, gf] = await Promise.all([
         api.get("/consumption-requests", { params: { status_filter: "pending" } }).catch(() => ({ data: [] })),
         api.get("/socio-messages", { params: { status_filter: "open" } }).catch(() => ({ data: [] })),
         api.get("/mbway-payments").catch(() => ({ data: [] })),
         api.get("/consumption-requests", { params: { status_filter: "approved" } }).catch(() => ({ data: [] })),
+        api.get("/socio-gifts", { params: { status_filter: "active" } }).catch(() => ({ data: [] })),
       ]);
       const pendingMb = (mb.data || []).filter((x) => x.status === "pending").length;
       setPending({
@@ -24,6 +25,7 @@ export default function HeaderAlerts() {
         messages: (m.data || []).length,
         mbway: pendingMb,
         toDeliver: (td.data || []).length,
+        gifts: (gf.data || []).filter((x) => x.status === "claimed" || x.status === "pending").length,
       });
     } catch {
       /* ignore */
@@ -60,6 +62,11 @@ export default function HeaderAlerts() {
       {pending.mbway > 0 && (
         <Link to="/mbway" data-testid="header-alert-mbway" className={`${pill} bg-sky-400 text-slate-950 ring-sky-400/70`}>
           <DeviceMobile size={13} weight="fill" /> {pending.mbway} MBWay
+        </Link>
+      )}
+      {pending.gifts > 0 && (
+        <Link to="/pedidos" data-testid="header-alert-gifts" className={`${pill} bg-pink-400 text-slate-950 ring-pink-400/70`}>
+          <Gift size={13} weight="fill" /> {pending.gifts} entre sócios
         </Link>
       )}
       {pending.messages > 0 && (

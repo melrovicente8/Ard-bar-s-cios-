@@ -2587,6 +2587,7 @@ async def socio_pin_recovery_request(body: SocioPinRecoveryIn):
             "subject": "🔑 Pedido de recuperação de PIN",
             "message": f"O sócio {c.get('name') or mn} (nº {mn}) pediu a recuperação do PIN de acesso ao portal. Atribuir/entregar novo PIN.",
             "from_staff": False,
+            "status": "open",  # open | replied | archived
             "reply": None,
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
@@ -3107,6 +3108,349 @@ async def socio_mark_picked_up(req_id: str, socio: dict = Depends(get_current_so
     return {"ok": True}
 
 
+# ---------- Consumos entre sócios (deixar pago / delegar pagamento) ----------
+# Um sócio pode deixar pago um consumo a outro sócio (prepaid) ou pedir-lhe
+# para pagar a despesa (delegated — só é serviço quando o outro aceita e confirma).
+# Estados: prepaid:  paid → claimed → served → consumed
+#          delegated: requested → accepted → pending → served → consumed (ou rejected)
+class SocioGiftIn(BaseModel):
+    kind: str  # "prepaid" (deixar pago) | "delegated" (pedir a outro para pagar)
+    recipient_id: str
+    items: List[SaleItemIn]
+    note: Optional[str] = None
+
+
+class SocioGiftEditIn(BaseModel):
+    items: List[SaleItemIn]
+    note: Optional[str] = None
+
+
+GIFT_STATUS_LABEL = {
+    "requested": "à espera de aceitação",
+    "accepted": "aceite · a confirmar",
+    "rejected": "recusado",
+    "paid": "pago · disponível",
+    "claimed": "solicitado · a servir",
+    "pending": "pendente a servir",
+    "served": "servido",
+    "consumed": "consumido",
+}
+
+
+async def _gift_notify(client_id: str, client_name: str, subject: str, message: str, gift_id: str):
+    await db.socio_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "client_id": client_id,
+        "client_name": client_name,
+        "subject": subject,
+        "message": message,
+        "from_staff": True,
+        "reply": None,
+        "gift_id": gift_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+async def _charge_gift_sale(payer: dict, line_items: list, total: float, gift_id: str, by: str) -> str:
+    """Valida stock, cria a venda na conta de quem paga e desconta o stock."""
+    pids = [it["product_id"] for it in line_items]
+    prods = await db.products.find({"id": {"$in": pids}}, {"_id": 0}).to_list(len(pids))
+    pmap = {p["id"]: p for p in prods}
+    for it in line_items:
+        prod = pmap.get(it["product_id"])
+        if not prod:
+            raise HTTPException(status_code=400, detail=f"Produto {it['product_name']} foi removido")
+        if prod["quantity"] < it["quantity"]:
+            raise HTTPException(status_code=400, detail=f"Stock insuficiente para {prod['name']}")
+    for it in line_items:
+        await db.products.update_one({"id": it["product_id"]}, {"$inc": {"quantity": -int(it["quantity"])}})
+    sale_id = str(uuid.uuid4())
+    tx_no = await _next_tx_number()
+    is_member = bool(payer.get("is_member"))
+    old_pending = float(payer.get("points_pending_value", 0)) if is_member else 0.0
+    points_earned, new_pending = _compute_points_with_rollover(payer, total)
+    sale_doc = {
+        "id": sale_id,
+        "tx_number": tx_no,
+        "client_id": payer["id"],
+        "client_name": payer["name"],
+        "items": line_items,
+        "total": total,
+        "points_earned": points_earned,
+        "points_pending_before": old_pending,
+        "points_pending_after": new_pending,
+        "is_member_at_sale": is_member,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "user_email": by,
+        "source": "socio_gift",
+        "request_id": gift_id,
+    }
+    await db.sales.insert_one(sale_doc)
+    op: dict = {"$inc": {"balance": total, "total_spent": total, "points": points_earned}}
+    if is_member:
+        op["$set"] = {"points_pending_value": new_pending}
+    await db.clients.update_one({"id": payer["id"]}, op)
+    if points_earned:
+        await _log_points(payer["id"], points_earned, "sale", sale_id, f"Consumo entre sócios · {total:.2f} €", by)
+    await _sync_quota_paid_status(payer["id"])
+    return sale_id
+
+
+@api_router.get("/socio/members")
+async def socio_list_members(socio: dict = Depends(get_current_socio)):
+    """Lista de sócios (nome + nº) para escolher o destinatário de um consumo pago/delegado."""
+    members = await db.clients.find(
+        {"is_member": True, "member_number": {"$exists": True, "$ne": None}, "id": {"$ne": socio["id"]}},
+        {"_id": 0, "id": 1, "name": 1, "member_number": 1},
+    ).to_list(2000)
+    return sorted(members, key=lambda x: (x.get("member_number") or ""))
+
+
+@api_router.get("/socio/gifts")
+async def socio_my_gifts(socio: dict = Depends(get_current_socio)):
+    """Consumos entre sócios em que este sócio é quem paga ou quem recebe."""
+    q = {"$or": [{"payer_id": socio["id"]}, {"recipient_id": socio["id"]}]}
+    items = await db.socio_gifts.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return items
+
+
+@api_router.post("/socio/gifts")
+async def socio_create_gift(body: SocioGiftIn, socio: dict = Depends(get_current_socio)):
+    if body.kind not in ("prepaid", "delegated"):
+        raise HTTPException(status_code=400, detail="Tipo inválido")
+    if not body.items:
+        raise HTTPException(status_code=400, detail="Sem itens")
+    if any(str(it.product_id).startswith("quota-") for it in body.items):
+        raise HTTPException(status_code=400, detail="Não é possível incluir cotas num consumo de outro sócio")
+    other = await db.clients.find_one({"id": body.recipient_id}, {"_id": 0, "pin_hash": 0})
+    if not other or not other.get("is_member"):
+        raise HTTPException(status_code=404, detail="Sócio destinatário não encontrado")
+    if other["id"] == socio["id"]:
+        raise HTTPException(status_code=400, detail="Não podes escolher-te a ti próprio")
+    gid = str(uuid.uuid4())
+    now_iso = datetime.now(timezone.utc).isoformat()
+    socio_label = f"{socio['name']} (nº {socio.get('member_number') or '—'})"
+    other_label = f"{other['name']} (nº {other.get('member_number') or '—'})"
+    # recipient_* é sempre QUEM CONSUME; payer_* é QUEM PAGA
+    if body.kind == "prepaid":
+        payer, consumer = socio, other
+    else:
+        # Delegar pagamento: o sócio escolhido é quem paga; quem pede é quem consome
+        payer, consumer = other, socio
+    line_items = await _build_request_line_items(body.items, consumer["id"], minor=_is_minor_client(consumer))
+    total = round(sum(li["subtotal"] for li in line_items), 2)
+    doc = {
+        "id": gid,
+        "kind": body.kind,
+        "payer_id": payer["id"],
+        "payer_name": payer["name"],
+        "payer_member_number": payer.get("member_number"),
+        "recipient_id": consumer["id"],
+        "recipient_name": consumer["name"],
+        "recipient_member_number": consumer.get("member_number"),
+        "items": line_items,
+        "total": total,
+        "note": body.note,
+        "created_at": now_iso,
+        "sale_id": None,
+    }
+    if body.kind == "prepaid":
+        # Deixar pago: o pagamento é imediato na conta de quem paga
+        await _check_credit_limit(payer["id"], total)
+        sale_id = await _charge_gift_sale(payer, line_items, total, gid, socio.get("email") or "socio-self")
+        doc["status"] = "paid"
+        doc["sale_id"] = sale_id
+        doc["paid_at"] = now_iso
+        await _gift_notify(
+            consumer["id"], consumer["name"],
+            "🎁 Consumo pago para ti",
+            f"O sócio {socio_label} deixou-te pago um consumo de {euro_fmt(total)} — já está disponível para levantar ao balcão. No portal, clica em 'Solicitar bónus'.",
+            gid,
+        )
+        await _gift_notify(
+            socio["id"], socio["name"],
+            "✅ Consumo pago",
+            f"Registámos o teu pagamento de {euro_fmt(total)} para o sócio {other_label}. O produto ficou pago — serás notificado quando for consumido.",
+            gid,
+        )
+        await _audit("socio_gift_prepaid", f"socio:{socio.get('member_number') or socio['id']}", entity="socio_gift", entity_id=gid,
+                     summary=f"{socio_label} deixou pago um consumo de {euro_fmt(total)} a {other_label}")
+    else:
+        doc["status"] = "requested"
+        await _gift_notify(
+            payer["id"], payer["name"],
+            "🔔 Pedido para pagares um consumo",
+            f"O sócio {socio_label} pediu-te para pagares um consumo de {euro_fmt(total)}. No portal podes aceitar ou recusar — se aceitares, podes editar os itens antes de confirmar.",
+            gid,
+        )
+        await _audit("socio_gift_delegated", f"socio:{socio.get('member_number') or socio['id']}", entity="socio_gift", entity_id=gid,
+                     summary=f"{socio_label} delegou pagamento de {euro_fmt(total)} a {other_label}")
+    await db.socio_gifts.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.put("/socio/gifts/{gift_id}")
+async def socio_edit_gift(gift_id: str, body: SocioGiftEditIn, socio: dict = Depends(get_current_socio)):
+    """Quem pagou (delegado) pode editar os itens enquanto o pedido estiver aceite e por confirmar."""
+    gift = await db.socio_gifts.find_one({"id": gift_id}, {"_id": 0})
+    if not gift:
+        raise HTTPException(status_code=404, detail="Consumo não encontrado")
+    if gift.get("payer_id") != socio["id"]:
+        raise HTTPException(status_code=403, detail="Só quem paga pode editar")
+    if gift.get("status") != "accepted":
+        raise HTTPException(status_code=400, detail="Só pedidos aceites e por confirmar podem ser editados")
+    if not body.items:
+        raise HTTPException(status_code=400, detail="Sem itens")
+    if any(str(it.product_id).startswith("quota-") for it in body.items):
+        raise HTTPException(status_code=400, detail="Não é possível incluir cotas num consumo de outro sócio")
+    recipient = await db.clients.find_one({"id": gift["recipient_id"]}, {"_id": 0})
+    line_items = await _build_request_line_items(body.items, gift["recipient_id"], minor=_is_minor_client(recipient or {}))
+    total = round(sum(li["subtotal"] for li in line_items), 2)
+    await db.socio_gifts.update_one(
+        {"id": gift_id},
+        {"$set": {"items": line_items, "total": total, "note": body.note, "edited_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return await db.socio_gifts.find_one({"id": gift_id}, {"_id": 0})
+
+
+@api_router.post("/socio/gifts/{gift_id}/accept")
+async def socio_accept_gift(gift_id: str, socio: dict = Depends(get_current_socio)):
+    """O sócio convidado a pagar aceita a despesa — depois pode editar itens e confirmar."""
+    gift = await db.socio_gifts.find_one({"id": gift_id}, {"_id": 0})
+    if not gift:
+        raise HTTPException(status_code=404, detail="Consumo não encontrado")
+    if gift.get("payer_id") != socio["id"]:
+        raise HTTPException(status_code=403, detail="Só quem foi convidado a pagar pode aceitar")
+    if gift.get("kind") != "delegated" or gift.get("status") != "requested":
+        raise HTTPException(status_code=400, detail="Este pedido já não pode ser aceite")
+    await db.socio_gifts.update_one({"id": gift_id}, {"$set": {"status": "accepted", "accepted_at": datetime.now(timezone.utc).isoformat()}})
+    await _gift_notify(
+        gift["recipient_id"], gift["recipient_name"],
+        "👍 Pedido aceite",
+        f"O sócio {socio['name']} (nº {socio.get('member_number') or '—'}) aceitou pagar o teu pedido de {euro_fmt(gift['total'])} — quando confirmar, fica pendente a servir.",
+        gift_id,
+    )
+    return {"ok": True}
+
+
+@api_router.post("/socio/gifts/{gift_id}/reject")
+async def socio_reject_gift(gift_id: str, socio: dict = Depends(get_current_socio)):
+    """O sócio convidado a pagar recusa — o pedido não gera qualquer despesa."""
+    gift = await db.socio_gifts.find_one({"id": gift_id}, {"_id": 0})
+    if not gift:
+        raise HTTPException(status_code=404, detail="Consumo não encontrado")
+    if gift.get("payer_id") != socio["id"]:
+        raise HTTPException(status_code=403, detail="Só quem foi convidado a pagar pode recusar")
+    if gift.get("kind") != "delegated" or gift.get("status") != "requested":
+        raise HTTPException(status_code=400, detail="Este pedido já não pode ser recusado")
+    await db.socio_gifts.update_one({"id": gift_id}, {"$set": {"status": "rejected", "rejected_at": datetime.now(timezone.utc).isoformat()}})
+    await _gift_notify(
+        gift["recipient_id"], gift["recipient_name"],
+        "❌ Pedido recusado",
+        f"O sócio {socio['name']} recusou pagar o teu pedido de {euro_fmt(gift['total'])}. Nada foi cobrado.",
+        gift_id,
+    )
+    return {"ok": True}
+
+
+@api_router.post("/socio/gifts/{gift_id}/confirm")
+async def socio_confirm_gift(gift_id: str, socio: dict = Depends(get_current_socio)):
+    """Quem pagou (delegado) confirma — o pedido fica pendente a servir e a despesa é lançada na conta dele."""
+    gift = await db.socio_gifts.find_one({"id": gift_id}, {"_id": 0})
+    if not gift:
+        raise HTTPException(status_code=404, detail="Consumo não encontrado")
+    if gift.get("payer_id") != socio["id"]:
+        raise HTTPException(status_code=403, detail="Só quem paga pode confirmar")
+    if gift.get("kind") != "delegated" or gift.get("status") != "accepted":
+        raise HTTPException(status_code=400, detail="Este pedido já foi confirmado")
+    payer = await db.clients.find_one({"id": socio["id"]}, {"_id": 0})
+    await _check_credit_limit(payer["id"], gift["total"])
+    sale_id = await _charge_gift_sale(payer, gift["items"], gift["total"], gift_id, socio.get("email") or "socio-self")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.socio_gifts.update_one(
+        {"id": gift_id},
+        {"$set": {"status": "pending", "sale_id": sale_id, "paid_at": now_iso, "confirmed_at": now_iso}},
+    )
+    await _gift_notify(
+        gift["recipient_id"], gift["recipient_name"],
+        "🔔 Pagamento confirmado",
+        f"O sócio {socio['name']} confirmou o pagamento do teu pedido de {euro_fmt(gift['total'])} — ficou pendente a servir.",
+        gift_id,
+    )
+    await _audit("socio_gift_confirmed", f"socio:{socio.get('member_number') or socio['id']}", entity="socio_gift", entity_id=gift_id,
+                 summary=f"{socio['name']} confirmou pagar {euro_fmt(gift['total'])} — pedido pendente a servir")
+    return {"ok": True}
+
+
+@api_router.post("/socio/gifts/{gift_id}/claim")
+async def socio_claim_gift(gift_id: str, socio: dict = Depends(get_current_socio)):
+    """Destinatário solicita o bónus pago — staff é avisado para servir."""
+    gift = await db.socio_gifts.find_one({"id": gift_id}, {"_id": 0})
+    if not gift:
+        raise HTTPException(status_code=404, detail="Consumo não encontrado")
+    if gift.get("recipient_id") != socio["id"]:
+        raise HTTPException(status_code=403, detail="Só o destinatário pode solicitar")
+    if gift.get("status") != "paid":
+        raise HTTPException(status_code=400, detail="Este consumo já foi solicitado")
+    await db.socio_gifts.update_one({"id": gift_id}, {"$set": {"status": "claimed", "claimed_at": datetime.now(timezone.utc).isoformat()}})
+    await _audit("socio_gift_claimed", f"socio:{socio.get('member_number') or socio['id']}", entity="socio_gift", entity_id=gift_id,
+                 summary=f"{socio['name']} solicitou o bónus pago de {euro_fmt(gift['total'])} (pago por {gift['payer_name']})")
+    return {"ok": True}
+
+
+@api_router.post("/socio/gifts/{gift_id}/consume")
+async def socio_consume_gift(gift_id: str, socio: dict = Depends(get_current_socio)):
+    """Destinatário confirma que consumiu o que lhe foi servido."""
+    gift = await db.socio_gifts.find_one({"id": gift_id}, {"_id": 0})
+    if not gift:
+        raise HTTPException(status_code=404, detail="Consumo não encontrado")
+    if gift.get("recipient_id") != socio["id"]:
+        raise HTTPException(status_code=403, detail="Só o destinatário pode confirmar o consumo")
+    if gift.get("status") != "served":
+        raise HTTPException(status_code=400, detail="Só consumos já servidos podem ser confirmados")
+    await db.socio_gifts.update_one({"id": gift_id}, {"$set": {"status": "consumed", "consumed_at": datetime.now(timezone.utc).isoformat()}})
+    await _gift_notify(
+        gift["payer_id"], gift["payer_name"],
+        "✅ Consumo confirmado",
+        f"O sócio {socio['name']} confirmou o consumo do produto que pagou ({euro_fmt(gift['total'])}). Obrigado!",
+        gift_id,
+    )
+    return {"ok": True}
+
+
+# ---------- Staff: consumos entre sócios ----------
+@api_router.get("/socio-gifts")
+async def staff_list_gifts(status_filter: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q: dict = {}
+    if status_filter == "active":
+        q["status"] = {"$in": ["claimed", "pending", "served"]}
+    elif status_filter:
+        q["status"] = status_filter
+    items = await db.socio_gifts.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return items
+
+
+@api_router.post("/socio-gifts/{gift_id}/serve")
+async def staff_serve_gift(gift_id: str, user: dict = Depends(get_current_user)):
+    """Staff entrega o consumo — destinatário é avisado para confirmar no portal."""
+    gift = await db.socio_gifts.find_one({"id": gift_id}, {"_id": 0})
+    if not gift:
+        raise HTTPException(status_code=404, detail="Consumo não encontrado")
+    if gift.get("status") not in ("claimed", "pending"):
+        raise HTTPException(status_code=400, detail="Só consumos solicitados ou pendentes podem ser servidos")
+    await db.socio_gifts.update_one({"id": gift_id}, {"$set": {"status": "served", "served_at": datetime.now(timezone.utc).isoformat(), "served_by": user["email"]}})
+    await _gift_notify(
+        gift["recipient_id"], gift["recipient_name"],
+        "🎉 Consumo servido",
+        f"O consumo de {euro_fmt(gift['total'])} (pago por {gift['payer_name']}) já foi servido — confirma no portal em 'Consumido'.",
+        gift_id,
+    )
+    await _audit("socio_gift_served", user["email"], entity="socio_gift", entity_id=gift_id,
+                 summary=f"Consumo de {euro_fmt(gift['total'])} servido a {gift['recipient_name']} (pago por {gift['payer_name']})")
+    return {"ok": True}
+
+
 def euro_fmt(v: float) -> str:
     return f"{float(v):.2f}".replace(".", ",") + " €"
 
@@ -3193,7 +3537,11 @@ async def socio_my_messages(socio: dict = Depends(get_current_socio)):
 async def staff_list_messages(status_filter: Optional[str] = None, user: dict = Depends(get_current_user)):
     q: dict = {}
     if status_filter:
-        q["status"] = status_filter
+        if status_filter == "open":
+            # Pedidos antigos (ex.: recuperação de PIN) podem não ter 'status' — contam como abertos
+            q["$or"] = [{"status": "open"}, {"from_staff": False, "status": {"$exists": False}}]
+        else:
+            q["status"] = status_filter
     items = await db.socio_messages.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
     return items
 
@@ -4871,6 +5219,7 @@ async def socio_recover_pin(body: SocioRecoverPinIn):
         "subject": "🔑 Recuperação de PIN",
         "message": f"O sócio {c['name']} (nº {mn}, tel. {body.contact}) esqueceu o PIN e pede um novo. Enviar novo PIN ao sócio (ficha do cliente → PIN).",
         "from_staff": False,
+        "status": "open",  # open | replied | archived
         "reply": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     })

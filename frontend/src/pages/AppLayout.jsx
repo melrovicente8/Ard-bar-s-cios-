@@ -27,6 +27,7 @@ import {
   List,
   ListDashes,
   Ticket,
+  ArrowClockwise,
   X as XIcon,
   Storefront as BarIcon,
   Gift,
@@ -224,6 +225,8 @@ export default function AppLayout() {
   const location = useLocation();
   const isHome = location.pathname === "/" || location.pathname === "";
   const [mobileOpen, setMobileOpen] = useState(false);
+  // Refresh de todas as abas: remonta a página atual (recarrega os dados)
+  const [refreshKey, setRefreshKey] = useState(0);
 
   React.useEffect(() => { setMobileOpen(false); }, [location.pathname]);
 
@@ -367,12 +370,20 @@ export default function AppLayout() {
           >
             <House size={16} weight="duotone" />
           </button>
+          <button
+            data-testid="topbar-refresh-btn"
+            onClick={() => setRefreshKey((k) => k + 1)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm text-slate-400 hover:text-white hover:bg-slate-900 transition-colors"
+            title="Atualizar esta aba (recarrega os dados)"
+          >
+            <ArrowClockwise size={16} weight="bold" /> <span className="hidden sm:inline">Refresh</span>
+          </button>
           <div className="ml-auto flex items-center gap-2">
             <HeaderAlerts />
             <BarStatusButton />
           </div>
         </div>
-        <div className="flex-1">
+        <div className="flex-1" key={refreshKey}>
           <Outlet />
         </div>
       </main>

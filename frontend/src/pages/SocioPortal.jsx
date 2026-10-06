@@ -42,6 +42,7 @@ import CommunityChat from "../components/CommunityChat";
 import SocioDigitalCard from "../components/SocioDigitalCard";
 import SocioMerch from "../components/SocioMerch";
 import SocioFamily from "../components/SocioFamily";
+import SocioGifts from "../components/SocioGifts";
 import { openQuarterlyDoc } from "../lib/quarterlyDoc";
 
 export default function SocioPortal() {
@@ -1030,6 +1031,9 @@ export default function SocioPortal() {
             </ul>
           )}
         </div>
+
+        {/* Consumos entre sócios: deixar pago / delegar pagamento */}
+        <SocioGifts me={c} />
 
         {/* History */}
         <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-6">
