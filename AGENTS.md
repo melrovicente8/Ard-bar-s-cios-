@@ -73,6 +73,12 @@ docker compose -f docker-compose.base44.yml up -d
 - `GET /api/socio/badges` (app do sócio) e `GET /api/clients/{id}/badges` (consulta do staff — botão "Conquistas · medalhas de perfil" na ficha).
 - Medalhas de eventos usam `db.events` (`kind`: `sueca`/`torneio`, `futebol`/`classico`) com `participants`/`participant_ids`; sem eventos registados ficam bloqueadas. "Sócio Honorário de Ouro" usa `is_honorary` + `honorary_annual_value`. "Padrinho" conta `db.clients.referred_by`.
 
+## Arquivo histórico oficial (Historial e Palmarés)
+- Conteúdo estático em `backend/club_archive_history.py`: identidade/estatutos, apoios municipais, património (Campo Dias Gonçalves), cronologia, 16 plantéis (1996/97–2023/24), palmarés, resultados oficiais da AF Guarda (6 épocas) e tradições. As linhas de resultado são escritas como `"J1: (C) Manteiga | 0–1 (D)"` e convertidas por `_matches()` — uma linha mal formatada rebenta o import (propositado).
+- `GET /api/club-archive` e `GET /api/socio/club-archive` devolvem o documento de `db.club_archive` **mais** `legacy` (o arquivo estático) e `legacy` também vem na resposta do `PUT` — sem isso o separador Plantéis/Resultados ficava vazio depois de gravar.
+- `_seed_club_archive_history()` (arranque) preenche história, palmarés e documentos (fontes) **só quando estão vazios**. Para repor o texto oficial: apagar o doc `db.club_archive {_id:"ardn"}` e reiniciar o backend.
+- Frontend: `ClubArchive.jsx` tem os separadores e `ClubArchiveLegacy.jsx` renderiza as secções só de leitura (identidade, cronologia, plantéis, resultados, tradições). O botão "Editar" fica `disabled` enquanto o GET não chega — um clique antes do load gravava o arquivo vazio.
+
 ## Parceiros locais · upload de talão
 - `db.partners` `{name, emoji, active, auto_validate, points_per_5eur}` — CRUD em `/api/partners` (admin). A checkbox "Parceria ativa" tira/coloca o parceiro na app do sócio.
 - Sócio: `GET /api/socio/partners`, `GET/POST /api/socio/partner-tickets` (fotografia em `photo_data`, data URL base64).

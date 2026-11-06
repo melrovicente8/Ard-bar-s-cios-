@@ -1,7 +1,11 @@
 import React, { useEffect, useState } from "react";
 import api, { formatApiErrorDetail } from "../lib/api";
 import { toast } from "sonner";
-import { Trophy, BookOpen, FileText, PencilSimple, FloppyDisk, Plus, Trash, X } from "@phosphor-icons/react";
+import {
+  Trophy, BookOpen, FileText, PencilSimple, FloppyDisk, Plus, Trash, X,
+  Buildings, ClockCounterClockwise, Users, SoccerBall, Confetti,
+} from "@phosphor-icons/react";
+import ClubArchiveLegacy from "./ClubArchiveLegacy";
 
 /**
  * 🏆 ARD NESPEREIRA — Historial, Palmarés e Arquivo Documental.
@@ -13,9 +17,16 @@ const EMPTY_DOCUMENT = { title: "", year: "", url: "", note: "" };
 
 const TABS = [
   { id: "historia", label: "História", icon: BookOpen },
+  { id: "identidade", label: "Identidade", icon: Buildings },
+  { id: "cronologia", label: "Cronologia", icon: ClockCounterClockwise },
+  { id: "planteis", label: "Plantéis", icon: Users },
+  { id: "resultados", label: "Resultados", icon: SoccerBall },
   { id: "palmares", label: "Palmarés", icon: Trophy },
+  { id: "tradicoes", label: "Tradições", icon: Confetti },
   { id: "arquivo", label: "Arquivo documental", icon: FileText },
 ];
+
+const LEGACY_TABS = ["identidade", "cronologia", "planteis", "resultados", "tradicoes"];
 
 export default function ClubArchive({ scope = "staff", canEdit = false }) {
   const [data, setData] = useState(null);
@@ -28,7 +39,7 @@ export default function ClubArchive({ scope = "staff", canEdit = false }) {
   const load = () => {
     api.get(endpoint)
       .then(({ data: d }) => setData(d))
-      .catch(() => setData({ history: "", palmares: [], documents: [] }));
+      .catch(() => setData({ history: "", palmares: [], documents: [], legacy: null }));
   };
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [scope]);
@@ -88,7 +99,9 @@ export default function ClubArchive({ scope = "staff", canEdit = false }) {
             <button
               data-testid="club-archive-edit"
               onClick={startEdit}
-              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1.5"
+              disabled={!data}
+              title={data ? "Editar o arquivo" : "A carregar o arquivo…"}
+              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-slate-200 text-xs font-bold flex items-center gap-1.5"
             >
               <PencilSimple size={13} weight="bold" /> Editar
             </button>
@@ -153,6 +166,8 @@ export default function ClubArchive({ scope = "staff", canEdit = false }) {
             )}
           </div>
         )}
+
+        {LEGACY_TABS.includes(tab) && <ClubArchiveLegacy legacy={data?.legacy} section={tab} />}
 
         {tab === "palmares" && (
           <div data-testid="club-archive-palmares" className="space-y-2">

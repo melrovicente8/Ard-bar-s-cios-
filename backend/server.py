@@ -5864,6 +5864,9 @@ async def on_startup():
             if updates:
                 await db.users.update_one({"email": u["email"]}, {"$set": updates})
 
+    # Arquivo oficial do clube (história, palmarés e fontes) — só semeia se estiver vazio
+    await _seed_club_archive_history()
+
     # Auto-PIN para todos os sócios com nº de sócio que ainda não têm PIN
     cursor = db.clients.find({"member_number": {"$exists": True, "$ne": None}, "$or": [{"pin_hash": None}, {"pin_hash": {"$exists": False}}]})
     count = 0
@@ -9097,6 +9100,8 @@ async def staff_ai_assistant(body: AssistantChatIn, user: dict = Depends(get_cur
 
 
 # ---------- ARDN · Historial, Palmarés e Arquivo Documental ----------
+from club_archive_history import CLUB_LEGACY, CLUB_HISTORY_TEXT, CLUB_PALMARES, CLUB_SOURCES
+
 CLUB_ARCHIVE_DEFAULT = {
     "history": (
         "A Associação Recreativa e Desportiva de Nespereira (ARDN), NIF 503018112, é o clube da "
@@ -9115,9 +9120,27 @@ CLUB_ARCHIVE_DEFAULT = {
 async def _club_archive_doc() -> dict:
     doc = await db.club_archive.find_one({"_id": "ardn"})
     if not doc:
-        return {**CLUB_ARCHIVE_DEFAULT}
+        return {**CLUB_ARCHIVE_DEFAULT, "legacy": CLUB_LEGACY}
     doc.pop("_id", None)
-    return {**CLUB_ARCHIVE_DEFAULT, **doc}
+    return {**CLUB_ARCHIVE_DEFAULT, **doc, "legacy": CLUB_LEGACY}
+
+
+async def _seed_club_archive_history():
+    """Semeia (uma vez) o arquivo oficial: história, palmarés e fontes documentais."""
+    doc = (await db.club_archive.find_one({"_id": "ardn"})) or {}
+    sets = {}
+    if not (doc.get("history") or "").strip() or doc.get("history") == CLUB_ARCHIVE_DEFAULT["history"]:
+        sets["history"] = CLUB_HISTORY_TEXT
+    if not doc.get("palmares"):
+        sets["palmares"] = [{**row, "id": str(uuid.uuid4())} for row in CLUB_PALMARES]
+    if not doc.get("documents"):
+        sets["documents"] = [{**row, "id": str(uuid.uuid4())} for row in CLUB_SOURCES]
+    if not sets:
+        return
+    sets["updated_at"] = datetime.now(timezone.utc).isoformat()
+    sets["updated_by"] = "arquivo oficial da ARDN"
+    await db.club_archive.update_one({"_id": "ardn"}, {"$set": sets}, upsert=True)
+    logging.getLogger(__name__).info("Arquivo do clube semeado com o historial oficial")
 
 
 class ClubArchiveIn(BaseModel):
@@ -9163,7 +9186,7 @@ async def save_club_archive(body: ClubArchiveIn,
     await _audit("club_archive_update", user["email"], entity="club_archive", entity_id="ardn",
                  summary=f"Arquivo do clube atualizado · {len(doc['palmares'])} entradas de palmarés · "
                          f"{len(doc['documents'])} documentos")
-    return doc
+    return {**doc, "legacy": CLUB_LEGACY}
 
 
 # ---------- Mount ----------
