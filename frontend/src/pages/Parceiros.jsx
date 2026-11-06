@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import { Storefront, Plus, Trash, Check, X, ArrowClockwise } from "@phosphor-icons/react";
@@ -19,7 +20,10 @@ export default function Parceiros() {
   const isAdmin = user?.role === "admin";
   const [partners, setPartners] = useState([]);
   const [tickets, setTickets] = useState([]);
-  const [filter, setFilter] = useState("pending");
+  // O aviso do cabeçalho abre esta página em ?filter=pending
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filter = searchParams.get("filter") || "pending";
+  const setFilter = (v) => setSearchParams(v === "pending" ? {} : { filter: v }, { replace: true });
   const [form, setForm] = useState({ name: "", emoji: "🤝", points_per_5eur: 0.5, active: true });
   const [busy, setBusy] = useState(false);
 

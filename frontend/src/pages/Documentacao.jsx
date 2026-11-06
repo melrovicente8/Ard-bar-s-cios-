@@ -201,6 +201,12 @@ App de gestão integrada de bar/clube ARD Nespereira em **PT-PT**. Combina:
 - POST /api/socio/recover-pin — nº de sócio + telemóvel (validado contra o registado)
 - Gera mensagem à direção; novo PIN entregue por staff (ficha do cliente)
 
+### Parceiros locais — talões e notificações
+- Sócio envia a fotografia do talão: \`POST /api/socio/partner-tickets\` (máx. **3/dia**, até **48 h** após a compra; \`doc_number\` repetido fica sinalizado como duplicado)
+- O talão entra **sempre** \`pending\` na página **Parceiros locais** (\`/parceiros\`); a leitura automática por IA só confirma (ou não) parceiro, data e valor
+- **Notificação ao staff**: aviso \`N talões\` no cabeçalho (\`HeaderAlerts\`, polling 15 s) alimentado por \`GET /api/partner-tickets/pending-count\`; abre \`/parceiros?filter=pending\` e desaparece quando não há pendentes
+- **Notificação ao sócio**: em \`POST /{id}/validate\` (e no aceite automático por IA) é criada uma mensagem em \`db.socio_messages\` com \`from_staff: true\` e \`partner_ticket_id\`, que aparece no sino do portal com os pontos ganhos e a presença do dia; em \`POST /{id}/reject\` a mensagem inclui o motivo. A anulação (\`/invalidate\`) não gera notificação
+
 ### Acesso de funcionários (restrições)
 - Financeiro (Contas/Transações) limitado à **janela de 30 dias**
 - Aba Contas com filtros restritos; "Ofertas da casa" filtradas por email do funcionário
@@ -226,7 +232,7 @@ App de gestão integrada de bar/clube ARD Nespereira em **PT-PT**. Combina:
 - "Bom dia / Boa tarde / Boa noite" conforme hora local
 - Mensagem rotativa do presidente (7 mensagens, indexada pelo dia da semana)
 - Aviso de fecho do bar a partir das **2h**
-- Badges intermitentes (animate-pulse) para Pedidos / MBWay / Mensagens pendentes (polling 15s)
+- Badges intermitentes (animate-pulse) para Pedidos / MBWay / Mensagens / Talões de parceiros pendentes (polling 15s)
 
 ### Mascaramento no Dashboard
 Por defeito mostrados: **Vendas hoje · A receber clientes · Pessoas em dívida**.
@@ -283,6 +289,12 @@ Restantes (Vendas semana/mês, A pagar fornecedores, Valor stock, Clientes) masc
 
 ### Mensagens (staff)
 - \`GET /api/socio-messages\` · \`POST /api/socio-messages/send-to-socio\` · \`POST /api/socio-messages/{id}/reply\`
+
+### Parceiros locais
+- \`GET/POST /api/partners\` · \`PUT/DELETE /api/partners/{id}\` (admin)
+- \`GET /api/socio/partners\` · \`GET/POST /api/socio/partner-tickets\`
+- \`GET /api/partner-tickets?status_filter=\` · \`GET /api/partner-tickets/pending-count\` (contador do aviso do cabeçalho)
+- \`POST /api/partner-tickets/{id}/validate\` · \`/reject\` · \`/ai-check\` · \`/invalidate\`
 
 ### Audit / Reports / Dashboard
 - \`GET /api/audit-log?date_from=&date_to=&user=&type=\`
@@ -380,6 +392,7 @@ Relatórios PDF/print disponíveis em:
   19. **Loja de merchandising** no portal — artigos visíveis mas indisponíveis
   20. **Agregado Familiar** no painel do sócio — inscrição de dependentes e pagamento de quotas por MBWay
   21. **Recuperação de PIN** pública (nº sócio + telemóvel → mensagem à direção)
+  22. **Parceiros locais** — talões enviados pelos sócios com aviso de pendentes no cabeçalho do staff (\`pending-count\`) e notificação no sino do sócio quando o talão é **aceite** (pontos ganhos + presença) ou **rejeitado** (com o motivo)
 
 ---
 

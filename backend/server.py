@@ -8842,6 +8842,21 @@ async def delete_partner(partner_id: str, user: dict = Depends(require_role("adm
     return {"ok": True}
 
 
+async def _notify_partner_ticket(ticket: dict, subject: str, message: str) -> None:
+    """Notificação no sino do portal do sócio (aceite/rejeitado de um talão)."""
+    await db.socio_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "client_id": ticket["client_id"],
+        "client_name": ticket.get("client_name"),
+        "subject": subject,
+        "message": message,
+        "from_staff": True,
+        "reply": None,
+        "partner_ticket_id": ticket["id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+
 async def _award_partner_ticket(ticket: dict, by: str) -> dict:
     """Credita o benefício: pontos (só com quotas 🟢) + presença do dia."""
     partner = await db.partners.find_one({"id": ticket["partner_id"]}, {"_id": 0}) or {}
@@ -8879,6 +8894,19 @@ async def _award_partner_ticket(ticket: dict, by: str) -> dict:
                  summary=f"Talão {partner.get('name')} validado · {ticket['client_name']} · "
                          f"{ticket['amount']:.2f} € · +{whole} ponto(s)"
                          + ("" if eligible else " · cotas não regularizadas (sem pontos)"))
+    if whole > 0:
+        benefit = f"Ganhaste {whole} ponto(s)."
+    elif eligible:
+        benefit = "O valor não chegou aos 5 €, por isso não gerou pontos."
+    else:
+        benefit = "As tuas quotas não estão em dia (🔴), por isso o talão não gerou pontos."
+    await _notify_partner_ticket(
+        ticket,
+        f"✅ Talão aceite · {partner.get('name')}",
+        f"O teu talão de {ticket['amount']:.2f} € na {partner.get('name')} foi aceite"
+        f"{' automaticamente pela leitura do talão' if by.startswith('sistema') else ' pela direção'}. "
+        f"{benefit} Presença de hoje registada.",
+    )
     return await db.partner_tickets.find_one({"id": ticket["id"]}, {"_id": 0})
 
 
@@ -9124,6 +9152,12 @@ async def list_partner_tickets(status_filter: Optional[str] = None, user: dict =
     return await db.partner_tickets.find(q, {"_id": 0}).sort("submitted_at", -1).to_list(300)
 
 
+@api_router.get("/partner-tickets/pending-count")
+async def partner_tickets_pending_count(user: dict = Depends(get_current_user)):
+    """Contador leve para o aviso do cabeçalho do staff (talões à espera de validação)."""
+    return {"pending": await db.partner_tickets.count_documents({"status": "pending"})}
+
+
 @api_router.post("/partner-tickets/{ticket_id}/validate")
 async def validate_partner_ticket(ticket_id: str, user: dict = Depends(require_role("admin", "tesoureiro"))):
     ticket = await db.partner_tickets.find_one({"id": ticket_id}, {"_id": 0})
@@ -9200,6 +9234,14 @@ async def reject_partner_ticket(ticket_id: str, body: PartnerTicketReject,
     await _audit("partner_ticket_rejected", user["email"], entity="partner_ticket", entity_id=ticket_id,
                  summary=f"Talão de {ticket.get('client_name')} ({ticket.get('partner_name')}) rejeitado"
                          + (f" · {body.reason.strip()}" if (body.reason or "").strip() else ""))
+    reason = (body.reason or "").strip()
+    await _notify_partner_ticket(
+        ticket,
+        f"❌ Talão rejeitado · {ticket.get('partner_name')}",
+        f"O teu talão de {float(ticket.get('amount') or 0):.2f} € na {ticket.get('partner_name')} "
+        "não foi aceite, por isso não foram atribuídos pontos."
+        + (f" Motivo: {reason}." if reason else " Passa pela receção para mais informação."),
+    )
     return await db.partner_tickets.find_one({"id": ticket_id}, {"_id": 0})
 
 
