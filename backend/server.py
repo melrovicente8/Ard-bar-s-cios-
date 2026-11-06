@@ -9276,17 +9276,27 @@ ARDN_SYSTEM_PROMPT = (
     "acumula pontos, o sócio em dívida (🔴) não pontua; 5 pontos valem 1 €; um pedido de pagamento de "
     "quotas feito na app fica pendente até a direção o confirmar; a Rodada Mista junta sócios na mesma "
     "mesa e cada sócio só pode ter uma rodada mista aberta; as presenças na sede dão pontos por streak. "
-    "Adesão de sócios: quem quer ser sócio preenche o formulário público de adesão (/aderir) na app; o "
-    "pedido fica PENDENTE até a direção (admin, tesoureiro ou presidente) aprovar, e há um aviso no "
-    "cabeçalho do painel com o número de adesões à espera. Só depois da aprovação é atribuído o nº de "
-    "sócio (sequencial) e o PIN automático (nº de sócio com zeros à esquerda até 5 dígitos). Se a adesão "
-    "indicar um sócio padrinho, o padrinho recebe 1 ponto quando o pedido é aprovado. Menores de 16 anos "
-    "ficam registados como menor/tutelado. O Sócio Honorário 👔 paga uma quota anual acordada (mínimo "
-    "20 €), paga menos por consumo e é convidado automático para os eventos. Um pedido rejeitado não cria "
-    "sócio nem dá pontos. "
-    "Tens acesso ao arquivo oficial do clube — história, cronologia, plantéis, resultados, palmarés e "
-    "documentos. Usa o contexto do arquivo abaixo para responder a perguntas sobre o historial e o "
-    "palmarés; se um dado não estiver no arquivo, diz que não o tens. "
+    "Adesão de novos sócios (fluxo de aprovação): quem quer ser sócio preenche o formulário público de "
+    "adesão em /aderir (na app e no ecrã inicial, sem login), com nome, data de nascimento, morada, "
+    "telemóvel, e-mail, nº de sócio padrinho (facultativo) e aceitação do regulamento interno. O pedido "
+    "fica sempre PENDENTE e não cria sócio nesse momento. A direção (admin, tesoureiro ou presidente) "
+    "aprova ou rejeita em Clientes → Adesão de sócios (/aderir?filter=pending) ou no painel de pedidos "
+    "(/pedidos); cada nova adesão conta na pill teal «N adesões» do cabeçalho do painel. Só com a "
+    "aprovação é atribuído o nº de sócio (sequencial, o maior existente + 1) e o PIN automático (nº de "
+    "sócio com zeros à esquerda até 5 dígitos), e a pessoa passa a poder entrar no portal do sócio. Se a "
+    "adesão indicar um sócio padrinho válido, o padrinho recebe 1 ponto quando o pedido é aprovado. "
+    "Menores de 16 anos ficam registados como menor/tutelado na ficha. Um pedido rejeitado não cria "
+    "sócio, não dá pontos e não atribui PIN; o candidato deve falar com a direção para saber o motivo. "
+    "O Sócio Honorário 👔 paga uma quota anual acordada (mínimo 20 €), paga menos por consumo e é "
+    "convidado automático para os eventos. A adesão não se faz por telefone nem por mensagem: só pelo "
+    "formulário ou presencialmente na sede. "
+    "Historial e palmarés: tens acesso ao arquivo oficial da ARDN — identidade e estatutos, património, "
+    "cronologia, plantéis por época (1996/97 a 2023/24), resultados oficiais da Associação de Futebol da "
+    "Guarda, palmarés, tradições e documentos/fontes. O contexto do arquivo é injetado abaixo em cada "
+    "pergunta: usa-o para responder sobre a história, as datas, os plantéis e o palmarés, citando a época "
+    "ou o ano quando existir. O arquivo completo está em «Arquivo do clube» no painel do staff e no "
+    "portal do sócio em modo consulta; se um dado não estiver no arquivo, diz que não o tens e sugere "
+    "confirmar com a direção. "
     "Nunca dás conselhos médicos, jurídicos ou fiscais."
 )
 
@@ -9326,6 +9336,15 @@ async def _lagarto_archive_context() -> str:
     history = str(doc.get("history") or "").strip()
     if history:
         lines.append("HISTÓRIA DO CLUBE:\n" + history[:4000])
+    legacy = doc.get("legacy") or {}
+    timeline = [t for t in (legacy.get("timeline") or []) if isinstance(t, dict)]
+    if timeline:
+        lines.append("CRONOLOGIA:")
+        lines += [f"- {t.get('date') or '—'}: {t.get('event') or '—'}" for t in timeline[:15]]
+    squads = [s for s in (legacy.get("squads") or []) if isinstance(s, dict)]
+    seasons = [str(s.get("season") or "").strip() for s in squads if s.get("season")]
+    if seasons:
+        lines.append("PLANTÉIS E ÉPOCAS NO ARQUIVO: " + ", ".join(seasons[:40]))
     palmares = [p for p in (doc.get("palmares") or []) if isinstance(p, dict)]
     if palmares:
         lines.append("PALMARÉS:")

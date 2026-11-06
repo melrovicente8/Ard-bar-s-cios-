@@ -84,7 +84,7 @@ docker compose -f docker-compose.base44.yml up -d
 - **Aviso ao staff**: cada nova adesão conta em `GET /api/membership-applications/pending-count`; `HeaderAlerts` mostra a pill teal `N adesões` (`header-alert-memberships`, polling 15 s) que abre `/aderir?filter=pending`.
 - `AdesaoApprovals` (só admin/tesoureiro/presidente) lista os pedidos pendentes com aprovar/rejeitar e os 10 últimos sócios aprovados (nº de sócio + data de decisão).
 - Manual de regras: `frontend/public/manual.html` tem "Como te tornares sócio (adesão)" e "Regras que valem para todos os sócios"; `/aderir` mostra um resumo expansível (`adesao-regras`) com link para o manual.
-- Lagarto Amarelo: `ARDN_SYSTEM_PROMPT` descreve o fluxo de adesão (pendente → aprovação → nº de sócio + PIN, padrinho +1 ponto, menores tutelados, honorário anual) e `_lagarto_archive_context()` injeta no prompt a história, o palmarés e os documentos de `db.club_archive` em cada pergunta.
+- Lagarto Amarelo: `ARDN_SYSTEM_PROMPT` descreve o fluxo de adesão (pendente → aprovação em `/aderir?filter=pending` ou `/pedidos` → nº de sócio + PIN, padrinho +1 ponto, menores tutelados, honorário anual) e onde está o arquivo. `_lagarto_archive_context()` injeta em cada pergunta a história, a cronologia, as épocas com plantel, o palmarés e os documentos de `db.club_archive`/`CLUB_LEGACY`.
 - Entradas (antes não existia nenhuma): cartão `dashboard-adesao-cta` no Dashboard (só admin/tesoureiro/presidente, com o nº de pendentes), link em `/login`, link em `/socio/login` e item de menu `Clientes → Adesão de sócios` (`nav-adesao`).
 
 ## Parceiros locais · upload de talão
