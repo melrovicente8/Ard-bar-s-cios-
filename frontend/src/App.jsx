@@ -14,7 +14,6 @@ import Stock from "./pages/Stock";
 import Clientes from "./pages/Clientes";
 import ClienteFicha from "./pages/ClienteFicha";
 import MbwayPedidos from "./pages/MbwayPedidos";
-import Fornecedores from "./pages/Fornecedores";
 import DividasHoje from "./pages/DividasHoje";
 import Equipa from "./pages/Equipa";
 import Contas from "./pages/Contas";
@@ -110,7 +109,7 @@ function App() {
                 <Route path="pedidos" element={<MbwayPedidos />} />
                 <Route path="mensagens" element={<MbwayPedidos />} />
                 <Route path="dividas" element={<DividasHoje />} />
-                <Route path="fornecedores" element={<AllStaffOnly><Fornecedores /></AllStaffOnly>} />
+                <Route path="fornecedores" element={<AllStaffOnly><Navigate to="/stock?tab=fornecedores" replace /></AllStaffOnly>} />
                 <Route path="socios" element={<Navigate to="/clientes" replace />} />
                 <Route
                   path="equipa"

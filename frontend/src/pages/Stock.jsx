@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
+import Fornecedores from "./Fornecedores";
 import EditableText from "../components/EditableText";
 import { Plus, Package, ArrowsClockwise, PencilSimple, Trash, WarningCircle, ClockCounterClockwise } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -26,6 +28,15 @@ function Modal({ open, onClose, title, children }) {
 
 export default function Stock() {
   const { user } = useAuth();
+  const isDirection = ["admin", "tesoureiro", "presidente"].includes(user?.role);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = searchParams.get("tab") === "fornecedores" && isDirection ? "fornecedores" : "stock";
+  const setTab = (v) => {
+    const next = new URLSearchParams(searchParams);
+    if (v === "fornecedores") next.set("tab", "fornecedores");
+    else next.delete("tab");
+    setSearchParams(next, { replace: true });
+  };
   const canManage = user?.role === "admin" || user?.role === "tesoureiro";
   const canDelete = user?.role === "admin";
   const [products, setProducts] = useState([]);
@@ -252,6 +263,7 @@ export default function Stock() {
             <EditableText k="page.stock.title">Stock</EditableText>
           </h1>
         </div>
+        {tab === "stock" && (
         <div className="flex items-center gap-2">
           <button
             data-testid="writeoffs-history-btn"
@@ -269,8 +281,32 @@ export default function Stock() {
             <Plus size={18} weight="bold" /> Novo produto
           </button>
         </div>
+        )}
       </div>
 
+      <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900/60 p-1 mb-6" data-testid="stock-tabs">
+        {[
+          { v: "stock", label: "Stock" },
+          ...(isDirection ? [{ v: "fornecedores", label: "Fornecedores" }] : []),
+        ].map((opt) => (
+          <button
+            key={opt.v}
+            type="button"
+            data-testid={`stock-tab-${opt.v}`}
+            onClick={() => setTab(opt.v)}
+            className={`px-4 py-1.5 rounded-md text-xs font-bold uppercase tracking-wider transition-colors ${
+              tab === opt.v ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "fornecedores" ? (
+        <Fornecedores embedded />
+      ) : (
+        <>
       <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl overflow-hidden">
         {loading ? (
           <div className="p-10 text-center text-slate-500">A carregar...</div>
@@ -585,6 +621,8 @@ export default function Stock() {
           </div>
         </form>
       </Modal>
+        </>
+      )}
     </div>
   );
 }

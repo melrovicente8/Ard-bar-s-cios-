@@ -15,7 +15,6 @@ import {
   DeviceMobile,
   ArrowLeft,
   House,
-  Truck,
   Wallet,
   UsersThree,
   Bank,
@@ -59,8 +58,10 @@ const navGroups = [
   {
     section: "Stock",
     items: [
-      { to: "/stock", label: "Stock", icon: Package, testid: "nav-stock", roles: [...STAFF_ROLES, "funcionario"] },
-      { to: "/fornecedores", label: "Fornecedores", icon: Truck, testid: "nav-fornecedores", roles: STAFF_ROLES },
+      {
+        to: "/stock", label: "Stock", icon: Package, testid: "nav-stock",
+        also: ["/fornecedores"], roles: [...STAFF_ROLES, "funcionario"],
+      },
     ],
   },
   {

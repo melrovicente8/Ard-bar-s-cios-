@@ -36,7 +36,7 @@ function Modal({ open, onClose, title, children, wide = false }) {
   );
 }
 
-export default function Fornecedores() {
+export default function Fornecedores({ embedded = false }) {
   const { user } = useAuth();
   const canManage = user?.role === "admin" || user?.role === "tesoureiro";
   const canDelete = user?.role === "admin";
@@ -381,16 +381,18 @@ export default function Fornecedores() {
   };
 
   return (
-    <div className="p-6 md:p-10 animate-in" data-testid="fornecedores-page">
-      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
-        <div>
-          <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">
-            Compras
+    <div className={embedded ? "animate-in" : "p-6 md:p-10 animate-in"} data-testid="fornecedores-page">
+      <div className={`flex items-center mb-6 flex-wrap gap-3 ${embedded ? "justify-end" : "justify-between"}`}>
+        {!embedded && (
+          <div>
+            <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">
+              Compras
+            </div>
+            <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">
+              <EditableText k="page.fornecedores.title">Fornecedores</EditableText>
+            </h1>
           </div>
-          <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">
-            <EditableText k="page.fornecedores.title">Fornecedores</EditableText>
-          </h1>
-        </div>
+        )}
         <div className="flex gap-2">
           {canManage && tab === "expenses" && (
             <button
