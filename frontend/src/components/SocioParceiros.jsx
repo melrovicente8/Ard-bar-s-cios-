@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { Storefront, X, Camera, UploadSimple } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -44,6 +44,7 @@ export default function SocioParceiros() {
   const [form, setForm] = useState({ partner_id: "", amount: "", purchase_date: todayISO(), doc_number: "", note: "" });
   const [photo, setPhoto] = useState(null);
   const [busy, setBusy] = useState(false);
+  const photoInput = useRef(null);
 
   const load = () => {
     api.get("/socio/partners").then(({ data }) => setPartners(data || [])).catch(() => setPartners([]));
@@ -61,12 +62,18 @@ export default function SocioParceiros() {
 
   const pickPhoto = async (e) => {
     const file = e.target.files?.[0];
+    e.target.value = "";  // permite escolher outra vez o mesmo ficheiro
     if (!file) return;
     try {
       setPhoto(await readImage(file));
     } catch {
-      toast.error("Não foi possível ler a fotografia");
+      toast.error("Não foi possível ler esta fotografia. Tira outra ou escolhe uma imagem JPG/PNG.");
     }
+  };
+
+  const clearPhoto = () => {
+    setPhoto(null);
+    if (photoInput.current) photoInput.current.value = "";
   };
 
   const submit = async (e) => {
@@ -185,21 +192,42 @@ export default function SocioParceiros() {
                   />
                 </label>
 
-                <div className="rounded-lg border border-dashed border-slate-700 p-3 text-center">
+                <div className="rounded-lg border border-dashed border-slate-700 p-2 text-center">
                   <input
+                    ref={photoInput}
                     id="socio-ticket-photo"
                     data-testid="socio-parceiro-photo"
                     type="file"
                     accept="image/*"
-                    capture="environment"
                     onChange={pickPhoto}
                     className="hidden"
                   />
-                  <label htmlFor="socio-ticket-photo" className="cursor-pointer inline-flex items-center gap-2 text-xs font-bold text-sky-300">
-                    {photo ? <UploadSimple size={15} /> : <Camera size={15} />}
-                    {photo ? "Fotografia anexada · trocar" : "Tirar fotografia ao talão"}
+                  <label
+                    htmlFor="socio-ticket-photo"
+                    className="flex w-full cursor-pointer flex-col items-center justify-center gap-1 rounded px-3 py-4 hover:bg-slate-900/60"
+                  >
+                    {photo ? <UploadSimple size={22} /> : <Camera size={22} />}
+                    <span className="text-xs font-bold text-sky-300">
+                      {photo ? "Fotografia anexada · trocar" : "Anexar a fotografia do talão"}
+                    </span>
+                    <span className="text-[10px] text-slate-500">
+                      {photo ? "Toca para escolher outra imagem" : "Tira uma fotografia ou escolhe da galeria"}
+                    </span>
                   </label>
-                  {photo && <img src={photo} alt="talão" className="mt-2 max-h-32 mx-auto rounded" />}
+                  {photo && (
+                    <div className="relative mt-1 inline-block">
+                      <img src={photo} alt="talão" className="max-h-32 rounded" />
+                      <button
+                        type="button"
+                        data-testid="socio-parceiro-photo-clear"
+                        onClick={clearPhoto}
+                        title="Remover fotografia"
+                        className="absolute -right-2 -top-2 rounded-full bg-slate-900 border border-slate-700 p-1 text-rose-300"
+                      >
+                        <X size={11} weight="bold" />
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <button
