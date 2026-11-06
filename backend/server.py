@@ -3735,12 +3735,30 @@ def _allocate_payment_coverages(sales: list, payments: list) -> dict:
     for p in sorted(payments, key=lambda x: x.get("created_at") or ""):
         covered = []
         if p.get("item_targets"):
+            # Pagamento de linhas escolhidas: o recibo mostra a venda e o seu detalhe
+            # (na Rodada Mista o detalhe real está em group_rounds, não na linha-resumo).
+            by_sale: dict = {}
             for t in p["item_targets"]:
                 amt = round(float(t.get("unit_price", 0) or 0) * (
                     int(t.get("qty_pay", 0) or 0) + int(t.get("qty_offer", 0) or 0)
                 ), 2)
                 sid = t.get("sale_id")
                 remaining[sid] = round(max(remaining.get(sid, 0) - amt, 0), 2)
+                info = by_sale.setdefault(sid, {"applied": 0.0, "targets": []})
+                info["applied"] = round(info["applied"] + amt, 2)
+                info["targets"].append(t)
+            for sid, info in by_sale.items():
+                sale = next((s for s in sales if s["id"] == sid), {})
+                covered.append({
+                    "sale_id": sid,
+                    "tx_number": sale.get("tx_number"),
+                    "created_at": sale.get("created_at"),
+                    "total": float(sale.get("total", 0) or 0),
+                    "applied": info["applied"],
+                    "items": sale.get("group_items") or sale.get("items") or [],
+                    "rounds": sale.get("group_rounds") or [],
+                    "item_targets": info["targets"],
+                })
             out[p["id"]] = covered
             continue
         pool = round(float(p.get("total_credited") or p.get("amount") or 0), 2)
@@ -6102,8 +6120,13 @@ async def _account_balances() -> dict:
     # Acerto de abertura do banco (MBWay e depósitos) — também não é receita nem despesa
     bank_reset_docs = [w for w in wd_all if w.get("kind") == "bank_reset"]
     bank_reset = round(sum(float(w.get("amount", 0)) for w in bank_reset_docs), 2)
-    # O MBWay não passa pela gaveta: entra diretamente no banco
-    bank_balance = round(mbway_in + deposits + dep_in_bank - bank_to_cash - exp_bank - bank_reset, 2)
+    # Acerto da parcela MBWay (dinheiro recebido por MBWay, por conciliar com o banco)
+    mbway_reset = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "mbway_reset"), 2)
+    # O MBWay não passa pela gaveta: entra no banco. O valor em banco é a parcela
+    # MBWay + os depósitos e movimentos bancários.
+    mbway_balance = round(mbway_in - mbway_reset, 2)
+    bank_deposits_balance = round(deposits + dep_in_bank - bank_to_cash - exp_bank - bank_reset, 2)
+    bank_balance = round(mbway_balance + bank_deposits_balance, 2)
     cash_balance = round(cash_in + dep_in_cash + bank_to_cash - deposits - refunds - exp_cash - cash_reset, 2)
     # Cartão "Valor em caixa": numerário e MBWay recebidos desde o último acerto de abertura
     opening = await db.club_settings.find_one({"_id": "opening_balances"}) or {}
@@ -6114,6 +6137,8 @@ async def _account_balances() -> dict:
     return {
         "cash_balance": cash_balance,
         "bank_balance": bank_balance,
+        "mbway_balance": mbway_balance,
+        "bank_deposits_balance": bank_deposits_balance,
         "total_balance": round(bank_balance + cash_balance, 2),
         "cash_numerario": numerario_since,
         "cash_mbway": mbway_since,
@@ -6226,43 +6251,236 @@ async def list_bank_transfers(user: dict = Depends(get_current_user)):
     return items
 
 
-class BankResetIn(BaseModel):
+# ---------- Acertos de abertura (cadeado + confirmação de 2 administradores) ----------
+ACERTO_TARGETS = {"cash": "Caixa (numerário)", "bank": "Banco (depósitos)", "mbway": "MBWay"}
+ACERTO_KINDS = {"balances": "Caixa/Banco", "client": "Conta de sócio/cliente", "supplier": "Conta de fornecedor"}
+
+
+class AcertoIn(BaseModel):
+    kind: str = "balances"  # balances | client | supplier
+    targets: List[str] = []  # cash | bank | mbway
+    entity_id: Optional[str] = None
+    password: str  # desbloqueia o cadeado (a palavra-passe do próprio administrador)
     reason: str = ""
 
 
-@api_router.post("/bank/reset")
-async def reset_bank_balances(body: BankResetIn, user: dict = Depends(require_role("admin", "tesoureiro"))):
-    """Acerto de abertura: zera o valor contabilístico em caixa (numerário) e em banco
-    (MBWay e depósitos), registando um movimento de acerto por conta. Não é receita nem despesa."""
-    balances = await _account_balances()
-    reason = (body.reason or "").strip() or "Acerto de abertura"
-    created = []
-    for kind, label, value in (("cash_reset", "Caixa (numerário)", balances["cash_balance"]),
-                               ("bank_reset", "Banco (MBWay)", balances["bank_balance"])):
-        amount = round(float(value or 0), 2)
-        if abs(amount) < 0.005:
-            continue
-        tx_no = await _next_tx_number()
-        doc = {
-            "id": str(uuid.uuid4()),
-            "tx_number": tx_no,
-            "kind": kind,
-            "amount": amount,
-            "note": reason[:500],
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "user_email": user["email"],
-            "user_role": user.get("role"),
-        }
-        await db.cash_withdrawals.insert_one(doc)
-        await _audit("bank_reset", user["email"], entity="cash_withdrawal", entity_id=doc["id"], tx_number=tx_no,
-                     summary=f"Acerto #{tx_no} · {label} zerado ({euro_fmt(amount)}) · {reason}")
-        doc.pop("_id", None)
-        created.append(doc)
+class AcertoDecisionIn(BaseModel):
+    password: str
+    reason: str = ""
+
+
+async def _check_admin_password(user: dict, password: str):
+    """Valida o cadeado: a palavra-passe do administrador autenticado."""
+    doc = await db.users.find_one({"id": user["id"]})
+    if not doc or not verify_password(password or "", doc.get("password_hash", "")):
+        raise HTTPException(status_code=403, detail="Palavra-passe incorreta — o cadeado continua fechado")
+    return doc
+
+
+async def _acerto_current(kind: str, targets: list, entity_id: Optional[str]) -> dict:
+    """Valores atuais do que vai ser zerado (pré-visualização no pedido)."""
+    if kind == "balances":
+        b = await _account_balances()
+        values = {t: float(b.get({"cash": "cash_balance", "bank": "bank_deposits_balance",
+                                 "mbway": "mbway_balance"}[t]) or 0) for t in targets}
+        return {"amount": round(sum(values.values()), 2), "values": values, "name": None}
+    if kind == "client":
+        c = await db.clients.find_one({"id": entity_id}, {"_id": 0, "name": 1, "balance": 1}) or {}
+        return {"amount": round(float(c.get("balance") or 0), 2), "values": {}, "name": c.get("name")}
+    if kind == "supplier":
+        s = await db.suppliers.find_one({"id": entity_id}, {"_id": 0, "name": 1}) or {}
+        orders = await db.supplier_orders.find({"supplier_id": entity_id, "paid": False}, {"_id": 0, "balance_due": 1}).to_list(2000)
+        expenses = await db.supplier_expenses.find({"supplier_id": entity_id, "paid": False}, {"_id": 0, "amount": 1}).to_list(2000)
+        total = sum(float(o.get("balance_due") or 0) for o in orders) + sum(float(e.get("amount") or 0) for e in expenses)
+        return {"amount": round(total, 2), "values": {}, "name": s.get("name")}
+    raise HTTPException(status_code=400, detail="Tipo de acerto inválido")
+
+
+def _acerto_label(doc: dict) -> str:
+    kind = doc.get("kind")
+    if kind == "balances":
+        return " + ".join(ACERTO_TARGETS[t] for t in doc.get("targets") or [] if t in ACERTO_TARGETS)
+    if kind == "client":
+        return f"Conta de {doc.get('entity_name') or 'sócio/cliente'}"
+    if kind == "supplier":
+        return f"Conta de fornecedor {doc.get('entity_name') or ''}".strip()
+    return "Acerto"
+
+
+async def _apply_acerto(doc: dict, user: dict) -> list:
+    """Executa o acerto já aprovado por dois administradores."""
+    reason = doc.get("reason") or "Acerto de abertura"
     now = datetime.now(timezone.utc).isoformat()
-    await db.club_settings.update_one({"_id": "opening_balances"},
-                                      {"$set": {"cash_at": now, "bank_at": now, "reason": reason}},
-                                      upsert=True)
-    return {"balances": await _account_balances(), "created": created}
+    created = []
+    if doc.get("kind") == "balances":
+        b = await _account_balances()
+        amounts = {}
+        for t in doc.get("targets") or []:
+            if t == "cash":
+                amounts["cash_reset"] = b["cash_balance"]
+            elif t == "bank":
+                amounts["bank_reset"] = b["bank_deposits_balance"]
+            elif t == "mbway":
+                amounts["mbway_reset"] = b["mbway_balance"]
+        for kind, value in amounts.items():
+            amount = round(float(value or 0), 2)
+            if abs(amount) < 0.005:
+                continue
+            tx_no = await _next_tx_number()
+            wd = {
+                "id": str(uuid.uuid4()),
+                "tx_number": tx_no,
+                "kind": kind,
+                "amount": amount,
+                "note": f"{reason} · confirmado por {user['email']}",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "user_email": user["email"],
+                "user_role": user.get("role"),
+            }
+            await db.cash_withdrawals.insert_one(wd)
+            target_label = ACERTO_TARGETS.get(kind.replace("_reset", ""), kind)
+            await _audit("bank_reset", user["email"], entity="cash_withdrawal", entity_id=wd["id"], tx_number=tx_no,
+                         summary=f"Acerto #{tx_no} · {target_label} zerado ({euro_fmt(amount)}) · "
+                                 f"pedido por {doc.get('requested_by')} · {reason}")
+            wd.pop("_id", None)
+            created.append(wd)
+        await db.club_settings.update_one(
+            {"_id": "opening_balances"},
+            {"$set": {"cash_at": now, "bank_at": now, "mbway_at": now, "reason": reason}},
+            upsert=True,
+        )
+    elif doc.get("kind") == "client":
+        c = await db.clients.find_one({"id": doc.get("entity_id")}, {"_id": 0})
+        if not c:
+            raise HTTPException(status_code=404, detail="Sócio/cliente não encontrado")
+        previous = round(float(c.get("balance") or 0), 2)
+        await db.clients.update_one({"id": c["id"]}, {"$set": {"balance": 0.0}})
+        await _audit("client_balance_reset", user["email"], entity="client", entity_id=c["id"],
+                     summary=f"Conta de {c.get('name')} zerada ({euro_fmt(previous)}) · {reason}")
+    elif doc.get("kind") == "supplier":
+        sid = doc.get("entity_id")
+        sup = await db.suppliers.find_one({"id": sid}, {"_id": 0, "name": 1})
+        if not sup:
+            raise HTTPException(status_code=404, detail="Fornecedor não encontrado")
+        orders = await db.supplier_orders.update_many(
+            {"supplier_id": sid, "paid": False},
+            {"$set": {"paid": True, "balance_due": 0.0, "write_off": True, "write_off_at": now}},
+        )
+        expenses = await db.supplier_expenses.update_many(
+            {"supplier_id": sid, "paid": False},
+            {"$set": {"paid": True, "paid_at": now, "write_off": True}},
+        )
+        await _audit("supplier_balance_reset", user["email"], entity="supplier", entity_id=sid,
+                     summary=f"Conta do fornecedor {sup.get('name')} zerada "
+                             f"({orders.modified_count} encomenda(s), {expenses.modified_count} despesa(s)) · {reason}")
+    return created
+
+
+@api_router.post("/acertos/unlock")
+async def unlock_acertos(user: dict = Depends(require_role("admin")), body: AcertoDecisionIn = None):
+    """Cadeado dos acertos: valida a palavra-passe do administrador antes de pedir o acerto."""
+    await _check_admin_password(user, getattr(body, "password", "") if body else "")
+    return {"unlocked": True, "user": user["email"]}
+
+
+@api_router.get("/acertos")
+async def list_acertos(status_filter: Optional[str] = None, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    q = {"status": status_filter} if status_filter else {}
+    items = await db.acertos.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
+    for it in items:
+        it["label"] = _acerto_label(it)
+    return items
+
+
+@api_router.post("/acertos")
+async def create_acerto(body: AcertoIn, user: dict = Depends(require_role("admin"))):
+    """Pede um acerto (caixa/banco/MBWay ou conta de sócio/fornecedor). Só se executa
+    depois de um SEGUNDO administrador confirmar — ver `/acertos/{id}/approve`."""
+    await _check_admin_password(user, body.password)
+    kind = (body.kind or "balances").strip().lower()
+    if kind not in ACERTO_KINDS:
+        raise HTTPException(status_code=400, detail="Tipo de acerto inválido")
+    targets = [t for t in (body.targets or []) if t in ACERTO_TARGETS] if kind == "balances" else []
+    if kind == "balances" and not targets:
+        raise HTTPException(status_code=400, detail="Escolhe o que queres zerar")
+    if kind in ("client", "supplier") and not body.entity_id:
+        raise HTTPException(status_code=400, detail="Escolhe a conta a zerar")
+    current = await _acerto_current(kind, targets, body.entity_id)
+    reason = (body.reason or "").strip() or "Acerto de abertura"
+    doc = {
+        "id": str(uuid.uuid4()),
+        "kind": kind,
+        "targets": targets,
+        "entity_id": body.entity_id,
+        "entity_name": current.get("name"),
+        "amount": current.get("amount"),
+        "values": current.get("values") or {},
+        "reason": reason[:500],
+        "status": "pending",
+        "requested_by": user["email"],
+        "requested_by_name": user.get("name") or user["email"],
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "decided_by": None,
+        "decided_at": None,
+        "decision_note": None,
+    }
+    await db.acertos.insert_one(doc)
+    await _audit("acerto_requested", user["email"], entity="acerto", entity_id=doc["id"],
+                 summary=f"Acerto pedido · {_acerto_label(doc)} · {euro_fmt(doc['amount'] or 0)} · "
+                         f"aguarda confirmação de outro administrador")
+    doc.pop("_id", None)
+    doc["label"] = _acerto_label(doc)
+    return doc
+
+
+@api_router.post("/acertos/{acerto_id}/approve")
+async def approve_acerto(acerto_id: str, body: AcertoDecisionIn, user: dict = Depends(require_role("admin"))):
+    """Segunda confirmação: outro administrador confirma com a sua palavra-passe e o acerto corre."""
+    doc = await db.acertos.find_one({"id": acerto_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Pedido de acerto não encontrado")
+    if doc.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Este pedido já foi decidido")
+    if doc.get("requested_by") == user["email"]:
+        raise HTTPException(status_code=403, detail="O acerto tem de ser confirmado por outro administrador")
+    await _check_admin_password(user, body.password)
+    created = await _apply_acerto(doc, user)
+    await db.acertos.update_one(
+        {"id": acerto_id},
+        {"$set": {"status": "approved", "decided_by": user["email"],
+                  "decided_by_name": user.get("name") or user["email"],
+                  "decided_at": datetime.now(timezone.utc).isoformat(),
+                  "decision_note": (body.reason or "").strip()[:500] or None,
+                  "movements": [c.get("tx_number") for c in created]}},
+    )
+    await _audit("acerto_approved", user["email"], entity="acerto", entity_id=acerto_id,
+                 summary=f"Acerto confirmado · {_acerto_label(doc)} · {euro_fmt(doc.get('amount') or 0)}")
+    updated = await db.acertos.find_one({"id": acerto_id}, {"_id": 0})
+    updated["label"] = _acerto_label(updated)
+    updated["balances"] = await _account_balances()
+    return updated
+
+
+@api_router.post("/acertos/{acerto_id}/reject")
+async def reject_acerto(acerto_id: str, body: AcertoDecisionIn, user: dict = Depends(require_role("admin"))):
+    doc = await db.acertos.find_one({"id": acerto_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Pedido de acerto não encontrado")
+    if doc.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Este pedido já foi decidido")
+    await _check_admin_password(user, body.password)
+    await db.acertos.update_one(
+        {"id": acerto_id},
+        {"$set": {"status": "rejected", "decided_by": user["email"],
+                  "decided_by_name": user.get("name") or user["email"],
+                  "decided_at": datetime.now(timezone.utc).isoformat(),
+                  "decision_note": (body.reason or "").strip()[:500] or None}},
+    )
+    await _audit("acerto_rejected", user["email"], entity="acerto", entity_id=acerto_id,
+                 summary=f"Acerto recusado · {_acerto_label(doc)}")
+    updated = await db.acertos.find_one({"id": acerto_id}, {"_id": 0})
+    updated["label"] = _acerto_label(updated)
+    return updated
 
 
 @api_router.get("/treasury/movements")
@@ -6313,7 +6531,7 @@ async def treasury_movements(account: str = "cash", date_from: Optional[str] = N
         async for w in db.cash_withdrawals.find(q, {"_id": 0}):
             kind = w.get("kind")
             amt = float(w.get("amount", 0))
-            if kind in ("bank_deposit", "deposit_in", "transfer_bank_cash", "expense_bank", "bank_reset"):
+            if kind in ("bank_deposit", "deposit_in", "transfer_bank_cash", "expense_bank", "bank_reset", "mbway_reset"):
                 if kind == "bank_deposit":
                     direction, desc = "in", "Depósito de caixa"
                 elif kind == "deposit_in":
@@ -6324,6 +6542,8 @@ async def treasury_movements(account: str = "cash", date_from: Optional[str] = N
                     direction, desc = "out", "Transferência Banco → Caixa"
                 elif kind == "bank_reset":
                     direction, desc = "out", "Acerto de abertura de banco"
+                elif kind == "mbway_reset":
+                    direction, desc = "out", "Acerto do MBWay"
                 else:
                     direction, desc = "out", "Despesa paga por banco"
                 movements.append({

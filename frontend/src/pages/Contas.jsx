@@ -50,6 +50,10 @@ export default function Contas() {
       next = { from: d.toISOString().slice(0, 10), to: t };
     }
     else if (p === "month") next = { from: t.slice(0, 7) + "-01", to: t };
+    else if (p === "quarter") {
+      const qMonth = Math.floor((Number(t.slice(5, 7)) - 1) / 3) * 3 + 1;
+      next = { from: `${t.slice(0, 4)}-${String(qMonth).padStart(2, "0")}-01`, to: t };
+    }
     else if (p === "year") next = { from: t.slice(0, 4) + "-01-01", to: t };
     else if (p === "all") next = { from: "", to: "" };
     if (!next) return;
@@ -68,6 +72,18 @@ export default function Contas() {
       const { data: m } = await api.get("/reports/finance", { params: { date_from: from, date_to: today } });
       const monthName = MONTHS_PT[Number(today.slice(5, 7)) - 1];
       if (!openFinanceDoc(m, from, today, `RELATÓRIO MENSAL · ${monthName} ${today.slice(0, 4)}`)) toast.error("Permite popups");
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const printQuarterly = async () => {
+    try {
+      const qMonth = Math.floor((Number(today.slice(5, 7)) - 1) / 3) * 3 + 1;
+      const from = `${today.slice(0, 4)}-${String(qMonth).padStart(2, "0")}-01`;
+      const { data: q } = await api.get("/reports/finance", { params: { date_from: from, date_to: today } });
+      const quarter = Math.floor((Number(today.slice(5, 7)) - 1) / 3) + 1;
+      if (!openFinanceDoc(q, from, today, `RELATÓRIO TRIMESTRAL · ${quarter}.º TRIMESTRE ${today.slice(0, 4)}`)) toast.error("Permite popups");
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
@@ -127,6 +143,7 @@ export default function Contas() {
                 { v: "yesterday", l: "Ontem" },
                 { v: "week", l: "Semana" },
                 { v: "month", l: "Mês" },
+                { v: "quarter", l: "Trimestre" },
                 { v: "year", l: "Ano" },
                 { v: "all", l: "Sempre" },
               ]
@@ -145,6 +162,9 @@ export default function Contas() {
               </button>
               <button data-testid="contas-print-monthly" onClick={printMonthly} className="text-xs px-3 py-1.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 flex items-center gap-1.5">
                 <Printer size={13} weight="duotone" /> PDF mensal
+              </button>
+              <button data-testid="contas-print-quarterly" onClick={printQuarterly} className="text-xs px-3 py-1.5 rounded-md bg-sky-500/15 text-sky-300 border border-sky-500/30 hover:bg-sky-500/25 flex items-center gap-1.5">
+                <Printer size={13} weight="duotone" /> PDF trimestral
               </button>
             </>
           )}

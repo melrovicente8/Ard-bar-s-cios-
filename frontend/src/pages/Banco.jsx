@@ -6,6 +6,7 @@ import { useAuth } from "../context/AuthContext";
 import { Vault, Bank, ClipboardText, CalendarBlank, Money, ArrowsLeftRight, HandCoins } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import TreasuryModal from "../components/TreasuryModal";
+import AcertoPanel from "../components/AcertoPanel";
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
 
@@ -60,20 +61,6 @@ export default function Banco() {
   useEffect(() => {
     load();
   }, []);
-
-  const resetBalances = async () => {
-    if (!window.confirm(`Zerar o valor em caixa (${euro(cashBank?.cash_balance || 0)}) e em banco (${euro(cashBank?.bank_balance || 0)})? Fica registado um acerto de abertura — não altera receitas nem despesas.`)) return;
-    setSaving(true);
-    try {
-      await api.post("/bank/reset", { reason: "Acerto de abertura (zerar caixa e banco)" });
-      toast.success("Caixa e banco zerados");
-      await load();
-    } catch (err) {
-      toast.error(formatApiErrorDetail(err.response?.data?.detail));
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const submitDeposit = async (e) => {
     e.preventDefault();
@@ -166,15 +153,8 @@ export default function Banco() {
         </div>
       )}
 
-      {canManage && cashBank && (
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/40 border border-slate-800 rounded-xl px-5 py-4" data-testid="banco-reset-box">
-          <p className="text-xs text-slate-500">
-            Acerto de abertura: regista um movimento que zera o valor em caixa (numerário) e em banco (MBWay), sem alterar receitas nem despesas.
-          </p>
-          <button onClick={resetBalances} disabled={saving} data-testid="banco-reset-balances" className="shrink-0 px-4 py-2 rounded-lg border border-rose-500/40 text-rose-300 text-xs font-bold hover:bg-rose-500/10 disabled:opacity-50">
-            Zerar caixa e banco
-          </button>
-        </div>
+      {user?.role === "admin" && cashBank && (
+        <AcertoPanel balances={cashBank} user={user} onDone={load} />
       )}
 
       {canManage ? (
