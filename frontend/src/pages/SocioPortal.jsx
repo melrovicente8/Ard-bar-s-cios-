@@ -46,6 +46,9 @@ import SocioDigitalCard from "../components/SocioDigitalCard";
 import SocioMerch from "../components/SocioMerch";
 import SocioFamily from "../components/SocioFamily";
 import SocioGifts from "../components/SocioGifts";
+import SocioBadges from "../components/SocioBadges";
+import SocioRodadaMista from "../components/SocioRodadaMista";
+import SocioParceiros from "../components/SocioParceiros";
 import { openQuarterlyDoc } from "../lib/quarterlyDoc";
 import { openMonthlyDoc } from "../lib/monthlyDoc";
 import { printReceipt as printReceiptA6 } from "../lib/receipt";
@@ -1082,6 +1085,9 @@ export default function SocioPortal() {
                 <div className="text-[10px] text-slate-500 mt-1">{c.quota_status?.status === "paid" ? "Consulta disponível" : "🔒 Exclusivo para cotas em dia"}</div>
               )}
             </div>
+            <SocioBadges />
+            <SocioRodadaMista />
+            <SocioParceiros />
           </div>
         </div>
 

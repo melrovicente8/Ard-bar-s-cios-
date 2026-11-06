@@ -96,9 +96,13 @@ export default function PresenceCalendar({ data, compact = false }) {
                   ? "bg-slate-900 border-amber-500/50 text-slate-300"
                   : "bg-slate-950/40 border-slate-800 text-slate-500"
               }`}
-              title={c.present ? `${c.iso} · presença na sede` : c.iso}
+              title={
+                c.present
+                  ? `${c.iso} · ${(data.partner_days || {})[c.iso] ? "presença validada por parceiro local" : "presença na sede"}`
+                  : c.iso
+              }
             >
-              {c.empty ? "" : c.present ? "🏠" : c.day}
+              {c.empty ? "" : c.present ? ((data.partner_days || {})[c.iso] || "🏠") : c.day}
             </div>
           ))}
         </div>

@@ -28,6 +28,7 @@ import Bilhetes from "./pages/Bilhetes";
 import Documentacao from "./pages/Documentacao";
 import OfertasCasa from "./pages/OfertasCasa";
 import Rankings from "./pages/Rankings";
+import Parceiros from "./pages/Parceiros";
 import SocioLogin from "./pages/SocioLogin";
 import Adesao from "./pages/Adesao";
 import SocioPortal from "./pages/SocioPortal";
@@ -137,6 +138,7 @@ function App() {
                 <Route path="ofertas" element={<AllStaffOnly><OfertasCasa /></AllStaffOnly>} />
                 <Route path="bilhetes" element={<Bilhetes />} />
                 <Route path="rankings" element={<Rankings />} />
+                <Route path="parceiros" element={<AllStaffOnly><Parceiros /></AllStaffOnly>} />
                 <Route path="documentacao" element={<AdminOnly><Documentacao /></AdminOnly>} />
               </Route>
               <Route path="*" element={<Navigate to="/" replace />} />

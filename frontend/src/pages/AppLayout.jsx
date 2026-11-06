@@ -71,6 +71,7 @@ const navGroups = [
     items: [
       { to: "/clientes", label: "Clientes e Sócios", icon: Users, testid: "nav-clients", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/rankings", label: "Tabela de Feitos", icon: Trophy, testid: "nav-rankings", roles: [...STAFF_ROLES, "funcionario"] },
+      { to: "/parceiros", label: "Parceiros locais", icon: Storefront, testid: "nav-parceiros", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/mbway", label: "MBWay", icon: DeviceMobile, testid: "nav-mbway", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/pedidos", label: "Pedidos sócio", icon: ShoppingCart, testid: "nav-pedidos", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/mensagens", label: "Mensagens", icon: ChatCircle, testid: "nav-mensagens", roles: [...STAFF_ROLES, "funcionario"] },

@@ -12,6 +12,8 @@ import {
   Scissors,
   Receipt,
   ArrowClockwise,
+  PencilSimple,
+  Check,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -44,6 +46,8 @@ export default function RodadaMista({ onClose, onChanged }) {
   const [unitOwner, setUnitOwner] = useState({}); // chave da unidade -> client_id (uma linha por unidade)
   const [memberMethod, setMemberMethod] = useState({}); // client_id -> account|cash|mbway
   const [receipt, setReceipt] = useState(null);
+  const [renaming, setRenaming] = useState(false);
+  const [labelDraft, setLabelDraft] = useState("");
 
   const load = async () => {
     const [c, p, t] = await Promise.all([
@@ -258,6 +262,23 @@ export default function RodadaMista({ onClose, onChanged }) {
     }
   };
 
+  const saveLabel = async () => {
+    const label = labelDraft.trim();
+    if (!label) return toast.error("Indica um nome para a mesa");
+    setBusy(true);
+    try {
+      await api.put(`/group-tables/${table.id}`, { label });
+      setRenaming(false);
+      await refreshTable(table.id);
+      await load();
+      toast.success("Mesa renomeada");
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const addProduct = (p) => {
     const cur = cart[p.id] || 0;
     if (cur >= p.quantity) return toast.error(`Stock máximo: ${p.quantity}`);
@@ -401,7 +422,40 @@ export default function RodadaMista({ onClose, onChanged }) {
             <div className="lg:col-span-2 space-y-4">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div>
-                  <h3 className="font-outfit text-lg font-semibold">{table.label}</h3>
+                  {renaming ? (
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        autoFocus
+                        data-testid="rodada-label-input"
+                        value={labelDraft}
+                        onChange={(e) => setLabelDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") saveLabel();
+                          if (e.key === "Escape") setRenaming(false);
+                        }}
+                        className="bg-slate-950 border border-sky-500/50 rounded px-2 py-1 text-sm text-white focus:outline-none"
+                      />
+                      <button data-testid="rodada-label-save" onClick={saveLabel} disabled={busy} className="p-1.5 rounded bg-sky-500 text-slate-950 disabled:opacity-40" title="Guardar">
+                        <Check size={12} weight="bold" />
+                      </button>
+                      <button onClick={() => setRenaming(false)} className="p-1.5 rounded bg-slate-800 text-slate-300" title="Cancelar">
+                        <X size={12} weight="bold" />
+                      </button>
+                    </div>
+                  ) : (
+                    <h3 className="font-outfit text-lg font-semibold flex items-center gap-1.5">
+                      {table.label}
+                      <button
+                        type="button"
+                        data-testid="rodada-label-edit"
+                        onClick={() => { setRenaming(true); setLabelDraft(table.label || ""); }}
+                        className="p-1 rounded text-slate-500 hover:text-sky-300 hover:bg-slate-800"
+                        title="Editar o nome da mesa"
+                      >
+                        <PencilSimple size={13} />
+                      </button>
+                    </h3>
+                  )}
                   <div className="text-[11px] text-slate-500">
                     {(table.members || []).map((m) => m.name.split(" ")[0] + (m.member_number ? ` (nº ${m.member_number})` : "")).join(" · ")}
                   </div>

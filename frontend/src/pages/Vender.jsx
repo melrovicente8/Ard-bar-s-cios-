@@ -200,16 +200,6 @@ export default function Vender() {
 
       {showRodada && <RodadaMista onClose={() => setShowRodada(false)} onChanged={load} />}
 
-      {/* Rodada Mista — cartão no mesmo formato do Cliente Ocasional */}
-      <div className="mb-6">
-        <RodadaMistaCard onOpen={() => setShowRodada(true)} refreshKey={cardsVersion} />
-      </div>
-
-      {/* Fichas temporárias · Cliente Ocasional / Não Cliente (máx. 3 ativas) */}
-      <div className="mb-6">
-        <OccasionalCards onSell={(card) => setClientId(card.id)} onChanged={load} refreshKey={cardsVersion} />
-      </div>
-
       {/* Selector de Cliente/Sócio — sempre por CIMA dos produtos */}
       <div className="mb-6 bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-5" data-testid="client-picker">
         <div className="flex items-center justify-between mb-3">
@@ -347,6 +337,16 @@ export default function Vender() {
           </div>
         </div>
       )}
+
+      {/* Mesas de grupo e fichas temporárias — depois do cliente e da venda rápida */}
+      <div className="mb-6">
+        <RodadaMistaCard onOpen={() => setShowRodada(true)} refreshKey={cardsVersion} />
+      </div>
+
+      {/* Fichas temporárias · Cliente Ocasional / Não Cliente (máx. 3 ativas) */}
+      <div className="mb-6">
+        <OccasionalCards onSell={(card) => setClientId(card.id)} onChanged={load} refreshKey={cardsVersion} />
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Products grid */}

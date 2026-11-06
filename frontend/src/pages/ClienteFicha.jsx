@@ -7,6 +7,7 @@ import PaymentModal from "../components/PaymentModal";
 import SecondCopyDialog from "../components/SecondCopyDialog";
 import QuotaBall from "../components/QuotaBall";
 import PresenceCalendar from "../components/PresenceCalendar";
+import BadgesGrid from "../components/BadgesGrid";
 import {
   ArrowLeft,
   CurrencyEur,
@@ -111,6 +112,19 @@ export default function ClienteFicha() {
   const [showAccess, setShowAccess] = useState(false);
   const [showPresences, setShowPresences] = useState(false);
   const [presences, setPresences] = useState(null);
+  const [showBadges, setShowBadges] = useState(false);
+  const [badges, setBadges] = useState(null);
+
+  const openBadges = async () => {
+    setShowBadges(true);
+    setBadges(null);
+    try {
+      const { data } = await api.get(`/clients/${id}/badges`);
+      setBadges(data);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
 
   const openPresences = async () => {
     setShowPresences(true);
@@ -859,6 +873,18 @@ export default function ClienteFicha() {
               >
                 <CalendarBlank size={13} weight="duotone" />
                 Presenças na sede · calendário e streak
+              </button>
+            )}
+            {(c.is_member || c.member_number) && (
+              <button
+                type="button"
+                data-testid="ficha-badges-btn"
+                onClick={openBadges}
+                className="text-xs text-slate-400 hover:text-amber-300 mt-1 flex items-center gap-1.5"
+                title="Medalhas de conquistas desbloqueadas pelo sócio"
+              >
+                <Medal size={13} weight="duotone" />
+                Conquistas · medalhas de perfil
               </button>
             )}
             {(c.direction_history || []).length > 0 && (
@@ -2251,6 +2277,21 @@ export default function ClienteFicha() {
             </p>
             {presences ? <PresenceCalendar data={presences} /> : <div className="text-sm text-slate-500 py-6 text-center">A carregar...</div>}
             <button onClick={() => setShowPresences(false)} className="mt-3 w-full px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm">Fechar</button>
+          </div>
+        </div>
+      )}
+
+      {showBadges && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/80 backdrop-blur-sm p-4 overflow-y-auto" onClick={() => setShowBadges(false)} data-testid="ficha-badges-modal">
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-3xl p-5 my-6 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center gap-2 mb-2">
+              <Medal size={20} weight="duotone" className="text-amber-400" />
+              <h3 className="font-outfit text-xl font-semibold flex-1">Conquistas de {c.name}</h3>
+              {badges && <span className="text-xs text-amber-300 font-bold">{badges.unlocked}/{badges.total}</span>}
+            </div>
+            <p className="text-xs text-slate-400 mb-3">Medalhas desbloqueadas na sede — visíveis também no portal do sócio.</p>
+            {badges ? <BadgesGrid badges={badges.badges} compact /> : <div className="text-sm text-slate-500 py-6 text-center">A carregar...</div>}
+            <button onClick={() => setShowBadges(false)} className="mt-3 w-full px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm">Fechar</button>
           </div>
         </div>
       )}

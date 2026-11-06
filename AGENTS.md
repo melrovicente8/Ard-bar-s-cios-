@@ -60,3 +60,21 @@ docker compose -f docker-compose.base44.yml up -d
   `POST /api/group-tables` (2+ sócios, notifica cada um e marca presença), `POST /{id}/rounds` (valida stock e desconta), `POST /{id}/rounds/{n}/settle` (rotação: um sócio assume a rodada), `POST /{id}/split` (partes iguais ou por consumo; cria uma venda por sócio), `POST /{id}/close`.
 - As vendas ficam com `source: "group_round"` e uma única linha-resumo: "Rodada Mista (Oferecida à Mesa)" ou "Rodada Mista (Partilha i/n)"; o detalhe dos produtos vai em `group_items`. O stock é abatido no lançamento da rodada, por isso estas vendas não voltam a mexer no stock.
 - Presenças do dia em `db.presences` (`client_id` + `date`), `GET /api/socio/presences/me`.
+
+## Rodada Mista na app do sócio
+- `GET /api/socio/group-tables` devolve as mesas abertas e as 5 últimas fechadas em que o sócio é membro (calcula `open_total`, `share_if_split`, `my_paid`).
+- `POST /api/socio/group-tables` (`member_ids`) abre a mesa com o sócio autenticado incluído (mín. 2 elementos). Toda a criação passa por `_open_group_table()` — staff (`POST /api/group-tables`) e sócio usam o mesmo caminho (notificação + presença).
+- Renomear mesa: `PUT /api/group-tables/{id}` com `{label}`. Na aba Vender há um lápis em cada cartão de mesa (`RodadaMistaCard`) e no cabeçalho da mesa dentro do modal `RodadaMista`.
+- Ordem da aba Vender: Cliente/Sócio → avisos → Venda rápida → cartões de Mesa de grupo / Cliente Ocasional → produtos.
+
+## Medalhas de conquistas (badges)
+- `BADGE_DEFS` em `backend/server.py` (15 medalhas) + `_badges_for(client_id)`, calculadas a partir de vendas, presenças, rodadas e cotas.
+- `GET /api/socio/badges` (app do sócio) e `GET /api/clients/{id}/badges` (consulta do staff — botão "Conquistas · medalhas de perfil" na ficha).
+- Medalhas de eventos usam `db.events` (`kind`: `sueca`/`torneio`, `futebol`/`classico`) com `participants`/`participant_ids`; sem eventos registados ficam bloqueadas. "Sócio Honorário de Ouro" usa `is_honorary` + `honorary_annual_value`. "Padrinho" conta `db.clients.referred_by`.
+
+## Parceiros locais · upload de talão
+- `db.partners` `{name, emoji, active, auto_validate, points_per_5eur}` — CRUD em `/api/partners` (admin). A checkbox "Parceria ativa" tira/coloca o parceiro na app do sócio.
+- Sócio: `GET /api/socio/partners`, `GET/POST /api/socio/partner-tickets` (fotografia em `photo_data`, data URL base64).
+- Regras: máx. **3 talões/dia**, submissão até **48 h** após a compra, `doc_number` repetido gera entrada `partner_ticket_duplicate` no Audit Log e impede a validação automática.
+- Validação: automática quando o parceiro tem `auto_validate` e não há duplicado; caso contrário fica `pending` na fila do staff (`GET /api/partner-tickets`, `POST /{id}/validate`, `POST /{id}/reject`) na página **Parceiros locais** (`/parceiros`).
+- Benefício: `floor(valor / 5.01) × points_per_5eur` pontos **só com quotas 🟢** (as frações ficam em `clients.partner_points_carry` até fechar 1 ponto) e presença do dia com `partner_id`/`partner_emoji` — o calendário mostra o selo do parceiro (`partner_days` em `_presence_overview`).

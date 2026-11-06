@@ -5,6 +5,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 import os
+import calendar
 import logging
 import re
 import uuid
@@ -7813,26 +7814,28 @@ def _open_group_rounds(table: dict) -> list:
     return [r for r in (table.get("rounds") or []) if r.get("status") != "paid"]
 
 
-@api_router.post("/group-tables")
-async def create_group_table(body: GroupTableIn, user: dict = Depends(get_current_user)):
-    ids = list(dict.fromkeys(body.member_ids or []))
+async def _open_group_table(ids: List[str], label: Optional[str], actor_email: str) -> dict:
+    """Abre uma mesa de Rodada Mista, notifica os sócios e marca presença."""
+    ids = list(dict.fromkeys(ids or []))
     if len(ids) < 2:
         raise HTTPException(status_code=400, detail="Escolhe pelo menos 2 sócios para a Rodada Mista")
     members = await db.clients.find({"id": {"$in": ids}}, {"_id": 0, "pin_hash": 0}).to_list(len(ids))
     by_id = {m["id"]: m for m in members}
     if any(i not in by_id for i in ids):
         raise HTTPException(status_code=404, detail="Sócio não encontrado")
+    if any(not by_id[i].get("is_member") or by_id[i].get("is_temp") for i in ids):
+        raise HTTPException(status_code=400, detail="A Rodada Mista é só para sócios")
     ordered = [by_id[i] for i in ids]
     now_iso = datetime.now(timezone.utc).isoformat()
     table = {
         "id": str(uuid.uuid4()),
-        "label": (body.label or "").strip() or f"Mesa de {len(ordered)}",
+        "label": (label or "").strip() or f"Mesa de {len(ordered)}",
         "members": [{"client_id": m["id"], "name": m["name"], "member_number": m.get("member_number"),
                      "joined_round": 1} for m in ordered],
         "rounds": [],
         "status": "open",
         "created_at": now_iso,
-        "created_by": user["email"],
+        "created_by": actor_email,
         "closed_at": None,
     }
     await db.group_tables.insert_one(table)
@@ -7854,10 +7857,87 @@ async def create_group_table(body: GroupTableIn, user: dict = Depends(get_curren
             "group_table_id": table["id"],
         })
         await _mark_presence(m["id"], table["id"])
-    await _audit("group_table_create", user["email"], entity="group_table", entity_id=table["id"],
+    await _audit("group_table_create", actor_email, entity="group_table", entity_id=table["id"],
                  summary=f"Rodada Mista aberta · {', '.join(m['name'] for m in ordered)}")
     table.pop("_id", None)
     return table
+
+
+@api_router.post("/group-tables")
+async def create_group_table(body: GroupTableIn, user: dict = Depends(get_current_user)):
+    return await _open_group_table(body.member_ids, body.label, user["email"])
+
+
+class GroupTableRenameIn(BaseModel):
+    label: str
+
+
+@api_router.put("/group-tables/{table_id}")
+async def rename_group_table(table_id: str, body: GroupTableRenameIn, user: dict = Depends(get_current_user)):
+    """Renomeia a mesa (ex.: "Mesa 5" → "Mesa do Fontes")."""
+    table = await db.group_tables.find_one({"id": table_id}, {"_id": 0})
+    if not table:
+        raise HTTPException(status_code=404, detail="Rodada não encontrada")
+    label = (body.label or "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="Indica um nome para a mesa")
+    label = label[:60]
+    await db.group_tables.update_one({"id": table_id}, {"$set": {"label": label}})
+    await _audit("group_table_rename", user["email"], entity="group_table", entity_id=table_id,
+                 summary=f"Rodada Mista renomeada · '{table.get('label')}' → '{label}'")
+    return await db.group_tables.find_one({"id": table_id}, {"_id": 0})
+
+
+# ---------- Rodada Mista · app do sócio ----------
+class SocioGroupTableIn(BaseModel):
+    member_ids: List[str] = []
+    label: Optional[str] = None
+
+
+def _group_table_for_socio(table: dict, client_id: str) -> dict:
+    """Resumo da mesa visto pelo sócio: rodadas, o que está em aberto e as suas partes."""
+    rounds = table.get("rounds") or []
+    open_rounds = [r for r in rounds if r.get("status") != "paid"]
+    open_total = round(sum(float(r.get("total") or 0) for r in open_rounds), 2)
+    members = table.get("members") or []
+    mine_paid = round(sum(float(r.get("total") or 0) for r in rounds
+                          if r.get("status") == "paid" and r.get("payer_client_id") == client_id), 2)
+    return {
+        "id": table["id"],
+        "label": table.get("label"),
+        "status": table.get("status"),
+        "created_at": table.get("created_at"),
+        "members": members,
+        "rounds": rounds,
+        "open_rounds": len(open_rounds),
+        "open_total": open_total,
+        "total": round(sum(float(r.get("total") or 0) for r in rounds), 2),
+        "my_paid": mine_paid,
+        "share_if_split": round(open_total / len(members), 2) if members and open_total else 0.0,
+        "i_am_member": any(m.get("client_id") == client_id for m in members),
+    }
+
+
+@api_router.get("/socio/group-tables")
+async def socio_group_tables(socio: dict = Depends(get_current_socio)):
+    """Rodadas Mistas em que o sócio está inserido (abertas + últimas fechadas)."""
+    mine = {"members.client_id": socio["id"]}
+    open_tables = await db.group_tables.find({**mine, "status": "open"}, {"_id": 0}) \
+        .sort("created_at", -1).to_list(20)
+    closed_tables = await db.group_tables.find({**mine, "status": "closed"}, {"_id": 0}) \
+        .sort("created_at", -1).to_list(5)
+    return {
+        "open": [_group_table_for_socio(t, socio["id"]) for t in open_tables],
+        "closed": [_group_table_for_socio(t, socio["id"]) for t in closed_tables],
+    }
+
+
+@api_router.post("/socio/group-tables")
+async def socio_create_group_table(body: SocioGroupTableIn, socio: dict = Depends(get_current_socio)):
+    """O sócio inicia uma Rodada Mista a partir da app (ele é sempre um dos elementos da mesa)."""
+    ids = [socio["id"]] + [i for i in (body.member_ids or []) if i != socio["id"]]
+    table = await _open_group_table(ids, body.label, f"socio:{socio.get('member_number') or socio['id']}")
+    return _group_table_for_socio(table, socio["id"])
 
 
 @api_router.get("/group-tables")
@@ -8172,6 +8252,8 @@ async def _presence_overview(client_id: str, month: Optional[str] = None) -> dic
         "days_to_next": (next_day - streak) if next_day else 0,
         "rewards": [{"day": d, "points": p} for d, p in sorted(STREAK_REWARDS.items())],
         "month_presences": len(month_dates),
+        # Selo do parceiro local nos dias em que a presença veio de um talão
+        "partner_days": {d["date"]: (d.get("partner_emoji") or "🤝") for d in docs if d.get("partner_id")},
         "month_points": sum(int(d.get("points_applied") or 0) for d in docs),
         "quota_status": status,
         "points_blocked": status in ("pending", "debt"),
@@ -8399,6 +8481,520 @@ async def socio_rankings(socio: dict = Depends(get_current_socio)):
     data = await _rankings_tables(today.year, today.month)
     return {"enabled": True, "allowed": True, "my_badge": my_badge,
             "show_in_rankings": socio.get("show_in_rankings") is not False, **data}
+
+
+# ---------- Conquistas · medalhas de perfil ----------
+# Medalhas cômicas/prestigiantes calculadas a partir do histórico real do sócio
+# (vendas, presenças, rodadas e cotas). Sem dados suficientes ficam bloqueadas.
+BADGE_DEFS = [
+    {"code": "bifana", "emoji": "🍞", "name": "O Homem da Bifana",
+     "description": "Consumiu 10 bifanas no bar durante o mês.", "target": 10, "unit": "bifanas este mês"},
+    {"code": "trunfo", "emoji": "🎴", "name": "Mestre do Trunfo",
+     "description": "Participou num torneio de Sueca na sede.", "target": 1, "unit": "torneios"},
+    {"code": "guardiao", "emoji": "👑", "name": "O Guardião",
+     "description": "Alcançou um streak de 31 dias de presenças seguidas.", "target": 31, "unit": "dias seguidos"},
+    {"code": "terror_minis", "emoji": "🍺", "name": "O Terror das Minis",
+     "description": "Bebeste 50 minis num único mês. O balcão até já treme quando chegas!", "target": 50, "unit": "minis no melhor mês"},
+    {"code": "combustivel", "emoji": "🥖", "name": "Combustível de Nespereira",
+     "description": "Pediste 5 bifanas + 5 imperiais no mesmo fim de semana. A verdadeira dieta dos campeões.", "target": 5, "unit": "pares no melhor fim de semana"},
+    {"code": "cafeinomano", "emoji": "☕", "name": "Cafeinómano Assíduo",
+     "description": "Bebe mais de 2 cafés por dia na sede durante 7 dias seguidos.", "target": 7, "unit": "dias seguidos"},
+    {"code": "bagaco", "emoji": "🍷", "name": "Provador de Bagaço",
+     "description": "Consumiu a primeira bebida do dia logo na abertura do bar por 3 vezes no mesmo mês.", "target": 3, "unit": "manhãs este mês"},
+    {"code": "lord_rodada", "emoji": "💸", "name": "O Lord da Rodada",
+     "description": "Pagaste uma rodada mista a 5 ou mais sócios de uma assentada. Hoje paga o patrão!", "target": 5, "unit": "sócios servidos"},
+    {"code": "especial_one", "emoji": "🦅", "name": "O Especial One",
+     "description": "Mantiveste as quotas regularizadas 🟢 durante 12 meses consecutivos.", "target": 12, "unit": "meses seguidos"},
+    {"code": "relojoeiro", "emoji": "⏰", "name": "Relojoeiro",
+     "description": "Fizeste o registo de presença em 3 períodos diferentes do mesmo dia. Só faltou lá ir dormir.", "target": 3, "unit": "períodos no melhor dia"},
+    {"code": "relampago", "emoji": "⚡", "name": "Sócio Relâmpago",
+     "description": "Chegaste à sede 5 minutos depois de ser lançada uma notificação no bar.", "target": 1, "unit": "chegadas relâmpago"},
+    {"code": "resgate", "emoji": "🚨", "name": "Resgate de Última Hora",
+     "description": "Regularizaste a quota no 31.º dia para não entrar em dívida. Salvo pelo golo aos 90+4'!", "target": 1, "unit": "resgates"},
+    {"code": "casado_solteiro", "emoji": "⚽", "name": "Casado vs. Solteiro",
+     "description": "Jogaste no clássico anual de futebol da aldeia. Titular indiscutível do dérbi mais mítico de Nespereira!", "target": 1, "unit": "clássicos"},
+    {"code": "honorario_ouro", "emoji": "👔", "name": "Sócio Honorário de Ouro",
+     "description": "Definiste a quota anual voluntária num valor superior ao mínimo de 20 €.", "target": 1, "unit": "quota anual"},
+    {"code": "padrinho", "emoji": "🤝", "name": "Padrinho Associativo",
+     "description": "Convidaste ou inscreveste 3 novos sócios tutelados ou amigos na app.", "target": 3, "unit": "sócios trazidos"},
+]
+
+_TZ_LISBOA = None
+
+
+def _tz_lisboa():
+    global _TZ_LISBOA
+    if _TZ_LISBOA is None:
+        try:
+            from zoneinfo import ZoneInfo
+            _TZ_LISBOA = ZoneInfo("Europe/Lisbon")
+        except Exception:
+            _TZ_LISBOA = timezone.utc
+    return _TZ_LISBOA
+
+
+def _sale_events(sales: list) -> list:
+    """(data local, nome do produto em minúsculas, quantidade) por linha de venda."""
+    events = []
+    for s in sales:
+        try:
+            dt = datetime.fromisoformat(str(s.get("created_at")).replace("Z", "+00:00")).astimezone(_tz_lisboa())
+        except Exception:
+            continue
+        for it in (s.get("group_items") or s.get("items") or []):
+            name = (it.get("product_name") or "").lower()
+            qty = int(it.get("quantity") or 0)
+            if name and qty > 0:
+                events.append((dt, name, qty))
+    events.sort(key=lambda e: e[0])
+    return events
+
+
+def _max_in_month(events: list, hints: tuple) -> int:
+    """Maior total de unidades (que correspondem a `hints`) num único mês."""
+    per_month: dict = {}
+    for dt, name, qty in events:
+        if any(h in name for h in hints):
+            key = f"{dt.year}-{dt.month:02d}"
+            per_month[key] = per_month.get(key, 0) + qty
+    return max(per_month.values()) if per_month else 0
+
+
+def _best_streak_of_days(days: set) -> int:
+    best = run = 0
+    prev = None
+    for day in sorted(days):
+        run = run + 1 if prev and (day - prev).days == 1 else 1
+        best = max(best, run)
+        prev = day
+    return best
+
+
+async def _event_participation(client_id: str, kinds: tuple) -> int:
+    """Participações em eventos/torneios registados pela direção (db.events)."""
+    docs = await db.events.find({"kind": {"$in": list(kinds)}}, {"_id": 0}).to_list(2000)
+    total = 0
+    for d in docs:
+        people = d.get("participants") or d.get("participant_ids") or []
+        if any((p if isinstance(p, str) else (p or {}).get("client_id")) == client_id for p in people):
+            total += 1
+    return total
+
+
+async def _badges_for(client_id: str) -> list:
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0}) or {}
+    sales = await db.sales.find({"client_id": client_id}, {"_id": 0, "created_at": 1, "items": 1, "group_items": 1}).to_list(5000)
+    events = _sale_events(sales)
+    presences = await db.presences.find({"client_id": client_id}, {"_id": 0, "date": 1, "created_at": 1}).to_list(5000)
+    presence_days = set()
+    for p in presences:
+        try:
+            presence_days.add(datetime.strptime(p["date"], "%Y-%m-%d").date())
+        except Exception:
+            pass
+    quotas = await db.quotas.find({"client_id": client_id, "reversed": {"$ne": True}}, {"_id": 0}).to_list(400)
+    tables = await db.group_tables.find({"members.client_id": client_id}, {"_id": 0, "members": 1, "rounds": 1}).to_list(200)
+
+    today = _lisbon_today()
+    month_key = f"{today.year}-{today.month:02d}"
+    metrics: dict = {}
+
+    # 🍞 bifanas no mês corrente
+    metrics["bifana"] = sum(q for dt, name, q in events if "bifana" in name and f"{dt.year}-{dt.month:02d}" == month_key)
+
+    # 🎴 torneio de Sueca
+    metrics["trunfo"] = await _event_participation(client_id, ("sueca", "torneio", "trunfo"))
+
+    # 👑 melhor streak de presenças de sempre
+    metrics["guardiao"] = _best_streak_of_days(presence_days)
+
+    # 🍺 minis no melhor mês
+    metrics["terror_minis"] = _max_in_month(events, ("mini",))
+
+    # 🥖 bifanas + imperiais no mesmo fim de semana
+    per_weekend: dict = {}
+    for dt, name, qty in events:
+        if dt.weekday() not in (5, 6):
+            continue
+        key = f"{dt.isocalendar()[0]}-{dt.isocalendar()[1]}"
+        bucket = per_weekend.setdefault(key, {"bifana": 0, "imperial": 0})
+        if "bifana" in name:
+            bucket["bifana"] += qty
+        if "imperial" in name:
+            bucket["imperial"] += qty
+    metrics["combustivel"] = max((min(b["bifana"], b["imperial"]) for b in per_weekend.values()), default=0)
+
+    # ☕ 7 dias seguidos com mais de 2 cafés
+    coffee_days: dict = {}
+    for dt, name, qty in events:
+        if "caf" in name:
+            coffee_days[dt.date()] = coffee_days.get(dt.date(), 0) + qty
+    metrics["cafeinomano"] = _best_streak_of_days({d for d, q in coffee_days.items() if q >= 3})
+
+    # 🍷 primeira bebida do dia antes do meio-dia
+    first_of_day: dict = {}
+    for dt, name, qty in events:
+        first_of_day.setdefault(dt.date(), dt)
+    metrics["bagaco"] = sum(
+        1 for day, dt in first_of_day.items()
+        if dt.hour < 12 and f"{day.year}-{day.month:02d}" == month_key
+    )
+
+    # 💸 pagou uma rodada a 5+ sócios
+    lord = 0
+    for t in tables:
+        paid_by_me = any(r.get("status") == "paid" and r.get("payer_client_id") == client_id for r in (t.get("rounds") or []))
+        if paid_by_me:
+            lord = max(lord, max(len(t.get("members") or []) - 1, 0))
+    metrics["lord_rodada"] = lord
+
+    # 🦅 12 meses consecutivos com quotas pagas
+    paid_months = set()
+    for q in quotas:
+        if q.get("status") != "paid":
+            continue
+        try:
+            paid_months.add((int(q["year"]), int(q["month"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    best_run = run = 0
+    cursor = (today.year, today.month)
+    for _ in range(36):
+        if cursor in paid_months:
+            run += 1
+            best_run = max(best_run, run)
+        else:
+            run = 0
+        cursor = (cursor[0] - 1, 12) if cursor[1] == 1 else (cursor[0], cursor[1] - 1)
+    metrics["especial_one"] = best_run
+
+    # ⏰ 3 períodos diferentes no mesmo dia
+    periods: dict = {}
+    for dt, _name, _qty in events:
+        block = "manha" if dt.hour < 12 else ("tarde" if dt.hour < 19 else "noite")
+        periods.setdefault(dt.date(), set()).add(block)
+    metrics["relojoeiro"] = max((len(v) for v in periods.values()), default=0)
+
+    # ⚡ presença nos 5 minutos seguintes a uma notificação do bar
+    staff_msgs = await db.socio_messages.find({"from_staff": True}, {"_id": 0, "created_at": 1}).to_list(2000)
+    msg_times = []
+    for m in staff_msgs:
+        try:
+            msg_times.append(datetime.fromisoformat(str(m.get("created_at")).replace("Z", "+00:00")))
+        except Exception:
+            continue
+    msg_times.sort()
+    lightning = 0
+    for p in presences:
+        try:
+            when = datetime.fromisoformat(str(p.get("created_at")).replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if any(timedelta(0) <= (when - t) <= timedelta(minutes=5) for t in msg_times):
+            lightning += 1
+    metrics["relampago"] = lightning
+
+    # 🚨 quota paga no último dia do mês
+    rescues = 0
+    for q in quotas:
+        if q.get("status") != "paid":
+            continue
+        paid_at = q.get("paid_at") or q.get("updated_at")
+        try:
+            when = datetime.fromisoformat(str(paid_at).replace("Z", "+00:00")).astimezone(_tz_lisboa())
+            last_day = calendar.monthrange(int(q["year"]), int(q["month"]))[1]
+            if when.day == last_day:
+                rescues += 1
+        except Exception:
+            continue
+    metrics["resgate"] = rescues
+
+    # ⚽ clássico de futebol
+    metrics["casado_solteiro"] = await _event_participation(client_id, ("futebol", "classico", "derbi"))
+
+    # 👔 quota anual voluntária acima de 20 €
+    annual = float(client.get("honorary_annual_value") or 0)
+    metrics["honorario_ouro"] = 1 if (client.get("is_honorary") and annual > 20) else 0
+
+    # 🤝 novos sócios trazidos
+    metrics["padrinho"] = await db.clients.count_documents({"referred_by": client_id})
+
+    out = []
+    for d in BADGE_DEFS:
+        current = int(metrics.get(d["code"]) or 0)
+        out.append({
+            **d,
+            "current": current,
+            "unlocked": current >= d["target"],
+            "progress_pct": min(100, int(round(current * 100 / d["target"]))) if d["target"] else 100,
+        })
+    return out
+
+
+@api_router.get("/socio/badges")
+async def socio_badges(socio: dict = Depends(get_current_socio)):
+    badges = await _badges_for(socio["id"])
+    return {"badges": badges, "unlocked": sum(1 for b in badges if b["unlocked"]), "total": len(badges)}
+
+
+@api_router.get("/clients/{client_id}/badges")
+async def client_badges(client_id: str, user: dict = Depends(get_current_user)):
+    """Consulta do staff — medalhas desbloqueadas pelo sócio."""
+    badges = await _badges_for(client_id)
+    return {"badges": badges, "unlocked": sum(1 for b in badges if b["unlocked"]), "total": len(badges)}
+
+
+# ---------- Parceiros locais · upload de ticket ----------
+PARTNER_TICKET_DAILY_LIMIT = 3
+PARTNER_TICKET_MAX_HOURS = 48
+
+
+class PartnerIn(BaseModel):
+    name: str
+    emoji: Optional[str] = None
+    active: bool = True
+    auto_validate: bool = True
+    points_per_5eur: float = 0.5
+    note: Optional[str] = None
+
+
+class PartnerUpdate(BaseModel):
+    name: Optional[str] = None
+    emoji: Optional[str] = None
+    active: Optional[bool] = None
+    auto_validate: Optional[bool] = None
+    points_per_5eur: Optional[float] = None
+    note: Optional[str] = None
+
+
+class PartnerTicketIn(BaseModel):
+    partner_id: str
+    amount: float
+    purchase_date: str  # AAAA-MM-DD (data do talão)
+    doc_number: Optional[str] = None
+    photo_data: Optional[str] = None  # data URL base64 da fotografia do talão
+    note: Optional[str] = None
+
+
+class PartnerTicketReject(BaseModel):
+    reason: Optional[str] = None
+
+
+async def _active_partners() -> list:
+    return await db.partners.find({"active": True}, {"_id": 0}).sort("name", 1).to_list(100)
+
+
+@api_router.get("/partners")
+async def list_partners(user: dict = Depends(get_current_user)):
+    return await db.partners.find({}, {"_id": 0}).sort("name", 1).to_list(100)
+
+
+@api_router.post("/partners")
+async def create_partner(body: PartnerIn, user: dict = Depends(require_role("admin"))):
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "name": body.name.strip(),
+        "emoji": (body.emoji or "🤝").strip()[:4],
+        "active": bool(body.active),
+        "auto_validate": bool(body.auto_validate),
+        "points_per_5eur": float(body.points_per_5eur or 0),
+        "note": body.note,
+        "created_at": now_iso,
+    }
+    if not doc["name"]:
+        raise HTTPException(status_code=400, detail="Indica o nome do parceiro")
+    await db.partners.insert_one(doc)
+    await _audit("partner_create", user["email"], entity="partner", entity_id=doc["id"],
+                 summary=f"Parceiro local criado · {doc['name']}")
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.put("/partners/{partner_id}")
+async def update_partner(partner_id: str, body: PartnerUpdate, user: dict = Depends(require_role("admin"))):
+    partner = await db.partners.find_one({"id": partner_id}, {"_id": 0})
+    if not partner:
+        raise HTTPException(status_code=404, detail="Parceiro não encontrado")
+    patch = {k: v for k, v in body.model_dump(exclude_none=True).items()}
+    if "name" in patch:
+        patch["name"] = patch["name"].strip()
+        if not patch["name"]:
+            raise HTTPException(status_code=400, detail="Indica o nome do parceiro")
+    if patch:
+        await db.partners.update_one({"id": partner_id}, {"$set": patch})
+    if "active" in patch and patch["active"] != partner.get("active"):
+        await _audit("partner_toggle", user["email"], entity="partner", entity_id=partner_id,
+                     summary=f"Parceria '{partner.get('name')}' {'ativada' if patch['active'] else 'desativada'} na app do sócio")
+    return await db.partners.find_one({"id": partner_id}, {"_id": 0})
+
+
+@api_router.delete("/partners/{partner_id}")
+async def delete_partner(partner_id: str, user: dict = Depends(require_role("admin"))):
+    partner = await db.partners.find_one({"id": partner_id}, {"_id": 0})
+    if not partner:
+        raise HTTPException(status_code=404, detail="Parceiro não encontrado")
+    await db.partners.delete_one({"id": partner_id})
+    await _audit("partner_delete", user["email"], entity="partner", entity_id=partner_id,
+                 summary=f"Parceiro local removido · {partner.get('name')}")
+    return {"ok": True}
+
+
+async def _award_partner_ticket(ticket: dict, by: str) -> dict:
+    """Credita o benefício: pontos (só com quotas 🟢) + presença do dia."""
+    partner = await db.partners.find_one({"id": ticket["partner_id"]}, {"_id": 0}) or {}
+    per_5 = float(partner.get("points_per_5eur") or 0)
+    qs = await _quota_overall_status(ticket["client_id"])
+    eligible = bool(qs and qs.get("status") == "paid")
+    earned_units = int(float(ticket["amount"]) // 5.01) if eligible else 0
+    earned = round(earned_units * per_5, 2)
+    client = await db.clients.find_one({"id": ticket["client_id"]}, {"_id": 0, "partner_points_carry": 1}) or {}
+    carry = round(float(client.get("partner_points_carry") or 0) + earned, 2)
+    whole = int(carry)
+    carry = round(carry - whole, 2)
+    if whole > 0:
+        await db.clients.update_one({"id": ticket["client_id"]}, {"$inc": {"points": whole}})
+        await _log_points(ticket["client_id"], whole, "partner_ticket", ticket["id"],
+                          f"Talão {partner.get('name')} · {ticket['amount']:.2f} €", by)
+    await db.clients.update_one({"id": ticket["client_id"]}, {"$set": {"partner_points_carry": carry}})
+    # Presença do dia com o selo do parceiro (mantém o streak mesmo com o bar fechado)
+    presence = await _mark_presence(ticket["client_id"], None, "partner_ticket")
+    if presence:
+        await db.presences.update_one(
+            {"id": presence["id"]},
+            {"$set": {"partner_id": partner.get("id"), "partner_name": partner.get("name"),
+                      "partner_emoji": partner.get("emoji") or "🤝"}},
+        )
+    await db.partner_tickets.update_one(
+        {"id": ticket["id"]},
+        {"$set": {"status": "validated", "points_awarded": whole, "quota_eligible": eligible,
+                  "presence_granted": bool(presence), "validated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    await _audit("partner_ticket_validated", by, entity="partner_ticket", entity_id=ticket["id"],
+                 summary=f"Talão {partner.get('name')} validado · {ticket['client_name']} · "
+                         f"{ticket['amount']:.2f} € · +{whole} ponto(s)"
+                         + ("" if eligible else " · cotas não regularizadas (sem pontos)"))
+    return await db.partner_tickets.find_one({"id": ticket["id"]}, {"_id": 0})
+
+
+@api_router.get("/socio/partners")
+async def socio_partners(socio: dict = Depends(get_current_socio)):
+    return await _active_partners()
+
+
+@api_router.get("/socio/partner-tickets")
+async def socio_partner_tickets(socio: dict = Depends(get_current_socio)):
+    tickets = await db.partner_tickets.find(
+        {"client_id": socio["id"]}, {"_id": 0, "photo_data": 0}
+    ).sort("submitted_at", -1).to_list(100)
+    return tickets
+
+
+@api_router.post("/socio/partner-tickets")
+async def socio_submit_partner_ticket(body: PartnerTicketIn, socio: dict = Depends(get_current_socio)):
+    """Sócio envia a fotografia do talão de um parceiro local."""
+    partner = await db.partners.find_one({"id": body.partner_id}, {"_id": 0})
+    if not partner or not partner.get("active"):
+        raise HTTPException(status_code=400, detail="Parceria indisponível")
+    if float(body.amount or 0) <= 0:
+        raise HTTPException(status_code=400, detail="Indica o valor do talão")
+    try:
+        purchase = datetime.strptime(body.purchase_date, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Indica a data do talão (AAAA-MM-DD)")
+    now = datetime.now(timezone.utc)
+    purchase_utc = purchase.replace(tzinfo=timezone.utc)
+    if purchase_utc.date() > now.date():
+        raise HTTPException(status_code=400, detail="A data do talão não pode ser no futuro")
+    if now - purchase_utc > timedelta(hours=PARTNER_TICKET_MAX_HOURS):
+        raise HTTPException(status_code=400,
+                            detail=f"O talão tem de ser submetido nas {PARTNER_TICKET_MAX_HOURS}h seguintes à compra")
+    today_prefix = now.astimezone(_tz_lisboa()).date().isoformat()
+    sent_today = await db.partner_tickets.count_documents(
+        {"client_id": socio["id"], "submitted_at": {"$gte": today_prefix + "T00:00:00"}}
+    )
+    if sent_today >= PARTNER_TICKET_DAILY_LIMIT:
+        raise HTTPException(status_code=400,
+                            detail=f"Limite de {PARTNER_TICKET_DAILY_LIMIT} talões por dia já atingido")
+    doc_no = (body.doc_number or "").strip().upper()
+    duplicate = None
+    if doc_no:
+        duplicate = await db.partner_tickets.find_one(
+            {"doc_number": doc_no, "status": {"$ne": "rejected"}, "client_id": {"$ne": socio["id"]}},
+            {"_id": 0, "client_name": 1, "submitted_at": 1},
+        )
+    now_iso = now.isoformat()
+    ticket = {
+        "id": str(uuid.uuid4()),
+        "partner_id": partner["id"],
+        "partner_name": partner.get("name"),
+        "partner_emoji": partner.get("emoji") or "🤝",
+        "client_id": socio["id"],
+        "client_name": socio.get("name"),
+        "member_number": socio.get("member_number"),
+        "amount": round(float(body.amount), 2),
+        "purchase_date": body.purchase_date,
+        "doc_number": doc_no or None,
+        "photo_data": body.photo_data,
+        "note": body.note,
+        "status": "pending",
+        "validation": None,
+        "duplicate_of": duplicate.get("client_name") if duplicate else None,
+        "points_awarded": 0,
+        "submitted_at": now_iso,
+        "validated_by": None,
+        "validated_at": None,
+    }
+    await db.partner_tickets.insert_one(ticket)
+    if duplicate:
+        await _audit("partner_ticket_duplicate", f"socio:{socio.get('member_number') or socio['id']}",
+                     entity="partner_ticket", entity_id=ticket["id"],
+                     summary=(f"Talão duplicado detetado · documento {doc_no} de {partner.get('name')} · "
+                              f"enviado por {socio.get('name')} (já carregado por {duplicate.get('client_name')})"))
+    # Validação automática simples: parceiro com auto-validação e sem sinais de duplicação
+    if partner.get("auto_validate", True) and not duplicate:
+        ticket = await _award_partner_ticket(ticket, "sistema (validação automática)")
+        await db.partner_tickets.update_one({"id": ticket["id"]}, {"$set": {"validation": "auto"}})
+    ticket.pop("_id", None)
+    ticket.pop("photo_data", None)
+    return ticket
+
+
+@api_router.get("/partner-tickets")
+async def list_partner_tickets(status_filter: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = {} if status_filter in (None, "", "all") else {"status": status_filter}
+    return await db.partner_tickets.find(q, {"_id": 0}).sort("submitted_at", -1).to_list(300)
+
+
+@api_router.post("/partner-tickets/{ticket_id}/validate")
+async def validate_partner_ticket(ticket_id: str, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    ticket = await db.partner_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Talão não encontrado")
+    if ticket.get("status") == "validated":
+        raise HTTPException(status_code=400, detail="Talão já validado")
+    updated = await _award_partner_ticket(ticket, user["email"])
+    await db.partner_tickets.update_one({"id": ticket_id}, {"$set": {"validation": "manual", "validated_by": user["email"]}})
+    return await db.partner_tickets.find_one({"id": ticket_id}, {"_id": 0})
+
+
+@api_router.post("/partner-tickets/{ticket_id}/reject")
+async def reject_partner_ticket(ticket_id: str, body: PartnerTicketReject,
+                                user: dict = Depends(require_role("admin", "tesoureiro"))):
+    ticket = await db.partner_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Talão não encontrado")
+    if ticket.get("status") == "validated":
+        raise HTTPException(status_code=400, detail="Talão já validado - não pode ser rejeitado")
+    await db.partner_tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {"status": "rejected", "reject_reason": (body.reason or "").strip() or None,
+                  "validated_by": user["email"], "validated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    await _audit("partner_ticket_rejected", user["email"], entity="partner_ticket", entity_id=ticket_id,
+                 summary=f"Talão de {ticket.get('client_name')} ({ticket.get('partner_name')}) rejeitado"
+                         + (f" · {body.reason.strip()}" if (body.reason or "").strip() else ""))
+    return await db.partner_tickets.find_one({"id": ticket_id}, {"_id": 0})
 
 
 # ---------- Mount ----------
