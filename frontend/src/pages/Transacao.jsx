@@ -44,8 +44,9 @@ export default function Transacao() {
     setLoading(true);
     api.get(`/transactions/${tx_number}`)
       .then(async ({ data }) => {
-        // recibos de pagamento: buscar as vendas cobertas (com os itens vendidos)
-        if (!data.items && (data.sale_tx_numbers || []).length) {
+        // recibos de pagamento: o backend já devolve os itens das vendas abatidas
+        // (inclui pagamentos antigos sem item_targets guardados)
+        if (!data.items && !(data.covered_docs || []).length && (data.sale_tx_numbers || []).length) {
           const docs = await Promise.all(
             data.sale_tx_numbers.map((n) =>
               api.get(`/transactions/${n}`).then((r) => r.data).catch(() => null)
@@ -69,7 +70,7 @@ export default function Transacao() {
   const print2 = () => {
     if (!tx) return;
     const res = printTransactionTicket(tx, {
-      client,
+      client: client ? { ...client, is_temp: client.is_temp || tx.client_is_temp } : { is_temp: tx.client_is_temp },
       clientName: tx.client_name,
       quotaStatus: client?.quota_status,
       coveredSales: tx.sale_tx_numbers || [],

@@ -305,7 +305,7 @@ export default function Dashboard() {
             </div>
           </div>
           <Link
-            to="/banco"
+            to="/banco?mov=caixa-banco"
             data-testid="dashboard-transfer-cta-button"
             className="shrink-0 px-5 py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-sm font-bold transition-colors inline-flex items-center justify-center gap-2"
           >

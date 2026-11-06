@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import EditableText from "../components/EditableText";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
@@ -33,6 +33,16 @@ export default function Banco() {
   const [treasury, setTreasury] = useState(null);
   const [depForm, setDepForm] = useState({ category: "donativos", amount: "", target: "banco", reason: "" });
   const [trfForm, setTrfForm] = useState({ direction: "bank_to_cash", amount: "", reason: "" });
+  const [searchParams] = useSearchParams();
+
+  // Vindo do cartão do Dashboard «Transferir dinheiro da caixa para o banco»:
+  // pré-seleciona caixa → banco e leva o utilizador ao formulário.
+  useEffect(() => {
+    if (searchParams.get("mov") === "caixa-banco") {
+      setTrfForm((f) => ({ ...f, direction: "cash_to_bank" }));
+      setTimeout(() => document.getElementById("banco-transfer-form")?.scrollIntoView({ behavior: "smooth", block: "center" }), 300);
+    }
+  }, [searchParams]);
 
   const load = async () => {
     try {
@@ -171,7 +181,7 @@ export default function Banco() {
           </form>
 
           {/* Transferência entre contas */}
-          <form onSubmit={submitTransfer} className="bg-slate-900/40 border border-slate-800 rounded-xl p-6 space-y-3" data-testid="banco-transfer-form">
+          <form id="banco-transfer-form" onSubmit={submitTransfer} className="bg-slate-900/40 border border-slate-800 rounded-xl p-6 space-y-3" data-testid="banco-transfer-form">
             <div className="flex items-center gap-2">
               <ArrowsLeftRight size={20} weight="duotone" className="text-emerald-400" />
               <h3 className="font-outfit text-lg font-semibold">Transferir valores</h3>

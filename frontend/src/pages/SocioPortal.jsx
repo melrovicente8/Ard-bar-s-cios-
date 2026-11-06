@@ -45,6 +45,7 @@ import SocioFamily from "../components/SocioFamily";
 import SocioGifts from "../components/SocioGifts";
 import { openQuarterlyDoc } from "../lib/quarterlyDoc";
 import { openMonthlyDoc } from "../lib/monthlyDoc";
+import { printReceipt as printReceiptA6 } from "../lib/receipt";
 
 export default function SocioPortal() {
   const { data, logout, refresh } = useSocio();
@@ -62,6 +63,13 @@ export default function SocioPortal() {
   const [showQuotas, setShowQuotas] = useState(false);
   const [quotas, setQuotas] = useState({ year: new Date().getFullYear(), quotas: [] });
   const [selectedMonths, setSelectedMonths] = useState([]);
+  const [quotaSettings, setQuotaSettings] = useState(null);
+  const [payAtCounter, setPayAtCounter] = useState(false);
+  const [monthlyValue, setMonthlyValue] = useState("");
+  const [honoraryValue, setHonoraryValue] = useState("20");
+  const [savingQuotaCfg, setSavingQuotaCfg] = useState(false);
+  const [showAccess, setShowAccess] = useState(false);
+  const [reqUsePoints, setReqUsePoints] = useState(false);
   // Foto + aniversário
   const [showProfileExtra, setShowProfileExtra] = useState(false);
   const [profileForm, setProfileForm] = useState({ birthday: "", photo_data: "" });
@@ -400,9 +408,49 @@ export default function SocioPortal() {
       const { data } = await api.get("/socio/quotas", { params: year ? { year } : {} });
       setQuotas(data);
       setSelectedMonths([]);
+      setPayAtCounter(false);
+      try {
+        const { data: qs } = await api.get("/socio/quota-settings");
+        setQuotaSettings(qs);
+        setMonthlyValue(String(qs.monthly_value ?? ""));
+        setHonoraryValue(String(qs.honorary_annual_value || 20));
+      } catch { /* mantém valores atuais */ }
       setShowQuotas(true);
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const saveMonthlyQuota = async () => {
+    const value = Number(String(monthlyValue).replace(",", "."));
+    if (!value || value < 1) return toast.error("Indica um valor válido para a quota mensal");
+    setSavingQuotaCfg(true);
+    try {
+      const { data } = await api.put("/socio/quota-settings", { monthly_value: value });
+      setQuotaSettings(data);
+      toast.success(`Quota mensal atualizada para ${euro(value)}`);
+      await changeQuotaYear(quotas.year);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setSavingQuotaCfg(false);
+    }
+  };
+
+  const activateHonorary = async () => {
+    const value = Number(String(honoraryValue).replace(",", "."));
+    if (!value || value < 20) return toast.error("A quota anual de sócio honorário tem um mínimo de 20 €");
+    if (!window.confirm(`Ativar Sócio Honorário 👔 e liquidar os 12 meses de ${quotas.year} com a quota anual de ${euro(value)}?`)) return;
+    setSavingQuotaCfg(true);
+    try {
+      await api.post("/socio/honorary/activate", { annual_value: value });
+      toast.success("Sócio Honorário 👔 ativado · 12 meses liquidados");
+      setShowQuotas(false);
+      await refresh();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setSavingQuotaCfg(false);
     }
   };
 
@@ -451,6 +499,7 @@ export default function SocioPortal() {
       } catch { setProducts([]); }
     }
     setReqCart({});
+    setReqUsePoints(false);
     setEditingReq(null);
     // Os 5 itens mais pedidos deste sócio — venda rápida no portal
     try {
@@ -497,14 +546,15 @@ export default function SocioPortal() {
     if (!items.length) return toast.error("Adiciona pelo menos um item");
     try {
       if (editingReq) {
-        await api.put(`/socio/consumption-requests/${editingReq.id}`, { items });
+        await api.put(`/socio/consumption-requests/${editingReq.id}`, { items, use_points: reqUsePoints });
         toast.success("Pedido atualizado · aguarda validação do staff");
       } else {
-        await api.post("/socio/consumption-request", { items });
+        await api.post("/socio/consumption-request", { items, use_points: reqUsePoints });
         toast.success("Pedido enviado · aguarda validação do staff");
       }
       setEditingReq(null);
       setReqCart({});
+      setReqUsePoints(false);
       setShowRequest(false);
       await loadMyRequests();
       await refresh();
@@ -544,12 +594,17 @@ export default function SocioPortal() {
   const submitQuotas = async () => {
     if (!selectedMonths.length) return toast.error("Seleciona pelo menos um mês");
     try {
-      await api.post("/socio/quotas/pay", {
+      const { data } = await api.post("/socio/quotas/pay", {
         year: quotas.year,
         months: selectedMonths,
         mbway_phone: c.contact || "",
+        pay_at_counter: payAtCounter,
       });
-      toast.success("Pedido de pagamento enviado · aguarda confirmação do clube");
+      if (data?.pay_at_counter) {
+        toast.success("Cotas lançadas na conta corrente · paga ao balcão");
+      } else {
+        toast.success("Pedido de pagamento enviado · aguarda confirmação do clube");
+      }
       setShowQuotas(false);
       await refresh();
     } catch (e) {
@@ -576,45 +631,15 @@ export default function SocioPortal() {
         covered.push({ sale: s, applied });
       }
     }
-    const w = window.open("", "_blank", "width=420,height=640");
-    if (!w) return toast.error("Permite popups para imprimir");
-    const itemsHtml = covered.length === 0 ? "" : `<hr/><div class="muted">Itens abatidos:</div>${covered.map(({ sale, applied }) => `
-      <div style="margin-top:6px">
-        <div class="row"><span class="muted">${new Date(sale.created_at).toLocaleDateString("pt-PT")}</span><span>${euro(sale.total)}</span></div>
-        ${sale.items.map((it) => `<div class="row" style="font-size:11px"><span>· ${it.quantity}× ${it.product_name}</span><span>${euro(it.subtotal)}</span></div>`).join("")}
-        ${applied < sale.total ? `<div class="row" style="font-size:10px;color:#888"><span>aplicado:</span><span>${euro(applied)}</span></div>` : ""}
-      </div>`).join("")}`;
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Recibo</title>
-<style>
-  body{font-family:'Courier New',monospace;color:#000;max-width:320px;margin:14px auto;padding:0 12px;font-size:13px}
-  h1{font-size:16px;text-align:center;margin:4px 0 0;letter-spacing:.18em}
-  h2{font-size:11px;text-align:center;margin:0 0 14px;color:#444;letter-spacing:.25em}
-  hr{border:0;border-top:1px dashed #000;margin:10px 0}
-  .row{display:flex;justify-content:space-between;margin:4px 0}
-  .big{font-size:20px;font-weight:bold}
-  .muted{color:#555;font-size:11px}
-  @media print{ body{margin:0} button{display:none} }
-</style></head><body>
-  <h1>ARD · NESPEREIRA</h1>
-  <h2>RECIBO DE PAGAMENTO</h2>
-  <div class="muted">${new Date(p.created_at).toLocaleString("pt-PT")}</div>
-  ${p.user_email ? `<div class="muted">Registado por: ${p.user_email}</div>` : ""}
-  <hr/>
-  <div class="row"><span>Sócio</span><strong>${c.name}</strong></div>
-  ${c.member_number ? `<div class="row"><span>Nº</span><strong>${c.member_number}</strong></div>` : ""}
-  ${itemsHtml}
-  <hr/>
-  <div class="row"><span>Em numerário</span><span>${euro(p.amount || 0)}</span></div>
-  ${p.points_used ? `<div class="row"><span>Pontos</span><span>${p.points_used} pts</span></div>` : ""}
-  ${p.note ? `<div class="row"><span>Nota</span><span>${p.note}</span></div>` : ""}
-  <hr/>
-  <div class="row big"><span>TOTAL ABATIDO</span><span>${euro(p.total_credited || p.amount)}</span></div>
-  <hr/>
-  <div style="text-align:center" class="muted">Obrigado pela preferência</div>
-  <div style="text-align:center;margin-top:14px"><button onclick="window.print()">Imprimir / PDF</button></div>
-  <script>setTimeout(()=>window.print(),300);</script>
-</body></html>`);
-    w.document.close();
+    const coveredDocs = covered.map(({ sale, applied }) => ({ ...sale, applied }));
+    const res = printReceiptA6(p, {
+      client: c,
+      quotaStatus: c.quota_status,
+      coveredSales: coveredDocs.map((s) => s.tx_number).filter(Boolean),
+      coveredSalesDocs: coveredDocs,
+      secondCopy: false,
+    });
+    if (!res.ok) toast.error("Permite popups para imprimir");
   };
 
   return (
@@ -651,6 +676,17 @@ export default function SocioPortal() {
                 </span>
               )}
             </button>
+            {data?.last_access && (
+              <button
+                data-testid="socio-last-access"
+                onClick={() => setShowAccess(true)}
+                title="Ver histórico de acessos"
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-slate-400 hover:text-white hover:bg-slate-900 transition-colors"
+              >
+                <Clock size={16} />
+                <span className="hidden md:inline">Último acesso: {new Date(data.last_access).toLocaleString("pt-PT")}</span>
+              </button>
+            )}
             <button
               data-testid="socio-refresh-btn"
               onClick={onRefresh}
@@ -703,13 +739,24 @@ export default function SocioPortal() {
                 <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight" data-testid="socio-name">
                   Olá, {c.name.split(" ")[0]}!
                 </h1>
-                {c.is_member ? (
-                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-green-500/15 text-green-300 border border-green-500/30 flex items-center gap-1.5">
-                    <Medal size={14} weight="fill" /> Sócio nº {c.member_number} · Cotas pagas
-                  </span>
-                ) : (
-                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
-                    <Medal size={14} /> Sócio nº {c.member_number} · Por regularizar
+                {(() => {
+                  const st = c.quota_status?.status || (c.is_member ? "pending" : "none");
+                  const cls = st === "paid"
+                    ? "bg-green-500/15 text-green-300 border-green-500/30"
+                    : st === "debt"
+                    ? "bg-rose-500/15 text-rose-300 border-rose-500/30"
+                    : "bg-amber-500/15 text-amber-300 border-amber-500/30";
+                  const label = st === "paid" ? "Cotas em dia" : st === "debt" ? "Em dívida" : "Por regularizar";
+                  const dot = st === "paid" ? "🟢" : st === "debt" ? "🔴" : "🟡";
+                  return (
+                    <span className={`px-3 py-1 rounded-full text-xs font-bold border flex items-center gap-1.5 ${cls}`} data-testid="socio-quota-badge" title={c.quota_status?.detail || ""}>
+                      <Medal size={14} weight={st === "paid" ? "fill" : "regular"} /> {dot} Sócio nº {c.member_number} · {label}
+                    </span>
+                  );
+                })()}
+                {c.is_honorary && (
+                  <span data-testid="socio-honorary-badge" className="px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-amber-500/25 to-yellow-500/10 text-amber-200 border border-amber-400/50 flex items-center gap-1.5">
+                    👔 Sócio Honorário
                   </span>
                 )}
               </div>
@@ -717,6 +764,15 @@ export default function SocioPortal() {
                 <p className="text-sm text-slate-400">
                   Conta corrente do bar · {club.name || "ARD Nespereira"}
                 </p>
+                {c.is_member && c.quota_status?.detail && (
+                  <p
+                    data-testid="socio-quota-detail"
+                    className={`text-xs font-medium ${c.quota_status.status === "paid" ? "text-emerald-300" : c.quota_status.status === "debt" ? "text-rose-300" : "text-amber-300"}`}
+                  >
+                    {c.quota_status.detail}
+                    {c.quota_status.amount_due > 0 && <span className="text-slate-400"> · a regularizar: {euro(c.quota_status.amount_due)}</span>}
+                  </p>
+                )}
                 {barOpen !== false && (
                   <button
                     data-testid="socio-hero-request-btn"
@@ -886,7 +942,12 @@ export default function SocioPortal() {
             <span>Despesas <span className="text-slate-300 font-medium">{euro(monthly.expenses.total)}</span></span>
             <span>Saldo <span className="text-slate-300 font-medium">{euro(monthly.balance)}</span></span>
             {quarterly && (
-              <span title="Saldo final financeiro — dinheiro contabilístico em caixa e banco">Saldo final financeiro <span className="text-slate-300 font-medium">{euro(quarterly.total_balance ?? 0)}</span> <span className="text-slate-600">(banco {euro(quarterly.bank_balance ?? 0)} + caixa {euro(quarterly.cash_balance ?? 0)})</span></span>
+              <span title="Saldo final financeiro — dinheiro contabilístico em caixa e banco">
+                Saldo final financeiro <span className="text-slate-300 font-medium">{euro(quarterly.total_balance ?? 0)}</span>
+                {c.direction_role && (
+                  <span className="text-slate-600"> (banco {euro(quarterly.bank_balance ?? 0)} + caixa {euro(quarterly.cash_balance ?? 0)})</span>
+                )}
+              </span>
             )}
             <div className="ml-auto flex items-center gap-3">
               {monthlyDoc && (
@@ -1730,6 +1791,20 @@ export default function SocioPortal() {
                 </div>
               ))}
             </div>
+            <label className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-green-500/40 mb-3">
+              <input
+                data-testid="req-use-points"
+                type="checkbox"
+                checked={reqUsePoints}
+                onChange={(e) => setReqUsePoints(e.target.checked)}
+                className="mt-0.5 w-4 h-4 accent-green-500"
+              />
+              <span className="text-xs text-slate-200">
+                <strong>Descontar pontos no pagamento</strong>
+                {c.points ? <span className="text-slate-500"> · tens {c.points} pts</span> : null}
+                <span className="block text-[10px] text-slate-500 font-normal">O staff é informado e abate os pontos à dívida quando pagares.</span>
+              </span>
+            </label>
             <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 mb-3 flex items-center justify-between">
               <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">Total</span>
               <span data-testid="req-total" className="font-outfit text-xl font-bold text-amber-300">
@@ -1753,7 +1828,7 @@ export default function SocioPortal() {
           onClick={() => setShowQuotas(false)}
           data-testid="socio-quotas-modal"
         >
-          <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-6 max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-2 mb-3">
               <CalendarBlank size={22} weight="duotone" className="text-amber-400" />
               <h3 className="font-outfit text-xl font-semibold">Cotas</h3>
@@ -1770,12 +1845,24 @@ export default function SocioPortal() {
               </select>
             </div>
             <p className="text-xs text-slate-400 mb-4">
-              Seleciona os meses em aberto que pretendes pagar. O pedido é enviado por MBWay para o número da ARD.
+              Seleciona os meses em aberto que pretendes pagar. Podes pagar por MBWay ou ao balcão (o valor fica na conta corrente).
             </p>
-            <div className="bg-slate-950 border border-amber-500/20 rounded-lg p-3 mb-4 text-center">
+            <div className={`bg-slate-950 border border-amber-500/20 rounded-lg p-3 mb-2 text-center ${payAtCounter ? "opacity-40" : ""}`}>
               <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80">Envia MBWay para</div>
               <div data-testid="socio-quotas-mbway" className="font-outfit text-xl font-bold text-amber-300">{club.mbway_phone || "—"}</div>
             </div>
+            <label className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-amber-500/40 mb-4">
+              <input
+                data-testid="socio-quotas-counter"
+                type="checkbox"
+                checked={payAtCounter}
+                onChange={(e) => setPayAtCounter(e.target.checked)}
+                className="mt-0.5 w-4 h-4 accent-amber-500"
+              />
+              <span className="text-xs text-slate-200">
+                <strong>Pagar ao balcão</strong> — o valor é lançado na conta corrente e pagas quando passares na ARD.
+              </span>
+            </label>
             <div className="grid grid-cols-3 gap-2 mb-4">
               {quotas.quotas.map((q) => {
                 const isPaid = q.status === "paid";
@@ -1808,8 +1895,62 @@ export default function SocioPortal() {
             </div>
             <div className="bg-slate-950 border border-amber-500/20 rounded-lg p-3 mb-4 flex items-center justify-between">
               <span className="text-[10px] uppercase tracking-wider text-amber-400/80 font-bold">Total a pagar</span>
-              <span data-testid="socio-quotas-total" className="font-outfit text-2xl font-bold text-amber-300">{euro(selectedMonths.length * (club.quota_monthly_value || 5))}</span>
+              <span data-testid="socio-quotas-total" className="font-outfit text-2xl font-bold text-amber-300">{euro(selectedMonths.length * (quotaSettings?.monthly_value || club.quota_monthly_value || 5))}</span>
             </div>
+
+            <div className="border-t border-slate-800 pt-3 mb-4 space-y-3">
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Valor da quota mensal (€)</label>
+                <div className="mt-1.5 flex gap-2">
+                  <input
+                    data-testid="socio-quota-monthly-input"
+                    type="number"
+                    min="1"
+                    step="0.5"
+                    value={monthlyValue}
+                    onChange={(e) => setMonthlyValue(e.target.value)}
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white"
+                  />
+                  <button
+                    type="button"
+                    data-testid="socio-quota-monthly-save"
+                    onClick={saveMonthlyQuota}
+                    disabled={savingQuotaCfg}
+                    className="px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold text-white disabled:opacity-40"
+                  >Guardar</button>
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1">Sugestão do clube: {euro(club.quota_monthly_value || 1)} · podes aumentar o teu contributo.</p>
+              </div>
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                <div className="text-sm font-bold text-amber-200 flex items-center gap-1.5">
+                  👔 Sócio Honorário {c.is_honorary && <span className="text-[10px] bg-amber-500/20 rounded-full px-2 py-0.5">ativo</span>}
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Quota única anual (mínimo 20 €) que liquida automaticamente os 12 meses de {quotas.year}. Inclui convite automático para todos os eventos.
+                </p>
+                {!c.is_honorary && (
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      data-testid="socio-honorary-value"
+                      type="number"
+                      min="20"
+                      step="1"
+                      value={honoraryValue}
+                      onChange={(e) => setHonoraryValue(e.target.value)}
+                      className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white"
+                    />
+                    <button
+                      type="button"
+                      data-testid="socio-honorary-activate"
+                      onClick={activateHonorary}
+                      disabled={savingQuotaCfg}
+                      className="px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold disabled:opacity-40"
+                    >Ativar e liquidar</button>
+                  </div>
+                )}
+              </div>
+            </div>
+
             <div className="flex gap-2">
               <button onClick={() => setShowQuotas(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Cancelar</button>
               <button
@@ -1818,9 +1959,36 @@ export default function SocioPortal() {
                 disabled={selectedMonths.length === 0}
                 className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold"
               >
-                Enviar pedido
+                {payAtCounter ? "Lançar na conta corrente" : "Enviar pedido MBWay"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showAccess && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+          onClick={() => setShowAccess(false)}
+          data-testid="socio-access-history-modal"
+        >
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-6 max-h-[85vh] flex flex-col">
+            <div className="flex items-center gap-2 mb-2">
+              <Clock size={22} weight="duotone" className="text-amber-400" />
+              <h3 className="font-outfit text-xl font-semibold">Histórico de acessos</h3>
+            </div>
+            <p className="text-xs text-slate-400 mb-3">Entradas na tua área de sócio.</p>
+            <div className="flex-1 overflow-y-auto space-y-1.5">
+              {(data.access_history || []).length === 0 ? (
+                <div className="text-center text-slate-500 py-8 text-sm">Sem acessos registados.</div>
+              ) : data.access_history.map((a, idx) => (
+                <div key={`${a.at}-${idx}`} className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-sm">
+                  <span className="text-slate-300">{new Date(a.at).toLocaleString("pt-PT")}</span>
+                  {idx === 0 && <span className="text-[10px] font-bold text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 rounded-full px-2 py-0.5">mais recente</span>}
+                </div>
+              ))}
+            </div>
+            <button onClick={() => setShowAccess(false)} className="mt-3 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm">Fechar</button>
           </div>
         </div>
       )}

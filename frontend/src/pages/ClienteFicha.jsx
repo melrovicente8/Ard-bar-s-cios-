@@ -35,6 +35,8 @@ import {
   Key,
   Users,
   ShieldCheck,
+  Clock,
+  ClockCounterClockwise,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
@@ -67,6 +69,7 @@ export default function ClienteFicha() {
     note: "",
     member_number: "",
     is_member: false,
+    is_honorary: false,
     pin: "",
     direction_role: "",
     direction_history: [],
@@ -103,6 +106,7 @@ export default function ClienteFicha() {
   // Foto / data nascimento (admin/tesoureiro)
   const [showProfileExtra, setShowProfileExtra] = useState(false);
   const [profileForm, setProfileForm] = useState({ birthday: "", photo_data: "" });
+  const [showAccess, setShowAccess] = useState(false);
 
   const loadQuotas = async (year = quotaYear) => {
     try {
@@ -397,10 +401,12 @@ export default function ClienteFicha() {
     }
   };
 
-  const coveredSalesDocs = (tx) =>
-    (tx.sale_tx_numbers || [])
+  const coveredSalesDocs = (tx) => {
+    if ((tx.covered_docs || []).length) return tx.covered_docs;
+    return (tx.sale_tx_numbers || [])
       .map((n) => (data?.sales || []).find((s) => s.tx_number === n))
       .filter(Boolean);
+  };
 
   const printTransaction = (tx) => {
     if (!tx || !tx.tx_number) {
@@ -523,6 +529,7 @@ export default function ClienteFicha() {
       note: c.note || "",
       member_number: c.member_number || "",
       is_member: !!c.is_member,
+      is_honorary: !!c.is_honorary,
       pin: "",
       direction_role: c.direction_role || "",
       direction_history: (c.direction_history || []).map((h) => ({ role: h.role || "", start_year: h.start_year || "", end_year: h.end_year || "" })),
@@ -550,6 +557,7 @@ export default function ClienteFicha() {
       body.note = editForm.note || null;
       body.member_number = editForm.member_number || null;
       body.is_member = editForm.is_member;
+      body.is_honorary = !!editForm.is_honorary;
       if (editForm.pin) body.pin = editForm.pin;
       body.direction_role = editForm.direction_role || ""; // "" limpa o cargo no backend
       body.orders_unblocked = !!editForm.orders_unblocked;
@@ -721,19 +729,23 @@ export default function ClienteFicha() {
                   <Camera size={16} weight="duotone" />
                 </button>
               )}
-              {c.is_member ? (
-                c.has_paid_prev_quota ? (
-                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-green-500/15 text-green-300 border border-green-500/30 flex items-center gap-1.5">
-                    <Medal size={14} weight="fill" />
-                    Sócio {c.member_number ? `nº ${c.member_number}` : ""} · Cotas em dia
+              {c.is_member ? (() => {
+                const qs = c.quota_status || {};
+                const st = qs.status || "pending";
+                const cls = st === "paid"
+                  ? "bg-green-500/15 text-green-300 border-green-500/30"
+                  : st === "debt"
+                  ? "bg-rose-500/15 text-rose-300 border-rose-500/30"
+                  : "bg-amber-500/15 text-amber-300 border-amber-500/30";
+                const label = st === "paid" ? "Cotas em dia" : st === "debt" ? "Em dívida" : "Por regularizar";
+                const dot = st === "paid" ? "🟢" : st === "debt" ? "🔴" : "🟡";
+                return (
+                  <span data-testid="ficha-quota-badge" title={qs.detail || ""} className={`px-3 py-1 rounded-full text-xs font-bold border flex items-center gap-1.5 ${cls}`}>
+                    <Medal size={14} weight={st === "paid" ? "fill" : "regular"} />
+                    {dot} Sócio {c.member_number ? `nº ${c.member_number}` : ""} · {label}
                   </span>
-                ) : (
-                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
-                    <Medal size={14} />
-                    Sócio {c.member_number ? `nº ${c.member_number}` : ""} · Cotas por regularizar
-                  </span>
-                )
-              ) : c.member_number ? (
+                );
+              })() : c.member_number ? (
                 <span className="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1.5">
                   <Medal size={14} />
                   Sócio nº {c.member_number} · Por regularizar
@@ -741,6 +753,15 @@ export default function ClienteFicha() {
               ) : (
                 <span className="px-3 py-1 rounded-full text-xs font-bold bg-slate-700/50 text-slate-300 border border-slate-600/30">
                   Não-sócio
+                </span>
+              )}
+              {c.is_honorary && (
+                <span
+                  data-testid="ficha-honorary-badge"
+                  title="Sócio Honorário — convidado automático para todos os eventos da ARDN"
+                  className="px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-amber-500/20 to-yellow-500/10 text-amber-200 border border-amber-400/50 flex items-center gap-1.5"
+                >
+                  👔 Sócio Honorário
                 </span>
               )}
               {(c.is_minor || c.family_head_client_id) && (
@@ -771,6 +792,36 @@ export default function ClienteFicha() {
                 </span>
               )}
             </div>
+            {c.is_member && c.quota_status?.detail && (
+              <div
+                data-testid="ficha-quota-detail"
+                className={`text-xs mt-1.5 font-medium ${
+                  c.quota_status.status === "paid" ? "text-emerald-300" : c.quota_status.status === "debt" ? "text-rose-300" : "text-amber-300"
+                }`}
+              >
+                {c.quota_status.detail}
+                {c.quota_status.amount_due > 0 && (
+                  <span className="text-slate-400"> · a regularizar: {euro(c.quota_status.amount_due)}</span>
+                )}
+              </div>
+            )}
+            {c.is_honorary && (
+              <div className="text-xs text-amber-300/80 mt-1" data-testid="ficha-honorary-note">
+                👔 Convidado automático para todos os eventos da ARDN{c.honorary_annual_value ? ` · quota anual ${euro(c.honorary_annual_value)}` : ""}.
+              </div>
+            )}
+            {c.socio_last_access && (
+              <button
+                type="button"
+                data-testid="ficha-access-history-btn"
+                onClick={() => setShowAccess(true)}
+                className="text-xs text-slate-400 hover:text-amber-300 mt-1 flex items-center gap-1.5"
+                title="Ver histórico de acessos à área de sócio"
+              >
+                <Clock size={13} weight="duotone" />
+                Último acesso à app do sócio: {new Date(c.socio_last_access).toLocaleString("pt-PT")} · ver histórico
+              </button>
+            )}
             {(c.direction_history || []).length > 0 && (
               <div className="text-xs text-slate-400 mt-1.5" data-testid="ficha-direction-history">
                 Direção (mandatos anteriores):{" "}
@@ -940,7 +991,11 @@ export default function ClienteFicha() {
             {c.points || 0}
           </div>
           <div className="text-[10px] text-slate-500 mt-1">
-            {c.is_member && c.has_paid_prev_quota ? "1 pt cada 5€" : "1 pt cada 10€"}
+            {c.is_member && c.quota_status?.status === "debt"
+              ? "Sem acumulação de pontos até regularizar"
+              : c.is_member && c.quota_status?.status === "paid"
+              ? (c.is_honorary ? "1,2 pts por cada 5 € (honorário)" : "1 pt cada 5€")
+              : "1 pt cada 10€"}
           </div>
         </div>
         <Link
@@ -1473,6 +1528,21 @@ export default function ClienteFicha() {
                       <span className="text-xs font-medium text-slate-200">Pagamento de Quotas</span>
                     </label>
                   </div>
+                  <label className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-amber-500/40">
+                    <input
+                      data-testid="edit-is-honorary-toggle"
+                      type="checkbox"
+                      checked={editForm.is_honorary}
+                      onChange={(e) => setEditForm({ ...editForm, is_honorary: e.target.checked })}
+                      className="w-4 h-4 accent-amber-500"
+                    />
+                    <span className="text-xs font-medium text-slate-200">
+                      👔 Sócio Honorário
+                      <span className="block text-[10px] text-slate-500 font-normal">
+                        Convidado automático para todos os eventos · quota anual mínima de 20 €
+                      </span>
+                    </span>
+                  </label>
                   <label className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-amber-500/40">
                     <input
                       data-testid="edit-orders-unblocked-toggle"
@@ -2101,6 +2171,30 @@ export default function ClienteFicha() {
               })}
             </div>
             <button onClick={() => setShowPointsHistory(false)} className="mt-3 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm">Fechar</button>
+          </div>
+        </div>
+      )}
+
+      {showAccess && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setShowAccess(false)} data-testid="ficha-access-history-modal">
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg p-5 max-h-[90vh] flex flex-col">
+            <div className="flex items-center gap-2 mb-3">
+              <ClockCounterClockwise size={20} weight="duotone" className="text-amber-400" />
+              <h3 className="font-outfit text-xl font-semibold">Histórico de acessos</h3>
+              <span className="ml-auto text-xs text-slate-500">{c.name}</span>
+            </div>
+            <p className="text-xs text-slate-400 mb-3">Registo das entradas na área de sócio (app).</p>
+            <div className="flex-1 overflow-y-auto space-y-1.5">
+              {(c.access_history || []).length === 0 ? (
+                <div className="text-center text-slate-500 py-10 text-sm">Sem acessos registados.</div>
+              ) : c.access_history.map((a, idx) => (
+                <div key={`${a.at}-${idx}`} className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-sm">
+                  <span className="text-slate-300">{new Date(a.at).toLocaleString("pt-PT")}</span>
+                  {idx === 0 && <span className="text-[10px] font-bold text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 rounded-full px-2 py-0.5">mais recente</span>}
+                </div>
+              ))}
+            </div>
+            <button onClick={() => setShowAccess(false)} className="mt-3 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm">Fechar</button>
           </div>
         </div>
       )}

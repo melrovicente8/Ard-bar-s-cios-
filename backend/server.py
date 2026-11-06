@@ -110,6 +110,7 @@ class ClientIn(BaseModel):
     consumption_limit: Optional[float] = None  # limite de consumo mensal definido pelo titular (€/mês)
     direction_role: Optional[str] = None  # cargo na direção (ex.: "Presidente da Direção")
     direction_history: Optional[List[dict]] = None  # [{role, start_year, end_year}]
+    is_honorary: bool = False  # Sócio Honorário 👔 — quota anual (mín. 20 €), convidado automático para eventos
     is_walkin: bool = False  # "Não cliente" — vendas sem nome, editável, sem pontos/cotas/app
 
 class ClientUpdate(BaseModel):
@@ -128,6 +129,7 @@ class ClientUpdate(BaseModel):
     consumption_limit: Optional[Union[float, str]] = None
     direction_role: Optional[str] = None
     direction_history: Optional[List[dict]] = None
+    is_honorary: Optional[bool] = None  # Sócio Honorário 👔
     is_walkin: Optional[bool] = None
     orders_unblocked: Optional[bool] = None  # desbloqueia pedidos na app do sócio (após rejeições)
 
@@ -600,7 +602,7 @@ async def list_stock_writeoffs(user: dict = Depends(get_current_user)):
 async def list_clients(user: dict = Depends(get_current_user)):
     # Fichas temporárias liquidadas ficam arquivadas (só no histórico, não na lista)
     items = await db.clients.find({"archived": {"$ne": True}}, {"_id": 0, "pin_hash": 0}).sort("name", 1).to_list(2000)
-    # Enriquecer com resumo de cotas do ano corrente (X/12 pagas) — página Clientes unificada
+    # Enriquecer com resumo de cotas do ano corrente (X/12 pagas) + estado 🟢🟡🔴 — página Clientes unificada
     year = datetime.now(timezone.utc).year
     ids = [c["id"] for c in items]
     quotas = await db.quotas.find(
@@ -610,11 +612,19 @@ async def list_clients(user: dict = Depends(get_current_user)):
     paid_count: dict = {}
     for q in quotas:
         paid_count[q["client_id"]] = paid_count.get(q["client_id"], 0) + 1
+    all_quotas = await db.quotas.find(
+        {"client_id": {"$in": ids}}, {"_id": 0}
+    ).to_list(200000)
+    quotas_by_client: dict = {}
+    for q in all_quotas:
+        quotas_by_client.setdefault(q.get("client_id"), []).append(q)
     for c in items:
         c["quotas_paid"] = paid_count.get(c["id"], 0)
         c["quotas_total"] = 12
         c["quotas_year"] = year
         c["quotas_up_to_date"] = paid_count.get(c["id"], 0) >= 12
+        c["quota_status"] = _quota_status_from_docs(c, quotas_by_client.get(c["id"], [])) if c.get("is_member") else None
+        c["has_paid_prev_quota"] = bool(c["quota_status"] and c["quota_status"].get("status") == "paid")
     return items
 
 @api_router.post("/clients")
@@ -657,6 +667,7 @@ async def create_client(body: ClientIn, user: dict = Depends(get_current_user)):
         "consumption_limit": body.consumption_limit if role in ("admin", "tesoureiro") else None,
         "direction_role": body.direction_role if role in ("admin", "tesoureiro", "presidente") else None,
         "direction_history": body.direction_history if role in ("admin", "tesoureiro", "presidente") else None,
+        "is_honorary": bool(body.is_honorary) if role in ("admin", "tesoureiro") else False,
         "is_walkin": bool(body.is_walkin),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -701,7 +712,7 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
         head = await db.clients.find_one({"id": update["family_head_client_id"]}, {"is_member": 1})
         if not head or not head.get("is_member"):
             raise HTTPException(status_code=400, detail="O titular da tutela tem de ser um sócio")
-    sensitive = {"pin", "is_member", "member_number", "is_minor", "family_head_client_id", "orders_unblocked"}
+    sensitive = {"pin", "is_member", "member_number", "is_minor", "family_head_client_id", "orders_unblocked", "is_honorary"}
     if any(k in update for k in sensitive) and user.get("role") not in ("admin", "tesoureiro"):
         raise HTTPException(status_code=403, detail="Sem permissão para alterar estes campos")
     existing_doc = await db.clients.find_one({"id": client_id}, {"_id": 0})
@@ -786,12 +797,22 @@ async def client_detail(client_id: str, user: dict = Depends(get_current_user)):
         c.pop("pin_visible", None)
     c["quota_status"] = await _quota_overall_status(client_id)
     c["has_paid_prev_quota"] = bool(c["quota_status"] and c["quota_status"].get("status") == "paid")
+    # Histórico de acessos à área de sócio (última vez + lista para consulta da administração)
+    c["access_history"] = await db.socio_accesses.find(
+        {"client_id": client_id}, {"_id": 0}
+    ).sort("at", -1).to_list(50)
+    if not c.get("socio_last_access") and c["access_history"]:
+        c["socio_last_access"] = c["access_history"][0].get("at")
     if c.get("is_minor") or c.get("family_head_client_id"):
         h = await db.clients.find_one({"id": c.get("family_head_client_id")}, {"_id": 0, "name": 1, "member_number": 1})
         c["family_head_name"] = h.get("name") if h else None
         c["family_head_member_number"] = h.get("member_number") if h else None
     sales = await db.sales.find({"client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
     payments = await db.payments.find({"client_id": client_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    # Recibos: itens das vendas abatidas por cada pagamento (inclui pagamentos antigos sem item_targets)
+    coverage = _allocate_payment_coverages(sales, payments)
+    for p in payments:
+        p["covered_docs"] = coverage.get(p.get("id"), [])
     # Consumption breakdown
     now = datetime.now(timezone.utc)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
@@ -1062,7 +1083,8 @@ async def transfer_occasional_client(
     for s in sales:
         total_s = float(s.get("total") or 0)
         old_pts = int(s.get("points_earned") or 0)
-        new_pts = int(total_s // (5.0 if target.get("is_member") else 10.0))
+        target_step = await _points_step_for(target)
+        new_pts = int(total_s // target_step) if target_step else 0
         await db.sales.update_one(
             {"id": s["id"]},
             {
@@ -1235,13 +1257,29 @@ async def _log_points(client_id: str, delta: int, source: str, ref_id: Optional[
     })
 
 
-def _compute_points_with_rollover(client: dict, total: float) -> tuple[int, float]:
+async def _points_step_for(client: dict) -> Optional[float]:
+    """Euros necessários por ponto, conforme o estado das cotas:
+    🟢 em dia → 5 € (sócio honorário: 5 €/1,2 pontos ≈ 4,17 €);
+    🟡 por regularizar → 10 €; 🔴 em dívida → não acumula pontos (None)."""
+    if not client.get("is_member"):
+        return 10.0
+    status = (await _quota_overall_status(client.get("id")) or {}).get("status")
+    if status == "debt":
+        return None
+    if status == "pending":
+        return 10.0
+    return round(5.0 / 1.2, 4) if client.get("is_honorary") else 5.0
+
+
+async def _compute_points_with_rollover(client: dict, total: float) -> tuple[int, float]:
     """Retorna (points_earned, new_pending_value).
     Sócios acumulam o resto (cêntimos não convertidos) para a próxima compra.
     Não-sócios não fazem rollover."""
     is_member = bool(client.get("is_member"))
-    step = 5.0 if is_member else 10.0
-    pending = float(client.get("points_pending_value", 0)) if is_member else 0.0
+    pending = float(client.get("points_pending_value", 0) or 0) if is_member else 0.0
+    step = await _points_step_for(client)
+    if not step:
+        return 0, pending
     effective = pending + float(total)
     pts = int(effective // step)
     new_pending = round(effective - pts * step, 2) if is_member else 0.0
@@ -1280,6 +1318,18 @@ async def _house_offer_allowance(user: dict) -> dict:
     limit = HOUSE_OFFER_LIMITS.get(user.get("role"), HOUSE_OFFER_DEFAULT_LIMIT)
     used = await _house_offer_used_month(user["email"])
     return {"limit": limit, "used": used, "remaining": round(max(limit - used, 0.0), 2)}
+
+
+async def _assert_house_offer_allowed(client_doc: dict):
+    """Sócio 🔴 em dívida não pode receber ofertas da casa até regularizar as cotas."""
+    if not client_doc.get("is_member"):
+        return
+    status = await _quota_overall_status(client_doc.get("id"))
+    if status and status.get("status") == "debt":
+        raise HTTPException(
+            status_code=403,
+            detail=f"Sócio com quotas em dívida não pode receber ofertas da casa até regularizar ({status.get('amount_due', 0):.2f} €).",
+        )
 
 async def _record_house_offers(entries: list, user: dict, client_name: str, member_number: Optional[str] = None):
     """Regista ofertas da casa: histórico (house_offers) + despesa de bar 'Conta da Casa'.
@@ -1376,6 +1426,8 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
     # Oferta da casa é exclusiva da direção/tesouraria (funcionários não selecionam)
     if house_total > 0 and role not in ("admin", "tesoureiro", "presidente"):
         raise HTTPException(status_code=403, detail="Oferta da casa é exclusiva da direção/tesouraria")
+    if house_total > 0:
+        await _assert_house_offer_allowed(client_doc)
     # Limite mensal de oferta da casa: funcionário 20 € · admin/tesoureiro/presidente 50 €
     if house_total > 0:
         allowance = await _house_offer_allowance(user)
@@ -1393,7 +1445,7 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
     # Points com rollover (sócios apenas; "não cliente" não acumula pontos)
     is_member = bool(client_doc.get("is_member"))
     old_pending = float(client_doc.get("points_pending_value", 0)) if is_member else 0.0
-    points_earned, new_pending = _compute_points_with_rollover(client_doc, total)
+    points_earned, new_pending = await _compute_points_with_rollover(client_doc, total)
     if client_doc.get("is_walkin") or client_doc.get("is_temp"):
         points_earned, new_pending = 0, old_pending
     tx_no = await _next_tx_number()
@@ -1713,8 +1765,8 @@ async def update_sale(sale_id: str, body: SaleEditIn, user: dict = Depends(get_c
 
     old_total = float(sale.get("total", 0))
     old_points = int(sale.get("points_earned", 0))
-    points_step = 5.0 if new_client.get("is_member") else 10.0
-    new_points = int(new_total // points_step)
+    points_step = await _points_step_for(new_client)
+    new_points = int(new_total // points_step) if points_step else 0
 
     if new_client_id != sale["client_id"]:
         # Reverter cliente antigo
@@ -2007,6 +2059,7 @@ async def client_points_history(client_id: str, user: dict = Depends(get_current
 class SocioConsumptionReqIn(BaseModel):
     items: List[SaleItemIn]
     note: Optional[str] = None
+    use_points: bool = False  # o sócio marcou que quer descontar pontos no pagamento
 
 # Endpoints de sócio (POST/GET /socio/consumption-request*) e validação por staff
 # são definidos mais abaixo, depois de get_current_socio estar disponível.
@@ -2050,7 +2103,7 @@ async def approve_consumption_request(req_id: str, user: dict = Depends(get_curr
     tx_no = await _next_tx_number()
     is_member = bool(client_doc.get("is_member"))
     old_pending = float(client_doc.get("points_pending_value", 0)) if is_member else 0.0
-    points_earned, new_pending = _compute_points_with_rollover(client_doc, req["total"])
+    points_earned, new_pending = await _compute_points_with_rollover(client_doc, req["total"])
     sale_doc = {
         "id": sale_id,
         "tx_number": tx_no,
@@ -2066,6 +2119,7 @@ async def approve_consumption_request(req_id: str, user: dict = Depends(get_curr
         "user_email": user["email"],
         "source": "socio_request",
         "request_id": req_id,
+        "use_points_requested": bool(req.get("use_points_requested")),
     }
     await db.sales.insert_one(sale_doc)
     # Cotas incluídas no pedido ficam 'billed' (na conta corrente) e apontam à venda gerada
@@ -2079,7 +2133,7 @@ async def approve_consumption_request(req_id: str, user: dict = Depends(get_curr
                 continue
             await db.quotas.update_one(
                 {"client_id": req["client_id"], "year": qy, "month": qm},
-                {"$set": {"client_id": req["client_id"], "year": qy, "month": qm, "amount": QUOTA_MONTHLY_VALUE, "status": "billed", "sale_id": sale_id}},
+                {"$set": {"client_id": req["client_id"], "year": qy, "month": qm, "amount": _quota_amount(client_doc), "status": "billed", "sale_id": sale_id}},
                 upsert=True,
             )
     inc = {"balance": req["total"], "total_spent": req["total"], "points": points_earned}
@@ -2411,6 +2465,7 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
         if offer_amount > 0:
             if user.get("role") not in ("admin", "tesoureiro", "presidente"):
                 raise HTTPException(status_code=403, detail="Oferta da casa é exclusiva da direção/tesouraria")
+            await _assert_house_offer_allowed(c)
             allowance = await _house_offer_allowance(user)
             if round(allowance["used"] + offer_amount, 2) > allowance["limit"]:
                 raise HTTPException(
@@ -3047,10 +3102,25 @@ async def club_info():
 
 # ---------- Quotas (cotas mensais) ----------
 MONTHS_PT = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+MONTHS_FULL_PT = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+
+
+def _quota_amount(client: Optional[dict], doc: Optional[dict] = None) -> float:
+    """Valor de uma cota: o registado no mês ou o valor definido pelo sócio/clube."""
+    if doc and doc.get("amount") is not None:
+        return round(float(doc["amount"]), 2)
+    if client:
+        if client.get("is_honorary") and client.get("honorary_annual_value"):
+            return round(float(client["honorary_annual_value"]) / 12, 2)
+        if client.get("quota_monthly_value") is not None:
+            return round(float(client["quota_monthly_value"]), 2)
+    return QUOTA_MONTHLY_VALUE
+
 
 async def _quotas_status(client_id: str, year: int) -> list:
     """Retorna 12 entradas (uma por mês) com estado pago/em aberto para um sócio."""
     items = await db.quotas.find({"client_id": client_id, "year": year}, {"_id": 0}).to_list(20)
+    client_doc = await db.clients.find_one({"id": client_id}, {"_id": 0, "quota_monthly_value": 1, "is_honorary": 1, "honorary_annual_value": 1})
     paid_by_month = {it["month"]: it for it in items}
     out = []
     for m in range(1, 13):
@@ -3059,7 +3129,7 @@ async def _quotas_status(client_id: str, year: int) -> list:
             "year": year,
             "month": m,
             "label": f"{MONTHS_PT[m-1]}/{year}",
-            "amount": QUOTA_MONTHLY_VALUE,
+            "amount": _quota_amount(client_doc, entry),
             "status": (entry.get("status") if entry else "open"),
             "paid_at": entry.get("paid_at") if entry else None,
             "sale_id": entry.get("sale_id") if entry else None,
@@ -3124,18 +3194,23 @@ async def _sync_quota_paid_status(client_id: str):
             pool = 0.0
     existing = await db.quotas.find({"client_id": client_id}, {"_id": 0}).to_list(100)
     reversed_keys = {(q["year"], q["month"]) for q in existing if q.get("reversed")}
+    client_doc = await db.clients.find_one({"id": client_id}, {"_id": 0, "quota_monthly_value": 1, "is_honorary": 1, "honorary_annual_value": 1})
     for s in sales:
         year, months = _quota_months_from_sale(s)
         if not year or not months:
             continue
         status = "paid" if s["id"] in covered else "billed"
+        sale_prices = {
+            it.get("product_id"): float(it.get("unit_price") or 0)
+            for it in (s.get("items") or [])
+        }
         for m in months:
             if (year, m) in reversed_keys:
                 continue
             patch = {
                 "client_id": client_id, "year": year, "month": m,
                 "status": status,
-                "amount": QUOTA_MONTHLY_VALUE,
+                "amount": round(sale_prices.get(f"quota-{year}-{m:02d}") or _quota_amount(client_doc), 2),
                 "sale_id": s["id"],
             }
             if status == "paid":
@@ -3150,13 +3225,11 @@ async def _sync_quota_paid_status(client_id: str):
                 upsert=True,
             )
 
-async def _quota_overall_status(client_id: str) -> Optional[dict]:
-    """Estado global das cotas de um sócio (regras da direção):
-    - 'paid'  → apenas se o mês anterior estiver pago (em Janeiro, Dezembro do ano anterior)
-    - 'pending' → todo o resto ("Por regularizar") — nunca "Em dívida" até dezembro"""
-    c = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
-    if not c or not c.get("is_member"):
-        return None
+def _quota_status_from_docs(client: Optional[dict], docs: list) -> dict:
+    """Classifica as cotas de um sócio (regras da direção):
+    🟢 paid   → todos os meses vencidos do ano corrente pagos e nenhum mês de anos anteriores em falta;
+    🟡 pending → há meses vencidos por pagar no ano corrente (sem dívida de anos anteriores);
+    🔴 debt   → existe pelo menos um mês de anos anteriores por pagar, ou nenhum mês do ano corrente pago."""
     try:
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo("Europe/Lisbon"))
@@ -3164,19 +3237,73 @@ async def _quota_overall_status(client_id: str) -> Optional[dict]:
         now = datetime.now(timezone.utc)
     year, month = now.year, now.month
     prev_year, prev_month = (year, month - 1) if month > 1 else (year - 1, 12)
-    all_docs = await db.quotas.find({"client_id": client_id}, {"_id": 0}).to_list(100)
-    by = {(q["year"], q["month"]): q for q in all_docs}
-    if by.get((prev_year, prev_month), {}).get("status") == "paid":
-        return {"status": "paid", "label": "Cotas pagas", "detail": f"{MONTHS_PT[prev_month-1]}/{prev_year} pago"}
-    unpaid_prev = sum(1 for q in all_docs if q["year"] == prev_year and q.get("status") != "paid" and not q.get("reversed"))
-    unpaid_cur = sum(1 for m in range(1, month + 1) if by.get((year, m), {}).get("status") != "paid")
-    bits = []
-    if unpaid_prev:
-        bits.append(f"{unpaid_prev} de {prev_year}")
-    if unpaid_cur:
-        bits.append(f"{unpaid_cur} de {year}")
-    detail = ("Cotas por regularizar: " + " + ".join(bits)) if bits else "Cotas por regularizar"
-    return {"status": "pending", "label": "Por regularizar", "detail": detail}
+    by: dict = {}
+    for q in docs or []:
+        if q.get("reversed"):
+            continue
+        try:
+            by[(int(q["year"]), int(q["month"]))] = q
+        except (KeyError, TypeError, ValueError):
+            continue
+    # Meses de anos anteriores por pagar (dívida antiga) — todos contam, independentemente do mês atual
+    debt_months = []
+    for (y, m), q in sorted(by.items()):
+        if y < year and q.get("status") != "paid":
+            debt_months.append((y, m, q))
+    # Meses vencidos do ano corrente (até ao mês anterior). O mês atual ainda não conta como atraso.
+    current_due = []
+    for m in range(1, month):
+        q = by.get((year, m))
+        if not q or q.get("status") != "paid":
+            current_due.append((year, m, q))
+    paid_current = sum(1 for (y, _m), q in by.items() if y == year and q.get("status") == "paid")
+    unpaid_months = []
+    for y, m, q in sorted(debt_months + current_due):
+        unpaid_months.append({
+            "year": y,
+            "month": m,
+            "label": f"{MONTHS_FULL_PT[m-1]} {y}",
+            "amount": _quota_amount(client, q),
+        })
+    amount_due = round(sum(u["amount"] for u in unpaid_months), 2)
+    # Partes do descritivo: "2 cotas de 2025 + Setembro 2026"
+    parts = []
+    prev_groups: dict = {}
+    for y, m, _q in debt_months:
+        prev_groups.setdefault(y, []).append(m)
+    for y in sorted(prev_groups):
+        n = len(prev_groups[y])
+        parts.append(f"{n} cota{'s' if n != 1 else ''} de {y}")
+    if current_due:
+        parts.extend(f"{MONTHS_FULL_PT[m-1]} {year}" for _y, m, _q in current_due)
+    if debt_months or (paid_current == 0 and month > 1):
+        detail = "Em dívida: " + (" + ".join(parts) if parts else f"{month - 1} cota(s) de {year}")
+        return {
+            "status": "debt", "label": "Em dívida", "detail": detail,
+            "amount_due": amount_due, "months_due": len(unpaid_months),
+            "unpaid_months": unpaid_months, "paid_current_year": paid_current,
+        }
+    if not current_due:
+        return {
+            "status": "paid", "label": "Cotas em dia",
+            "detail": f"Cotas em dia · {MONTHS_FULL_PT[prev_month-1]} {prev_year} pago",
+            "amount_due": 0.0, "months_due": 0, "unpaid_months": [], "paid_current_year": paid_current,
+        }
+    detail = "Por regularizar: " + " + ".join(parts)
+    return {
+        "status": "pending", "label": "Por regularizar", "detail": detail,
+        "amount_due": amount_due, "months_due": len(unpaid_months),
+        "unpaid_months": unpaid_months, "paid_current_year": paid_current,
+    }
+
+
+async def _quota_overall_status(client_id: str) -> Optional[dict]:
+    """Estado global das cotas de um sócio (ver `_quota_status_from_docs`)."""
+    c = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
+    if not c or not c.get("is_member"):
+        return None
+    docs = await db.quotas.find({"client_id": client_id}, {"_id": 0}).to_list(400)
+    return _quota_status_from_docs(c, docs)
 
 @api_router.post("/quotas/pay")
 async def pay_quotas(body: QuotaPayIn, user: dict = Depends(get_current_user)):
@@ -3190,15 +3317,16 @@ async def pay_quotas(body: QuotaPayIn, user: dict = Depends(get_current_user)):
     already = await db.quotas.find({"client_id": body.client_id, "year": body.year, "month": {"$in": body.months}, "status": {"$in": ["paid", "billed"]}, "reversed": {"$ne": True}}, {"_id": 0}).to_list(20)
     if already:
         raise HTTPException(status_code=400, detail=f"Já lançadas na conta corrente: {', '.join(MONTHS_PT[a['month']-1] for a in already)}")
-    total = QUOTA_MONTHLY_VALUE * len(body.months)
+    unit = _quota_amount(c)
+    total = round(unit * len(body.months), 2)
     sale_id = str(uuid.uuid4())
     tx_no = await _next_tx_number()
     items = [{
         "product_id": f"quota-{body.year}-{m:02d}",
         "product_name": f"Cota {MONTHS_PT[m-1]}/{body.year}",
-        "unit_price": QUOTA_MONTHLY_VALUE,
+        "unit_price": unit,
         "quantity": 1,
-        "subtotal": QUOTA_MONTHLY_VALUE,
+        "subtotal": unit,
     } for m in body.months]
     sale = {
         "id": sale_id,
@@ -3222,7 +3350,7 @@ async def pay_quotas(body: QuotaPayIn, user: dict = Depends(get_current_user)):
             {"$set": {
                 "client_id": body.client_id, "year": body.year, "month": m,
                 "status": "billed",
-                "amount": QUOTA_MONTHLY_VALUE,
+                "amount": unit,
                 "billed_at": datetime.now(timezone.utc).isoformat(),
                 "sale_id": sale_id,
                 "user_email": user["email"],
@@ -3501,7 +3629,24 @@ async def socio_me(socio: dict = Depends(get_current_socio)):
             "consumption_limit": socio.get("consumption_limit"),
             "used_this_month": await _monthly_consumption(socio["id"]),
         }
-    return {"client": socio, "sales": sales, "payments": payments, "mbway": mbway, "family": family}
+    # Histórico de acessos à área de sócio (última visita + lista para o próprio e para a administração)
+    access_history = await db.socio_accesses.find(
+        {"client_id": socio["id"]}, {"_id": 0}
+    ).sort("at", -1).to_list(100)
+    access_at = datetime.now(timezone.utc).isoformat()
+    previous_access = (fresh or {}).get("socio_last_access")
+    await db.socio_accesses.insert_one({
+        "id": str(uuid.uuid4()), "client_id": socio["id"], "at": access_at,
+    })
+    await db.clients.update_one(
+        {"id": socio["id"]},
+        {"$set": {"socio_last_access": access_at}, "$inc": {"socio_access_count": 1}},
+    )
+    socio["socio_last_access"] = access_at
+    return {
+        "client": socio, "sales": sales, "payments": payments, "mbway": mbway, "family": family,
+        "last_access": previous_access, "access_history": access_history,
+    }
 
 @api_router.put("/socio/me")
 async def socio_update_me(body: SocioUpdateIn, socio: dict = Depends(get_current_socio)):
@@ -3544,6 +3689,49 @@ async def socio_mbway_request(body: MBWayRequestIn, socio: dict = Depends(get_cu
     rec.pop("_id", None)
     return rec
 
+def _allocate_payment_coverages(sales: list, payments: list) -> dict:
+    """Imputa cada pagamento às vendas em dívida (FIFO) e devolve o detalhe por pagamento.
+    Usado nos recibos antigos, que não guardavam os itens pagos (item_targets)."""
+    remaining = {s["id"]: round(float(s.get("total", 0) or 0), 2) for s in sales}
+    ordered_sales = sorted(sales, key=lambda x: x.get("created_at") or "")
+    out: dict = {}
+    for p in sorted(payments, key=lambda x: x.get("created_at") or ""):
+        covered = []
+        if p.get("item_targets"):
+            for t in p["item_targets"]:
+                amt = round(float(t.get("unit_price", 0) or 0) * (
+                    int(t.get("qty_pay", 0) or 0) + int(t.get("qty_offer", 0) or 0)
+                ), 2)
+                sid = t.get("sale_id")
+                remaining[sid] = round(max(remaining.get(sid, 0) - amt, 0), 2)
+            out[p["id"]] = covered
+            continue
+        pool = round(float(p.get("total_credited") or p.get("amount") or 0), 2)
+        target_ids = set(p.get("sale_ids") or [])
+        candidates = [s for s in ordered_sales if not target_ids or s["id"] in target_ids]
+        if target_ids:
+            candidates += [s for s in ordered_sales if s["id"] not in target_ids]
+        for s in candidates:
+            if pool <= 0:
+                break
+            rem = remaining.get(s["id"], 0)
+            if rem <= 0.004:
+                continue
+            take = round(min(pool, rem), 2)
+            remaining[s["id"]] = round(rem - take, 2)
+            pool = round(pool - take, 2)
+            covered.append({
+                "sale_id": s["id"],
+                "tx_number": s.get("tx_number"),
+                "created_at": s.get("created_at"),
+                "total": float(s.get("total", 0) or 0),
+                "applied": take,
+                "items": s.get("items") or [],
+            })
+        out[p["id"]] = covered
+    return out
+
+
 @api_router.get("/transactions/{tx_number}")
 async def get_transaction(tx_number: int, user: dict = Depends(get_current_user)):
     """Procura uma transação por nº em todas as collections (venda, pagamento, encomenda,
@@ -3567,6 +3755,24 @@ async def get_transaction(tx_number: int, user: dict = Depends(get_current_user)
                 doc["edits"] = await db.audit_log.find(
                     {"type": "sale_edit", "sale_id": doc["id"]}, {"_id": 0}
                 ).sort("at", 1).to_list(200)
+            if kind in ("sale", "payment"):
+                cdoc = await db.clients.find_one({"id": doc.get("client_id")}, {"_id": 0, "pin_hash": 0})
+                doc["client_is_temp"] = bool(cdoc and cdoc.get("is_temp"))
+                if cdoc and cdoc.get("is_member"):
+                    qs = await _quota_overall_status(cdoc["id"])
+                    doc["client_quota_status"] = qs
+                    doc["client_quota_debt"] = float((qs or {}).get("amount_due") or 0)
+                    doc["client_is_honorary"] = bool(cdoc.get("is_honorary"))
+            if kind == "payment":
+                # Recibos antigos não guardavam os itens pagos: imputa o valor às vendas em dívida.
+                sales = await db.sales.find(
+                    {"client_id": doc["client_id"]}, {"_id": 0}
+                ).sort("created_at", 1).to_list(2000)
+                payments = await db.payments.find(
+                    {"client_id": doc["client_id"]}, {"_id": 0}
+                ).sort("created_at", 1).to_list(5000)
+                coverage = _allocate_payment_coverages(sales, payments)
+                doc["covered_docs"] = coverage.get(doc["id"], [])
             return doc
     raise HTTPException(status_code=404, detail="Transação não encontrada")
 
@@ -3716,6 +3922,10 @@ async def _build_request_line_items(items, client_id: str, minor: bool = False) 
     pids = [it.product_id for it in items if not it.product_id.startswith("quota-")]
     prods = await db.products.find({"id": {"$in": pids}}, {"_id": 0}).to_list(len(pids))
     pmap = {p["id"]: p for p in prods}
+    client_doc = await db.clients.find_one(
+        {"id": client_id}, {"_id": 0, "quota_monthly_value": 1, "is_honorary": 1, "honorary_annual_value": 1}
+    )
+    quota_unit = _quota_amount(client_doc)
     line_items = []
     total = 0.0
     for it in items:
@@ -3732,12 +3942,12 @@ async def _build_request_line_items(items, client_id: str, minor: bool = False) 
             existing = await db.quotas.find_one({"client_id": client_id, "year": qy, "month": qm})
             if existing and existing.get("status") == "paid" and not existing.get("reversed"):
                 raise HTTPException(status_code=400, detail=f"Cota {MONTHS_PT[qm-1]}/{qy} já está paga")
-            sub = float(QUOTA_MONTHLY_VALUE)
+            sub = quota_unit
             total += sub
             line_items.append({
                 "product_id": it.product_id,
                 "product_name": f"Cota {MONTHS_PT[qm-1]}/{qy}",
-                "unit_price": QUOTA_MONTHLY_VALUE,
+                "unit_price": quota_unit,
                 "quantity": 1,
                 "subtotal": sub,
                 "is_quota": True,
@@ -3871,6 +4081,7 @@ async def socio_consumption_request(body: SocioConsumptionReqIn, socio: dict = D
         "items": line_items,
         "total": total,
         "note": body.note,
+        "use_points_requested": bool(body.use_points),
         "status": "pending",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "decided_at": None,
@@ -4044,7 +4255,7 @@ async def _charge_gift_sale(payer: dict, line_items: list, total: float, gift_id
     tx_no = await _next_tx_number()
     is_member = bool(payer.get("is_member"))
     old_pending = float(payer.get("points_pending_value", 0)) if is_member else 0.0
-    points_earned, new_pending = _compute_points_with_rollover(payer, total)
+    points_earned, new_pending = await _compute_points_with_rollover(payer, total)
     sale_doc = {
         "id": sale_id,
         "tx_number": tx_no,
@@ -4769,11 +4980,144 @@ async def socio_can_see_finance(socio: dict = Depends(get_current_socio)):
 class SocioQuotaPayIn(BaseModel):
     year: int
     months: List[int]
-    mbway_phone: str
+    mbway_phone: str = ""
+    pay_at_counter: bool = False  # pagar ao balcão — valor lançado na conta corrente
+
+
+class SocioQuotaSettingsIn(BaseModel):
+    monthly_value: Optional[float] = None
+    honorary_annual_value: Optional[float] = None
+
+
+class SocioHonoraryIn(BaseModel):
+    annual_value: float
+
+
+@api_router.get("/socio/quota-settings")
+async def socio_quota_settings(socio: dict = Depends(get_current_socio)):
+    status = await _quota_overall_status(socio["id"])
+    return {
+        "monthly_value": _quota_amount(socio),
+        "club_monthly_value": QUOTA_MONTHLY_VALUE,
+        "is_honorary": bool(socio.get("is_honorary")),
+        "honorary_since": socio.get("honorary_since"),
+        "honorary_annual_value": float(socio.get("honorary_annual_value") or 0),
+        "honorary_min_annual": 20.0,
+        "quota_status": status,
+    }
+
+
+@api_router.put("/socio/quota-settings")
+async def socio_update_quota_settings(body: SocioQuotaSettingsIn, socio: dict = Depends(get_current_socio)):
+    update = {}
+    if body.monthly_value is not None:
+        value = round(float(body.monthly_value), 2)
+        if value < QUOTA_MONTHLY_VALUE:
+            raise HTTPException(status_code=400, detail=f"O valor da quota mensal não pode ser inferior a {QUOTA_MONTHLY_VALUE:.2f} €")
+        if value > 1000:
+            raise HTTPException(status_code=400, detail="Valor de quota inválido")
+        update["quota_monthly_value"] = value
+    if body.honorary_annual_value is not None:
+        value = round(float(body.honorary_annual_value), 2)
+        if value < 20:
+            raise HTTPException(status_code=400, detail="A quota anual de sócio honorário tem um mínimo de 20 €")
+        update["honorary_annual_value"] = value
+    if not update:
+        raise HTTPException(status_code=400, detail="Nada para atualizar")
+    await db.clients.update_one({"id": socio["id"]}, {"$set": update})
+    return await socio_quota_settings(socio)
+
+
+@api_router.post("/socio/honorary/activate")
+async def socio_activate_honorary(body: SocioHonoraryIn, socio: dict = Depends(get_current_socio)):
+    """Ativa o estatuto de Sócio Honorário 👔 e liquida automaticamente os 12 meses do ano corrente."""
+    if not socio.get("is_member"):
+        raise HTTPException(status_code=400, detail="Apenas sócios podem ser honorários")
+    annual = round(float(body.annual_value), 2)
+    if annual < 20:
+        raise HTTPException(status_code=400, detail="A quota anual de sócio honorário tem um mínimo de 20 €")
+    try:
+        from zoneinfo import ZoneInfo
+        year = datetime.now(ZoneInfo("Europe/Lisbon")).year
+    except Exception:
+        year = datetime.now(timezone.utc).year
+    per = round(annual / 12, 2)
+    amounts = [per] * 11 + [round(annual - per * 11, 2)]
+    now_iso = datetime.now(timezone.utc).isoformat()
+    sale_id = str(uuid.uuid4())
+    tx_no = await _next_tx_number()
+    items = [{
+        "product_id": f"quota-honorary-{year}-{m:02d}",
+        "product_name": f"Quota honorária {MONTHS_PT[m-1]}/{year}",
+        "unit_price": amounts[m - 1],
+        "quantity": 1,
+        "subtotal": amounts[m - 1],
+    } for m in range(1, 13)]
+    sale = {
+        "id": sale_id,
+        "tx_number": tx_no,
+        "client_id": socio["id"],
+        "client_name": socio["name"],
+        "items": items,
+        "total": annual,
+        "points_earned": 0,
+        "is_member_at_sale": True,
+        "created_at": now_iso,
+        "user_email": socio.get("email") or "socio-self",
+        "source": "quota_honorary",
+    }
+    await db.sales.insert_one(sale)
+    pay_id = str(uuid.uuid4())
+    pay_tx = await _next_tx_number()
+    pay = {
+        "id": pay_id,
+        "tx_number": pay_tx,
+        "client_id": socio["id"],
+        "client_name": socio["name"],
+        "amount": annual,
+        "tendered": annual,
+        "total_credited": annual,
+        "change_returned": 0.0,
+        "points_used": 0,
+        "points_value": 0.0,
+        "note": f"Quota anual de sócio honorário {year}",
+        "created_at": now_iso,
+        "user_email": socio.get("email") or "socio-self",
+        "source": "mbway",
+        "sale_ids": [sale_id],
+        "sale_tx_numbers": [tx_no],
+    }
+    await db.payments.insert_one(pay)
+    for m in range(1, 13):
+        await db.quotas.update_one(
+            {"client_id": socio["id"], "year": year, "month": m},
+            {"$set": {
+                "client_id": socio["id"], "year": year, "month": m,
+                "status": "paid", "amount": amounts[m - 1],
+                "paid_at": now_iso, "sale_id": sale_id,
+                "user_email": socio.get("email") or "socio-self",
+            }, "$unset": {"reversed": ""}},
+            upsert=True,
+        )
+    await db.clients.update_one(
+        {"id": socio["id"]},
+        {"$set": {
+            "is_honorary": True,
+            "honorary_annual_value": annual,
+            "honorary_since": year,
+        }, "$inc": {"total_spent": annual, "balance": 0}},
+    )
+    await _audit(
+        "honorary_activate", socio.get("email") or "socio-self",
+        entity="client", entity_id=socio["id"],
+        summary=f"Sócio Honorário 👔 ativado · quota anual {annual:.2f} € · 12 meses de {year} liquidados (venda #{tx_no}, pagamento #{pay_tx})",
+    )
+    return {"ok": True, "annual_value": annual, "year": year, "sale": sale, "payment": pay}
+
 
 @api_router.post("/socio/quotas/pay")
 async def socio_pay_quotas(body: SocioQuotaPayIn, socio: dict = Depends(get_current_socio)):
-    """Sócio pede para pagar cotas via MBWay — cria pedido pendente para staff confirmar."""
+    """Sócio pede para pagar cotas via MBWay (pedido pendente) ou ao balcão (conta corrente)."""
     if _is_tutelado(socio):
         raise HTTPException(status_code=403, detail="Sócio tutelado: as cotas são regularizadas pelo tutor na App Sócio ou ao balcão")
     if not body.months:
@@ -4781,13 +5125,51 @@ async def socio_pay_quotas(body: SocioQuotaPayIn, socio: dict = Depends(get_curr
     already = await db.quotas.find({"client_id": socio["id"], "year": body.year, "month": {"$in": body.months}, "status": {"$in": ["paid", "billed"]}, "reversed": {"$ne": True}}, {"_id": 0}).to_list(20)
     if already:
         raise HTTPException(status_code=400, detail=f"Já lançadas na conta corrente: {', '.join(MONTHS_PT[a['month']-1] for a in already)}")
-    total = QUOTA_MONTHLY_VALUE * len(body.months)
+    unit = _quota_amount(socio)
+    total = round(unit * len(body.months), 2)
+    if body.pay_at_counter:
+        sale_id = str(uuid.uuid4())
+        tx_no = await _next_tx_number()
+        items = [{
+            "product_id": f"quota-{body.year}-{m:02d}",
+            "product_name": f"Cota {MONTHS_PT[m-1]}/{body.year}",
+            "unit_price": unit,
+            "quantity": 1,
+            "subtotal": unit,
+        } for m in body.months]
+        sale = {
+            "id": sale_id, "tx_number": tx_no, "client_id": socio["id"], "client_name": socio["name"],
+            "items": items, "total": total, "points_earned": 0, "is_member_at_sale": True,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "user_email": socio.get("email") or "socio-self", "source": "quota_counter",
+        }
+        await db.sales.insert_one(sale)
+        await db.clients.update_one({"id": socio["id"]}, {"$inc": {"balance": total, "total_spent": total}})
+        for m in body.months:
+            await db.quotas.update_one(
+                {"client_id": socio["id"], "year": body.year, "month": m},
+                {"$set": {
+                    "client_id": socio["id"], "year": body.year, "month": m,
+                    "status": "billed", "amount": unit,
+                    "billed_at": datetime.now(timezone.utc).isoformat(),
+                    "sale_id": sale_id, "user_email": socio.get("email") or "socio-self",
+                }, "$unset": {"reversed": ""}},
+                upsert=True,
+            )
+        await _sync_quota_paid_status(socio["id"])
+        await _audit(
+            "quota_counter_request", socio.get("email") or "socio-self",
+            entity="client", entity_id=socio["id"], tx_number=tx_no,
+            summary=f"Cotas {body.year} ({', '.join(MONTHS_PT[m-1] for m in body.months)}) para pagar ao balcão · {total:.2f} € · tx #{tx_no}",
+        )
+        sale.pop("_id", None)
+        return {"sale": sale, "pay_at_counter": True}
     rec = {
         "id": str(uuid.uuid4()),
         "client_id": socio["id"],
         "client_name": socio["name"],
         "amount": total,
-        "mbway_phone": body.mbway_phone.strip(),
+        "mbway_phone": (body.mbway_phone or "").strip(),
         "note": f"Cotas {body.year}: {', '.join(MONTHS_PT[m-1] for m in body.months)}",
         "status": "pending",
         "kind": "quota",
@@ -4864,12 +5246,14 @@ async def _apply_mbway_confirm(mb: dict, user: dict) -> dict:
     if is_quota:
         sale_id = str(uuid.uuid4())
         tx_no = await _next_tx_number()
+        mb_client = await db.clients.find_one({"id": mb["client_id"]}, {"_id": 0}) or {}
+        mb_unit = _quota_amount(mb_client)
         items = [{
             "product_id": f"quota-{mb['quota_year']}-{m:02d}",
             "product_name": f"Cota {MONTHS_PT[m-1]}/{mb['quota_year']}",
-            "unit_price": QUOTA_MONTHLY_VALUE,
+            "unit_price": mb_unit,
             "quantity": 1,
-            "subtotal": QUOTA_MONTHLY_VALUE,
+            "subtotal": mb_unit,
         } for m in mb["quota_months"]]
         await db.sales.insert_one({
             "id": sale_id,
@@ -4891,7 +5275,7 @@ async def _apply_mbway_confirm(mb: dict, user: dict) -> dict:
                 {"$set": {
                     "client_id": mb["client_id"], "year": mb["quota_year"], "month": m,
                     "status": "billed",
-                    "amount": QUOTA_MONTHLY_VALUE,
+                    "amount": mb_unit,
                     "billed_at": datetime.now(timezone.utc).isoformat(),
                     "sale_id": sale_id,
                     "user_email": user["email"],

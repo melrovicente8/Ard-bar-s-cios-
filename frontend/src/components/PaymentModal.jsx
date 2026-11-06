@@ -55,8 +55,20 @@ export default function PaymentModal({
   onDone,
 }) {
   const [itemSel, setItemSel] = useState(() => prefill?.items || {}); // {"sale||prod": {pay, offer}}
+  // O sócio pode marcar no pedido que quer descontar pontos; nesse caso o staff
+  // encontra o valor já pré-selecionado (sem sugestão proativa).
+  const pointsRequested = (unpaidSales || []).some((s) => s.use_points_requested);
   const [form, setForm] = useState(() =>
-    prefill?.form || { amount: "", points_used: 0, note: "", keep_change_as_credit: false, tip: 0, tip_change: false }
+    prefill?.form || {
+      amount: "",
+      points_used: pointsRequested
+        ? Math.min(Math.floor((client.points || 0) / 5) * 5, Math.ceil(Math.max(debt, 0)) * 5)
+        : 0,
+      note: "",
+      keep_change_as_credit: false,
+      tip: 0,
+      tip_change: false,
+    }
   );
   const [allowance, setAllowance] = useState(null); // {limit, used, remaining}
   const [submitting, setSubmitting] = useState(false);
@@ -291,6 +303,11 @@ export default function PaymentModal({
                   Disponíveis: <strong className="text-green-300">{client.points}</strong>
                 </span>
               </div>
+              {pointsRequested && (
+                <div className="text-[10px] text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 rounded px-2 py-1" data-testid="payment-points-requested">
+                  O sócio marcou no pedido que quer descontar pontos.
+                </div>
+              )}
               <div>
                 <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
                   Pontos a descontar (múltiplos de 5)

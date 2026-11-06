@@ -13,6 +13,7 @@ import {
   Wine,
   Gift,
   Lightning,
+  Warning,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -35,6 +36,24 @@ export default function Vender() {
   const [topProducts, setTopProducts] = useState([]);
   const [frequent, setFrequent] = useState([]);
   const [cardsVersion, setCardsVersion] = useState(0); // força atualização dos cartões temporários
+  const [clientDebtInfo, setClientDebtInfo] = useState(null); // {days, total} — dívida com mais de 3 dias
+
+  useEffect(() => {
+    if (!clientId) {
+      setClientDebtInfo(null);
+      return;
+    }
+    let alive = true;
+    api.get(`/clients/${clientId}`)
+      .then(({ data }) => {
+        if (!alive) return;
+        const oldest = (data.debts || []).map((d) => d.created_at).filter(Boolean).sort()[0] || null;
+        const days = oldest ? Math.floor((Date.now() - new Date(oldest).getTime()) / 86400000) : 0;
+        setClientDebtInfo({ days, total: Math.max(data.client?.balance || 0, 0) });
+      })
+      .catch(() => alive && setClientDebtInfo(null));
+    return () => { alive = false; };
+  }, [clientId]);
 
   const load = async () => {
     setLoading(true);
@@ -242,11 +261,56 @@ export default function Vender() {
         </div>
       </div>
 
+      {/* Avisos de cotas / dívida antiga do sócio selecionado (POS) */}
+      {selectedClient && (
+        <div className="mb-6 space-y-2">
+          {selectedClient.is_member && selectedClient.quota_status && selectedClient.quota_status.status !== "paid" && (
+            <div
+              data-testid="pos-quota-alert"
+              className={`rounded-xl border px-4 py-3 text-sm flex items-center gap-3 ${
+                selectedClient.quota_status.status === "debt"
+                  ? "bg-rose-500/10 border-rose-500/40 text-rose-200"
+                  : "bg-amber-500/10 border-amber-500/40 text-amber-200"
+              }`}
+            >
+              <Warning size={18} weight="fill" className="shrink-0" />
+              <div className="flex-1">
+                <strong>{selectedClient.quota_status.status === "debt" ? "🔴 Em dívida" : "🟡 Por regularizar"}</strong>
+                {" · "}{selectedClient.quota_status.detail}
+              </div>
+              <span className="font-outfit text-lg font-bold whitespace-nowrap">
+                {euro(selectedClient.quota_status.amount_due || 0)}
+              </span>
+            </div>
+          )}
+          {clientDebtInfo && clientDebtInfo.days >= 3 && clientDebtInfo.total > 0 && (
+            <div data-testid="pos-old-debt-alert" className="rounded-xl border px-4 py-3 text-sm bg-orange-500/10 border-orange-500/40 text-orange-200 flex items-center gap-3">
+              <Warning size={18} weight="fill" className="shrink-0" />
+              <div className="flex-1">
+                Valor em dívida há <strong>{clientDebtInfo.days} dias</strong> — regularizar {euro(clientDebtInfo.total)}.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Venda rápida — os 10 itens mais vendidos */}
       {topProducts.length > 0 && (
         <div className="mb-6" data-testid="quick-sell-strip">
-          <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-amber-400/80 mb-2 flex items-center gap-1.5">
-            <Lightning size={12} weight="fill" /> Venda rápida · os 10 mais vendidos
+          <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+            <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-amber-400/80 flex items-center gap-1.5">
+              <Lightning size={12} weight="fill" /> Venda rápida · os 10 mais vendidos
+            </div>
+            <button
+              type="button"
+              data-testid="quick-register-sale"
+              onClick={submit}
+              disabled={submitting || !clientId || !Object.keys(cart).length}
+              className="px-3 py-1.5 rounded-full bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 text-xs font-bold"
+              title={!clientId ? "Seleciona primeiro o cliente/sócio" : !Object.keys(cart).length ? "Adiciona itens ao carrinho" : "Registar a venda agora"}
+            >
+              Registar venda · {euro(total)}
+            </button>
           </div>
           <div className="flex flex-wrap gap-2">
             {topProducts.map((p) => (

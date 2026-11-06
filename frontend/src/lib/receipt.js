@@ -56,14 +56,23 @@ export function printReceipt(tx, extras = {}) {
         .map((o) => `<div class="row"><span>${o.quantity}× ${o.product_name}</span><span>${euro(o.amount)}</span></div>`)
         .join("")}${tx.payment_offer_by ? `<div class="muted">Oferecido por: ${tx.payment_offer_by}</div>` : ""}`
     : "";
-  const coveredDocs = extras.coveredSalesDocs || [];
+  const coveredDocs = extras.coveredSalesDocs || tx.covered_docs || [];
   const coveredItemsHtml = coveredDocs.length
-    ? `<hr/><div class="muted">Itens das vendas abatidas:</div>${coveredDocs.map((s) => `
+    ? `<hr/><div class="muted">Itens consumidos / pagos:</div>${coveredDocs.map((s) => `
         <div style="margin-top:6px">
-          <div class="row"><span class="muted">#${s.tx_number} · ${new Date(s.created_at).toLocaleDateString("pt-PT")}</span><span>${euro(s.total)}</span></div>
+          <div class="row"><span class="muted">${s.tx_number ? "#" + s.tx_number + " · " : ""}${new Date(s.created_at).toLocaleDateString("pt-PT")}</span><span>${euro(s.applied != null ? s.applied : s.total)}</span></div>
           ${(s.items || []).map((it) => `<div class="row" style="font-size:11px"><span>&nbsp;&nbsp;· ${it.quantity}× ${it.product_name}</span><span>${euro(it.subtotal)}</span></div>`).join("")}
         </div>`).join("")}`
     : "";
+  // Cliente ocasional: nunca mostra o nome/apelido da ficha temporária
+  const isOccasional = !!(client.is_temp || tx.is_temp_sale || tx.client_is_temp || tx.source === "temp_client");
+  const quotaDebt = Number(
+    (client.quota_status && client.quota_status.amount_due) != null
+      ? client.quota_status.amount_due
+      : (tx.client_quota_debt || 0)
+  ) || 0;
+  const showQuotaDebt = quotaDebt > 0 && (tx.house_offer || Number(tx.offer_amount || 0) > 0 || Number(tx.house_total || 0) > 0);
+  const coveredNumbers = covered.length ? covered : coveredDocs.map((s) => s.tx_number).filter(Boolean);
   const pointsBalance = client.points != null ? client.points : null;
   const balanceOwed = client.balance != null ? Math.max(client.balance, 0) : null;
   const quotaColor = { paid: "#059669", pending: "#b45309", debt: "#b91c1c" };
@@ -87,8 +96,8 @@ ${tx.house_offer ? '<div style="text-align:center;background:#a21caf;color:#fff;
 ${secondCopy ? `<div class="muted">2ª via impressa em: ${printDate}</div>` : ""}
 <div class="muted">Registado por: ${tx.user_email || "—"}</div>
 <hr/>
-<div class="row"><span>Cliente</span><strong>${tx.client_name || client.name || "—"}</strong></div>
-${client.member_number ? `<div class="row"><span>Sócio</span><strong>nº ${client.member_number}</strong></div>` : ""}
+<div class="row"><span>Cliente</span><strong>${isOccasional ? "Cliente Ocasional" : (tx.client_name || client.name || "—")}</strong></div>
+${!isOccasional && client.member_number ? `<div class="row"><span>Sócio</span><strong>nº ${client.member_number}</strong></div>` : ""}
 ${tx.tutelado ? '<div class="row"><span>Estatuto</span><strong>Sócio Tutelado</strong></div>' : ""}
 ${tx.minor_alcohol_alert ? '<div style="text-align:center;background:#b91c1c;color:#fff;padding:4px;border-radius:3px;margin:6px 0;font-weight:bold">⚠ BEBIDA ALCOÓLICA · SÓCIO TUTELADO</div>' : ""}
 ${quota ? `<div class="row"><span>Cotas</span><strong style="color:${quotaColor[quota.status] || "#000"}">${quota.label}</strong></div>` : ""}
@@ -96,18 +105,20 @@ ${isSale ? `<hr/>${itemsHtml}${saleOfferHtml}<hr/>
 <div class="row big"><span>TOTAL</span><span>${euro(tx.total)}</span></div>
 ${saleOfferTotal > 0 ? `<div class="row"><span>Oferta da casa</span><span>−${euro(saleOfferTotal)}</span></div>
 <div class="row big"><span>A PAGAR</span><span>${euro(tx.total - saleOfferTotal)}</span></div>` : ""}
-${tx.points_earned ? `<div class="row"><span>Pontos ganhos</span><span>+${tx.points_earned}</span></div>` : ""}` : `${payItemsHtml ? `<hr/><div class="muted">Itens:</div>${payItemsHtml}` : ""}
+${tx.points_earned ? `<div class="row"><span>Pontos ganhos</span><span>+${tx.points_earned}</span></div>` : ""}
+${showQuotaDebt ? `<hr/><div class="row"><span><strong>Cotas em dívida</strong></span><strong>${euro(quotaDebt)}</strong></div>` : ""}` : `${payItemsHtml ? `<hr/><div class="muted">Itens consumidos / pagos:</div>${payItemsHtml}` : ""}
+${coveredItemsHtml}
 ${tx.offer_amount > 0 ? '<div style="text-align:center;background:#a21caf;color:#fff;padding:4px;border-radius:3px;margin:6px 0;font-weight:bold">★ OFERTA DA CASA ★</div>' : ""}
 <hr/>
-<div class="row"><span>Valor liquidado</span><span>${euro(credited)}</span></div>
-${tx.offer_amount > 0 ? `<div class="row"><span>Oferta da casa (despesa do bar)</span><span>${euro(tx.offer_amount)}</span></div>` : ""}
-<div class="row"><span>Numerário entregue</span><span>${euro(tendered)}</span></div>
+<div class="row"><span>Valor entregue</span><span>${euro(tendered)}</span></div>
+<div class="row"><span>Valor pago</span><span>${euro(Math.max(credited - Number(tx.offer_amount || 0), 0))}</span></div>
 ${tx.points_used ? `<div class="row"><span>Pontos usados</span><span>${tx.points_used} pts (${euro(tx.points_value || tx.points_used / 5)})</span></div>` : ""}
+${tx.offer_amount > 0 ? `<div class="row"><span>Oferta da casa (despesa do bar)</span><span>${euro(tx.offer_amount)}</span></div>` : ""}
 <div class="row"><span>Abatido na dívida</span><span>${euro(credited)}</span></div>
-${change > 0 ? `<div class="row"><span>Troco devolvido</span><span>${euro(change)}</span></div>` : ""}
+<div class="row"><span>Troco devolvido</span><span>${euro(change)}</span></div>
 ${tip > 0 ? `<div class="row"><span>Gratificação (caixa)</span><span>${euro(tip)}</span></div>` : ""}
-${covered.length ? `<div class="row"><span>Vendas cobertas</span><span>${covered.map((n) => "#" + n).join(", ")}</span></div>` : ""}
-${coveredItemsHtml}
+${coveredNumbers.length ? `<div class="row"><span>Vendas cobertas</span><span>${coveredNumbers.map((n) => "#" + n).join(", ")}</span></div>` : ""}
+${showQuotaDebt ? `<div class="row"><span><strong>Cotas em dívida</strong></span><strong>${euro(quotaDebt)}</strong></div>` : ""}
 ${tx.note ? `<div class="row"><span>Nota</span><span>${tx.note}</span></div>` : ""}
 <hr/>
 <div class="row big"><span>TOTAL ABATIDO</span><span>${euro(credited)}</span></div>`}
