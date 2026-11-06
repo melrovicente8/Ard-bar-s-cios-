@@ -141,6 +141,11 @@ export default function RodadaMista({ onClose, onChanged }) {
     : openRounds.reduce((s, r) => s + (r.total || 0), 0);
   // Quem pode receber consumos: quem está à mesa + quem saiu a meio das rodadas em aberto
   const splitMembers = table?.split_members || table?.members || [];
+  // Partes iguais: quem já assumiu (pagou) uma rodada fica de fora do que falta
+  const equalMembers = table?.equal_split_members || table?.members || [];
+  const alreadyPaidRound = (table?.members || []).filter(
+    (m) => !equalMembers.some((e) => e.client_id === m.client_id)
+  );
 
   const createTable = async () => {
     if (memberIds.length < 2) return toast.error("Escolhe pelo menos 2 sócios");
@@ -853,8 +858,14 @@ export default function RodadaMista({ onClose, onChanged }) {
 
             <div className="space-y-2 mb-4">
               <div className="text-[11px] text-slate-500">Como cada sócio liquida a sua parte</div>
+              {splitMode === "equal" && alreadyPaidRound.length > 0 && (
+                <div className="text-[11px] text-emerald-300/90" data-testid="rodada-split-excluded">
+                  Já assumiram uma rodada e ficam fora desta divisão:{" "}
+                  {alreadyPaidRound.map((m) => m.name.split(" ")[0]).join(" · ")}
+                </div>
+              )}
               {(splitMode === "equal"
-                ? (table.members || [])
+                ? equalMembers
                 : splitMembers.filter((m) => (memberAssigned[m.client_id] || 0) > 0)
               ).map((m) => (
                 <div key={m.client_id} className="flex items-center gap-2 text-xs">
@@ -862,7 +873,7 @@ export default function RodadaMista({ onClose, onChanged }) {
                     {m.name.split(" ")[0]}{m.member_number ? ` nº ${m.member_number}` : ""}
                     {m.departed && <span className="text-slate-500"> (saiu)</span>}
                     {splitMode === "equal" ? (
-                      <span className="text-slate-500"> · {euro(openTotal / (table.members || []).length)}</span>
+                      <span className="text-slate-500"> · {euro(openTotal / Math.max(equalMembers.length, 1))}</span>
                     ) : (
                       <span className="text-slate-500"> · {euro(memberAssigned[m.client_id] || 0)}</span>
                     )}

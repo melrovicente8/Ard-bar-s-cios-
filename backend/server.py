@@ -8220,6 +8220,15 @@ def _split_members(table: dict) -> list:
     return members
 
 
+def _equal_split_members(table: dict) -> list:
+    """Quem divide o que falta em partes iguais: quem já assumiu (pagou) uma
+    rodada desta mesa fica de fora, porque a sua vez já está paga."""
+    members = list(table.get("members") or [])
+    payers = {r.get("payer_client_id") for r in (table.get("rounds") or []) if r.get("payer_client_id")}
+    waiting = [m for m in members if m.get("client_id") not in payers]
+    return waiting or members
+
+
 def _split_plan_rounds(table: dict, detail: list) -> list:
     """Talão de uma partilha: só o que este sócio ficou a pagar, rodada a rodada."""
     names = {m.get("client_id"): m for m in (list(table.get("members") or []) + list(table.get("departed") or []))}
@@ -8251,6 +8260,7 @@ def _group_table_payload(table: dict) -> dict:
     table["split_remaining"] = units
     table["remaining_total"] = remaining
     table["split_members"] = _split_members(table)
+    table["equal_split_members"] = _equal_split_members(table)
     return table
 
 
@@ -8354,7 +8364,12 @@ def _group_table_for_socio(table: dict, client_id: str) -> dict:
         "open_total": open_total,
         "total": round(sum(float(r.get("total") or 0) for r in rounds), 2),
         "my_paid": mine_paid,
-        "share_if_split": round(open_total / len(members), 2) if members and open_total else 0.0,
+        # A sua parte em partes iguais: 0 se já assumiu (pagou) uma rodada da mesa
+        "share_if_split": (
+            round(open_total / len(_equal_split_members(table)), 2)
+            if open_total and any(m.get("client_id") == client_id for m in _equal_split_members(table))
+            else 0.0
+        ),
         "i_am_member": any(m.get("client_id") == client_id for m in members),
     }
 
@@ -8719,8 +8734,12 @@ async def split_group_table(table_id: str, body: GroupSplitIn, user: dict = Depe
                 payments.append(pay)
         fully_split = not any(q > 0 for q in remaining.values())
     else:
+        # Quem já assumiu (pagou) uma rodada desta mesa não entra na divisão do
+        # que falta — a sua vez já está paga; o restante divide-se entre os outros.
+        participants = _equal_split_members(table)
+        n = len(participants)
         share = round(total / n, 2)
-        for i, m in enumerate(members):
+        for i, m in enumerate(participants):
             subtotal = share if i < n - 1 else round(total - share * (n - 1), 2)
             if subtotal <= 0:
                 continue
