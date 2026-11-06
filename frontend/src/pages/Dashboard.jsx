@@ -35,7 +35,7 @@ const MASK = "••••";
 
 const isoDate = (d) => d.toISOString().slice(0, 10);
 
-const StatCard = ({ icon: Icon, label, value, accent, testid, to, masked = false, unmaskedDefault = false }) => {
+const StatCard = ({ icon: Icon, label, value, accent, testid, to, masked = false, unmaskedDefault = false, forceHidden = false }) => {
   const [revealed, setRevealed] = useState(unmaskedDefault);
   useEffect(() => {
     if (revealed && masked && !unmaskedDefault) {
@@ -43,13 +43,14 @@ const StatCard = ({ icon: Icon, label, value, accent, testid, to, masked = false
       return () => clearTimeout(t);
     }
   }, [revealed, masked, unmaskedDefault]);
-  const shownValue = masked && !revealed ? MASK : value;
+  const isMasked = forceHidden || (masked && !revealed);
+  const shownValue = isMasked ? MASK : value;
   const inner = (
     <div className="flex items-start justify-between">
       <div>
         <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 flex items-center gap-1.5">
           {label}
-          {masked && (
+          {masked && !forceHidden && (
             <button
               type="button"
               onClick={(e) => { e.preventDefault(); e.stopPropagation(); setRevealed((v) => !v); }}
@@ -61,7 +62,7 @@ const StatCard = ({ icon: Icon, label, value, accent, testid, to, masked = false
             </button>
           )}
         </div>
-        <div className={`mt-3 font-outfit text-3xl font-bold tracking-tight ${masked && !revealed ? "text-slate-500" : "text-white"}`}>
+        <div className={`mt-3 font-outfit text-3xl font-bold tracking-tight ${isMasked ? "text-slate-500" : "text-white"}`}>
           {shownValue}
         </div>
       </div>
@@ -103,6 +104,10 @@ function getPresidentMessage() {
 export default function Dashboard() {
   const { user } = useAuth();
   const canSeeStockValue = user?.role === "admin" || user?.role === "tesoureiro";
+  const isDirection = ["admin", "tesoureiro", "presidente"].includes(user?.role);
+  // Funcionários veem o valor em caixa, exceto durante o fecho (02:00–08:00)
+  const cashHour = new Date().getHours();
+  const cashHiddenForStaff = !isDirection && cashHour >= 2 && cashHour < 8;
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const cashBank = data ? (data.cash_bank || null) : null;
@@ -238,10 +243,12 @@ export default function Dashboard() {
             value={euro(cashBank.cash_balance)}
             accent="bg-amber-500/10 text-amber-300"
             to="/banco"
-            masked
+            masked={isDirection}
+            unmaskedDefault={!isDirection && !cashHiddenForStaff}
+            forceHidden={cashHiddenForStaff}
           />
         )}
-        {cashBank && (
+        {cashBank && cashBank.bank_balance != null && (
           <StatCard
             testid="kpi-bank"
             icon={Bank}

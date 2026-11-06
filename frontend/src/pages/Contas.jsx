@@ -19,12 +19,12 @@ export default function Contas() {
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState("summary"); // summary | income | expenses
 
-  const load = async () => {
+  const load = async (r = range) => {
     setLoading(true);
     try {
       const params = {};
-      if (range.from) params.date_from = range.from;
-      if (range.to) params.date_to = range.to;
+      if (r.from) params.date_from = r.from;
+      if (r.to) params.date_to = r.to;
       const { data } = await api.get("/reports/finance", { params });
       setData(data);
     } catch (e) {
@@ -38,19 +38,23 @@ export default function Contas() {
 
   const applyPreset = (p) => {
     const t = today;
+    let next = null;
     if (p === "yesterday") {
       const y = new Date(); y.setDate(y.getDate() - 1);
       const yIso = y.toISOString().slice(0, 10);
-      setRange({ from: yIso, to: yIso });
+      next = { from: yIso, to: yIso };
     }
-    else if (p === "day") setRange({ from: t, to: t });
+    else if (p === "day") next = { from: t, to: t };
     else if (p === "week") {
       const d = new Date(); d.setDate(d.getDate() - 6);
-      setRange({ from: d.toISOString().slice(0, 10), to: t });
+      next = { from: d.toISOString().slice(0, 10), to: t };
     }
-    else if (p === "month") setRange({ from: t.slice(0, 7) + "-01", to: t });
-    else if (p === "year") setRange({ from: t.slice(0, 4) + "-01-01", to: t });
-    else if (p === "all") setRange({ from: "", to: "" });
+    else if (p === "month") next = { from: t.slice(0, 7) + "-01", to: t };
+    else if (p === "year") next = { from: t.slice(0, 4) + "-01-01", to: t };
+    else if (p === "all") next = { from: "", to: "" };
+    if (!next) return;
+    setRange(next);
+    load(next);
   };
 
   const printReport = () => {
@@ -106,7 +110,7 @@ export default function Contas() {
                 className="mt-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm"
               />
             </div>
-            <button data-testid="contas-apply" onClick={load} className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg px-4 py-2 text-sm">
+            <button data-testid="contas-apply" onClick={() => load()} className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg px-4 py-2 text-sm">
               Aplicar
             </button>
           </>

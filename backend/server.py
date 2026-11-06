@@ -866,7 +866,7 @@ async def list_debtors(user: dict = Depends(get_current_user)):
 
 
 @api_router.get("/clients-frequent")
-async def frequent_clients(limit: int = 5, user: dict = Depends(get_current_user)):
+async def frequent_clients(limit: int = 7, user: dict = Depends(get_current_user)):
     """Clientes/sócios mais frequentes (nº de vendas) — escolha rápida no Ponto de Venda."""
     limit = min(max(limit, 1), 10)
     counts = await db.sales.aggregate([
@@ -2596,6 +2596,10 @@ async def dashboard(user: dict = Depends(get_current_user)):
         }
         # Saldos contabilísticos (caixa + banco) — incluem despesas pagas
         cash_bank = await _account_balances()
+    else:
+        # Funcionários veem apenas o valor em caixa (o banco fica reservado à direção/tesouraria)
+        _balances = await _account_balances()
+        cash_bank = {"cash_balance": _balances["cash_balance"], "bank_balance": None, "total_balance": None}
     # Dívidas antigas (sem pagamento há mais de X dias) — alerta automático
     overdue = await _overdue_debtors(clients, OVERDUE_DEBT_DAYS)
     # Aniversários dos próximos 7 dias
@@ -4225,6 +4229,10 @@ async def staff_list_messages(status_filter: Optional[str] = None, user: dict = 
         else:
             q["status"] = status_filter
     items = await db.socio_messages.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    # Pedidos antigos sem 'status' contam como abertos (não ficam "presos" na interface)
+    for it in items:
+        if not it.get("from_staff") and not it.get("status"):
+            it["status"] = "open"
     return items
 
 class SocioMessageReplyIn(BaseModel):

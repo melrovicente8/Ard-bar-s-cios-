@@ -4,6 +4,7 @@ import EditableText from "../components/EditableText";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { ListDashes, Printer, FileXls, FunnelSimple, MagnifyingGlass } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { useAuth } from "../context/AuthContext";
 
 const KIND_LABEL = { sale: "Venda", payment: "Pagamento", order: "Encomenda", expense: "Despesa", cash_close: "Fecho de caixa" };
 const KIND_CLASS = {
@@ -15,6 +16,9 @@ const KIND_CLASS = {
 };
 
 export default function Transacoes() {
+  const { user } = useAuth();
+  // Funcionários não podem exportar (Excel/CSV) nem imprimir/guardar PDF
+  const canExport = user?.role !== "funcionario";
   const today = new Date().toISOString().slice(0, 10);
   const monthStart = today.slice(0, 7) + "-01";
   const [searchParams] = useSearchParams();
@@ -169,10 +173,22 @@ th{background:#f3f4f6;text-transform:uppercase;letter-spacing:.08em;font-size:10
             <button key={p.v} onClick={() => applyPreset(p.v)} className="text-xs px-3 py-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300">{p.l}</button>
           ))}
           <div className="ml-auto flex gap-2">
-            <button onClick={exportCsv} data-testid="transacoes-export-csv" className="text-xs px-3 py-1.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 flex items-center gap-1.5">
+            <button
+              onClick={exportCsv}
+              disabled={!canExport}
+              title={canExport ? "Exportar para Excel" : "Sem permissão para exportar"}
+              data-testid="transacoes-export-csv"
+              className="text-xs px-3 py-1.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-500/15"
+            >
               <FileXls size={13} weight="duotone" /> Excel (CSV)
             </button>
-            <button onClick={printList} data-testid="transacoes-export-print" className="text-xs px-3 py-1.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1.5">
+            <button
+              onClick={printList}
+              disabled={!canExport}
+              title={canExport ? "Imprimir / guardar PDF" : "Sem permissão para imprimir"}
+              data-testid="transacoes-export-print"
+              className="text-xs px-3 py-1.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-amber-500/15"
+            >
               <Printer size={13} weight="duotone" /> Imprimir / PDF
             </button>
           </div>

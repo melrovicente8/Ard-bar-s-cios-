@@ -160,7 +160,7 @@ export default function PaymentModal({
       onClick={onClose}
     >
       <div
-        className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-6"
+        className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-6 max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-amber-400/80">Caixa do bar</div>

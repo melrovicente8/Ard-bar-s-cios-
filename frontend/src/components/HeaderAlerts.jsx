@@ -21,7 +21,7 @@ export default function HeaderAlerts() {
       const pendingMb = (mb.data || []).filter((x) => x.status === "pending").length;
       setPending({
         requests: (r.data || []).length,
-        messages: (m.data || []).length,
+        messages: (m.data || []).filter((x) => !x.staff_read_at).length,
         mbway: pendingMb,
         toDeliver: (td.data || []).length,
         gifts: (gf.data || []).filter((x) => x.status === "claimed" || x.status === "pending").length,

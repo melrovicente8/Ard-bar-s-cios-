@@ -43,7 +43,7 @@ export default function Vender() {
         api.get("/products"),
         api.get("/clients"),
         api.get("/products/top", { params: { limit: 10 } }).catch(() => ({ data: [] })),
-        api.get("/clients-frequent", { params: { limit: 5 } }).catch(() => ({ data: [] })),
+        api.get("/clients-frequent", { params: { limit: 7 } }).catch(() => ({ data: [] })),
       ]);
       setProducts(p.data);
       setClients(c.data);
