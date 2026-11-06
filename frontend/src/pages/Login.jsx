@@ -1,6 +1,7 @@
 import React, { useState } from "react";
+import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import { SignIn, SoccerBall } from "@phosphor-icons/react";
+import { SignIn, SoccerBall, UserPlus } from "@phosphor-icons/react";
 
 const ARD_LOGO = "https://customer-assets.emergentagent.com/job_inventory-bar-app/artifacts/4pd029nv_image.png";
 
@@ -143,6 +144,15 @@ export default function Login() {
           <p className="text-xs text-slate-500 text-center">
             Demo: admin@ard.pt / admin123 · tesoureiro@ard.pt / tesoureiro123 · func1@ard.pt / func123
           </p>
+
+          <Link
+            to="/aderir"
+            data-testid="login-adesao-link"
+            className="flex items-center justify-between gap-2 px-4 py-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/10 text-sm font-bold text-emerald-300 transition-colors"
+          >
+            <span className="flex items-center gap-2"><UserPlus size={16} weight="duotone" /> Adesão de novos sócios</span>
+            <span aria-hidden>→</span>
+          </Link>
         </form>
       </div>
     </div>

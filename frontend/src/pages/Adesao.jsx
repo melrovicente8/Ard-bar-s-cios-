@@ -46,6 +46,9 @@ export default function Adesao() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6">
       <div className="w-full max-w-lg">
+        <Link to="/" className="inline-flex items-center gap-1.5 text-xs text-slate-500 hover:text-amber-400 mb-6" data-testid="adesao-voltar">
+          ← Voltar
+        </Link>
         <div className="text-center mb-6">
           <div className="inline-flex p-3 rounded-xl bg-amber-500/15 text-amber-400 mb-3">
             <UserPlus size={26} weight="duotone" />

@@ -20,6 +20,7 @@ import {
   Coffee,
   Cake,
   Trophy,
+  UserPlus,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -110,6 +111,7 @@ export default function Dashboard() {
   const cashHiddenForStaff = !isDirection && cashHour >= 2 && cashHour < 8;
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [pendingApps, setPendingApps] = useState(0);
   // Valor de stock (custo/margem) fica oculto até ser revelado
   const [stockRevealed, setStockRevealed] = useState(false);
   const cashBank = data ? (data.cash_bank || null) : null;
@@ -130,6 +132,15 @@ export default function Dashboard() {
   useEffect(() => {
     load();
   }, []);
+
+  // Adesões digitais à espera de aprovação da direção
+  useEffect(() => {
+    if (!isDirection) return;
+    api
+      .get("/membership-applications", { params: { status_filter: "pending" } })
+      .then((r) => setPendingApps((r.data || []).length))
+      .catch(() => {});
+  }, [isDirection]);
 
   if (loading)
     return (
@@ -291,6 +302,46 @@ export default function Dashboard() {
           unmaskedDefault
         />
       </div>
+
+      {/* Adesão de novos sócios (formulário público + pedidos da direção) */}
+      {isDirection && (
+        <div
+          className="bg-slate-900/40 backdrop-blur-xl border border-emerald-500/25 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center gap-4 justify-between"
+          data-testid="dashboard-adesao-cta"
+        >
+          <div className="flex items-center gap-3">
+            <div className="p-3 rounded-lg bg-emerald-500/10 text-emerald-400">
+              <UserPlus size={22} weight="duotone" />
+            </div>
+            <div>
+              <div className="font-outfit text-lg font-semibold text-slate-100">Adesão de novos sócios</div>
+              <div className="text-xs text-slate-500" data-testid="dashboard-adesao-info">
+                {pendingApps > 0
+                  ? `${pendingApps} pedido${pendingApps > 1 ? "s" : ""} de adesão à espera de aprovação da direção.`
+                  : "Abre o formulário público para inscrever um novo sócio."}
+              </div>
+            </div>
+          </div>
+          <div className="flex gap-2 shrink-0">
+            {pendingApps > 0 && (
+              <Link
+                to="/pedidos"
+                data-testid="dashboard-adesao-open-requests"
+                className="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm font-bold transition-colors"
+              >
+                Ver pedidos
+              </Link>
+            )}
+            <Link
+              to="/aderir"
+              data-testid="dashboard-adesao-form"
+              className="px-5 py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm font-bold inline-flex items-center justify-center gap-2 transition-colors"
+            >
+              <UserPlus size={16} weight="bold" /> Formulário de adesão
+            </Link>
+          </div>
+        </div>
+      )}
 
       {/* Transferência caixa → banco (chamada de atenção para a aba Banco) */}
       {cashBank && (user?.role === "admin" || user?.role === "tesoureiro") && (

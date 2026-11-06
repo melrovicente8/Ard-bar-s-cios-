@@ -201,6 +201,11 @@ App de gestão integrada de bar/clube ARD Nespereira em **PT-PT**. Combina:
 - POST /api/socio/recover-pin — nº de sócio + telemóvel (validado contra o registado)
 - Gera mensagem à direção; novo PIN entregue por staff (ficha do cliente)
 
+### Adesão de novos sócios
+- Formulário público em **\`/aderir\`** (\`Adesao.jsx\`): nome, nascimento, telemóvel, morada, email, nº de sócio padrinho e aceitação do regulamento → \`POST /api/public/membership-application\` (fica **pendente** de aprovação da direção)
+- Entradas para a página: **Dashboard** (cartão "Adesão de novos sócios" com o nº de pedidos pendentes + botões "Formulário de adesão" e "Ver pedidos"), **ecrã de entrada** (\`/login\`, link "Adesão de novos sócios"), **portal do sócio** (\`/socio/login\`, "Ainda não és sócio? Adere aqui") e **menu lateral** (\`Clientes → Adesão de sócios\`)
+- Aprovação: **Pedidos sócio** (\`/pedidos\`, painel \`ApprovalsPanel\`) → \`POST /api/membership-applications/{id}/accept\` (atribui nº de sócio, cria o PIN e dá 1 ponto ao padrinho) ou \`/reject\`
+
 ### Parceiros locais — talões e notificações
 - Sócio envia a fotografia do talão: \`POST /api/socio/partner-tickets\` (máx. **3/dia**, até **48 h** após a compra; \`doc_number\` repetido fica sinalizado como duplicado)
 - O talão entra **sempre** \`pending\` na página **Parceiros locais** (\`/parceiros\`); a leitura automática por IA só confirma (ou não) parceiro, data e valor
@@ -289,6 +294,10 @@ Restantes (Vendas semana/mês, A pagar fornecedores, Valor stock, Clientes) masc
 
 ### Mensagens (staff)
 - \`GET /api/socio-messages\` · \`POST /api/socio-messages/send-to-socio\` · \`POST /api/socio-messages/{id}/reply\`
+
+### Adesão de sócios
+- \`POST /api/public/membership-application\` (formulário público \`/aderir\`)
+- \`GET /api/membership-applications?status_filter=\` · \`POST /api/membership-applications/{id}/accept\` · \`/reject\`
 
 ### Parceiros locais
 - \`GET/POST /api/partners\` · \`PUT/DELETE /api/partners/{id}\` (admin)
@@ -393,6 +402,7 @@ Relatórios PDF/print disponíveis em:
   20. **Agregado Familiar** no painel do sócio — inscrição de dependentes e pagamento de quotas por MBWay
   21. **Recuperação de PIN** pública (nº sócio + telemóvel → mensagem à direção)
   22. **Parceiros locais** — talões enviados pelos sócios com aviso de pendentes no cabeçalho do staff (\`pending-count\`) e notificação no sino do sócio quando o talão é **aceite** (pontos ganhos + presença) ou **rejeitado** (com o motivo)
+  23. **Adesão de novos sócios** visível na página principal: cartão no Dashboard com os pedidos pendentes, link no ecrã de entrada e no portal do sócio, e entrada no menu lateral (\`Clientes → Adesão de sócios\`) para \`/aderir\`
 
 ---
 

@@ -79,6 +79,10 @@ docker compose -f docker-compose.base44.yml up -d
 - `_seed_club_archive_history()` (arranque) preenche história, palmarés e documentos (fontes) **só quando estão vazios**. Para repor o texto oficial: apagar o doc `db.club_archive {_id:"ardn"}` e reiniciar o backend.
 - Frontend: `ClubArchive.jsx` tem os separadores e `ClubArchiveLegacy.jsx` renderiza as secções só de leitura (identidade, cronologia, plantéis, resultados, tradições). O botão "Editar" fica `disabled` enquanto o GET não chega — um clique antes do load gravava o arquivo vazio.
 
+## Adesão de novos sócios
+- Formulário público em `/aderir` (`Adesao.jsx`) → `POST /api/public/membership-application`; o pedido fica pendente para a direção aprovar em `/pedidos` (`ApprovalsPanel` → `/api/membership-applications/{id}/accept|reject`).
+- Entradas (antes não existia nenhuma): cartão `dashboard-adesao-cta` no Dashboard (só admin/tesoureiro/presidente, com o nº de pendentes), link em `/login`, link em `/socio/login` e item de menu `Clientes → Adesão de sócios` (`nav-adesao`).
+
 ## Parceiros locais · upload de talão
 - `db.partners` `{name, emoji, active, points_per_5eur}` — CRUD em `/api/partners` (admin). A checkbox "Parceria ativa" tira/coloca o parceiro na app do sócio. O antigo `auto_validate` foi removido (docs antigos podem ainda tê-lo; é ignorado).
 - Sócio: `GET /api/socio/partners`, `GET/POST /api/socio/partner-tickets` (fotografia em `photo_data`, data URL base64).

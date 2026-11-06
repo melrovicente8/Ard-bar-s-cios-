@@ -161,6 +161,14 @@ export default function SocioLogin() {
           <p className="text-xs text-slate-500 text-center">
             Não tens PIN? Pede na receção do clube ou ao tesoureiro.
           </p>
+
+          <Link
+            to="/aderir"
+            data-testid="socio-login-adesao-link"
+            className="block text-center px-4 py-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 hover:bg-emerald-500/10 text-xs font-bold text-emerald-300 transition-colors"
+          >
+            Ainda não és sócio? Adere aqui →
+          </Link>
         </form>
       </div>
 

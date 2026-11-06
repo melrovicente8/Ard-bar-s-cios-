@@ -34,6 +34,7 @@ import {
   LockSimple,
   LockSimpleOpen,
   Trophy,
+  UserPlus,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import HeaderAlerts from "../components/HeaderAlerts";
@@ -71,6 +72,7 @@ const navGroups = [
     section: "Clientes",
     items: [
       { to: "/clientes", label: "Clientes e Sócios", icon: Users, testid: "nav-clients", roles: [...STAFF_ROLES, "funcionario"] },
+      { to: "/aderir", label: "Adesão de sócios", icon: UserPlus, testid: "nav-adesao", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/rankings", label: "Tabela de Feitos", icon: Trophy, testid: "nav-rankings", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/arquivo", label: "Historial e Palmarés", icon: Book, testid: "nav-arquivo", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/parceiros", label: "Parceiros locais", icon: Storefront, testid: "nav-parceiros", roles: [...STAFF_ROLES, "funcionario"] },
