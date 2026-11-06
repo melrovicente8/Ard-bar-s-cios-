@@ -46,3 +46,17 @@ docker compose -f docker-compose.base44.yml up -d
 
 ## Secrets
 - `RESEND_API_KEY` (opcional) via dashboard Base44 → `/run/base44/app.env`, ligado ao serviço backend como último `env_file`. Sem ela, `send_email` falha graciosamente.
+
+## Portal do sócio
+- Cabeçalho: saudação por hora do dia (`Bom dia/Boa tarde/Boa noite`) + mensagem fixa por estado de quotas (`QUOTA_GREETING` em `SocioPortal.jsx`, testid `socio-dynamic-greeting`).
+- "Movimento do clube · Despesas trimestre ›" abre o modal com as despesas do trimestre (`GET /api/socio/expenses-quarterly`, descrições já anonimizadas com nº de sócio).
+- "Insistir" num pedido pendente só ativa após 5 min (`POST /api/socio/consumption-requests/{id}/insist`); o staff recebe um pop-up em `HeaderAlerts` (`insist-popup`) alimentado por `insisted_at` dos pedidos pendentes.
+
+## Bola de quotas junto ao nome
+- `src/components/QuotaBall.jsx` (🟢 paid / 🟡 pending / 🔴 debt; não-sócios sem bola). Usada na lista de clientes, na ficha (`ficha-client-name`) e no POS (`Vender`).
+
+## Rodada Mista (POS)
+- Botão "Rodada Mista" em `Vender` → `src/components/RodadaMista.jsx` (modal). Backend em `db.group_tables`:
+  `POST /api/group-tables` (2+ sócios, notifica cada um e marca presença), `POST /{id}/rounds` (valida stock e desconta), `POST /{id}/rounds/{n}/settle` (rotação: um sócio assume a rodada), `POST /{id}/split` (partes iguais ou por consumo; cria uma venda por sócio), `POST /{id}/close`.
+- As vendas ficam com `source: "group_round"` e uma única linha-resumo: "Rodada Mista (Oferecida à Mesa)" ou "Rodada Mista (Partilha i/n)"; o detalhe dos produtos vai em `group_items`. O stock é abatido no lançamento da rodada, por isso estas vendas não voltam a mexer no stock.
+- Presenças do dia em `db.presences` (`client_id` + `date`), `GET /api/socio/presences/me`.

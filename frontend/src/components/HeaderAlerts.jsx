@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import api, { euro } from "../lib/api";
-import { Bell, ChatCircle, DeviceMobile, Package, Gift, WarningCircle } from "@phosphor-icons/react";
+import { Bell, ChatCircle, DeviceMobile, Package, Gift, WarningCircle, Lightning } from "@phosphor-icons/react";
 
 /**
  * Relógio + notificações pendentes no topo — presente em todas as abas.
@@ -27,10 +27,29 @@ const dismissLate = (id) => {
   }
 };
 
+// Insistências do sócio (pedido pendente há mais de 5 min) — cada insistência nova
+// volta a abrir o pop-up até o staff a dispensar.
+const insistDismissedIds = () => {
+  try {
+    return JSON.parse(sessionStorage.getItem("insist-dismissed") || "[]");
+  } catch {
+    return [];
+  }
+};
+
+const dismissInsist = (key) => {
+  try {
+    sessionStorage.setItem("insist-dismissed", JSON.stringify([...new Set([...insistDismissedIds(), key])]));
+  } catch {
+    /* ignore */
+  }
+};
+
 export default function HeaderAlerts() {
   const navigate = useNavigate();
   const [pending, setPending] = useState({ requests: 0, messages: 0, mbway: 0, toDeliver: 0, gifts: 0 });
   const [lateRequest, setLateRequest] = useState(null);
+  const [insistRequest, setInsistRequest] = useState(null);
 
   const loadPending = async () => {
     try {
@@ -42,9 +61,10 @@ export default function HeaderAlerts() {
         api.get("/socio-gifts", { params: { status_filter: "active" } }).catch(() => ({ data: [] })),
       ]);
       const approved = td.data || [];
+      const pendingReqs = r.data || [];
       const pendingMb = (mb.data || []).filter((x) => x.status === "pending").length;
       setPending({
-        requests: (r.data || []).length,
+        requests: pendingReqs.length,
         messages: (m.data || []).filter((x) => !x.staff_read_at).length,
         mbway: pendingMb,
         toDeliver: approved.length,
@@ -56,6 +76,12 @@ export default function HeaderAlerts() {
         .filter((x) => Date.now() - new Date(waitBase(x)).getTime() > LATE_PICKUP_MS && !ignored.includes(x.id))
         .sort((a, b) => new Date(waitBase(a)) - new Date(waitBase(b)));
       setLateRequest(late[0] || null);
+      // Sócio insistiu (pedido em espera há mais de 5 min) → pop-up imediato no painel do staff
+      const ignoredInsist = insistDismissedIds();
+      const insisted = pendingReqs
+        .filter((x) => x.insisted_at && !ignoredInsist.includes(`${x.id}:${x.insisted_at}`))
+        .sort((a, b) => new Date(b.insisted_at) - new Date(a.insisted_at));
+      setInsistRequest(insisted[0] || null);
     } catch {
       /* ignore */
     }
@@ -150,6 +176,52 @@ export default function HeaderAlerts() {
           </div>
         </div>
       )}
+
+      {/* Sócio insistiu num pedido em espera há mais de 5 minutos */}
+      {insistRequest && (() => {
+        const key = `${insistRequest.id}:${insistRequest.insisted_at}`;
+        const waited = Math.max(1, Math.round((Date.now() - new Date(insistRequest.created_at).getTime()) / 60000));
+        const dismiss = () => { dismissInsist(key); setInsistRequest(null); };
+        return (
+          <div
+            className="fixed inset-0 z-[76] flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+            data-testid="insist-popup"
+            onClick={dismiss}
+          >
+            <div
+              className="bg-slate-900 border-2 border-sky-400 rounded-xl w-full max-w-sm p-6 text-center shadow-2xl animate-pulse-once"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Lightning size={34} weight="fill" className="mx-auto text-sky-400 mb-2" />
+              <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-sky-400/80">O sócio insistiu</div>
+              <h3 className="font-outfit text-xl font-semibold mt-1 mb-2">{insistRequest.client_name}</h3>
+              <p className="text-sm text-slate-300 mb-2">
+                Pedido de <strong className="text-sky-300">{euro(insistRequest.total)}</strong> em espera há {waited} min.
+              </p>
+              <div className="text-[11px] text-slate-500 mb-4">
+                {insistRequest.insist_count > 1 ? `${insistRequest.insist_count} insistências · ` : ""}
+                Pedido em {new Date(insistRequest.created_at).toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" })}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  data-testid="insist-later"
+                  onClick={dismiss}
+                  className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 font-bold text-sm"
+                >
+                  Mais tarde
+                </button>
+                <button
+                  data-testid="insist-open"
+                  onClick={() => { dismiss(); navigate(`/pedidos?filter=pending&focus=${insistRequest.id}`); }}
+                  className="flex-1 px-4 py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-sm"
+                >
+                  Ver pedido
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

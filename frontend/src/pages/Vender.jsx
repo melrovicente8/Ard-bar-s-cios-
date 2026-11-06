@@ -4,6 +4,8 @@ import EditableText from "../components/EditableText";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import OccasionalCards from "../components/OccasionalCards";
+import QuotaBall from "../components/QuotaBall";
+import RodadaMista from "../components/RodadaMista";
 import {
   Plus,
   Minus,
@@ -14,6 +16,7 @@ import {
   Gift,
   Lightning,
   Warning,
+  Users,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -37,6 +40,7 @@ export default function Vender() {
   const [frequent, setFrequent] = useState([]);
   const [cardsVersion, setCardsVersion] = useState(0); // força atualização dos cartões temporários
   const [clientDebtInfo, setClientDebtInfo] = useState(null); // {days, total} — dívida com mais de 3 dias
+  const [showRodada, setShowRodada] = useState(false);
 
   useEffect(() => {
     if (!clientId) {
@@ -182,14 +186,26 @@ export default function Vender() {
 
   return (
     <div className="p-6 md:p-8 animate-in" data-testid="vender-page">
-      <div className="mb-6">
-        <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">
-          Ponto de Venda
+      <div className="mb-6 flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">
+            Ponto de Venda
+          </div>
+          <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">
+            <EditableText k="page.vender.title">Vender</EditableText>
+          </h1>
         </div>
-        <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">
-          <EditableText k="page.vender.title">Vender</EditableText>
-        </h1>
+        <button
+          data-testid="rodada-mista-btn"
+          onClick={() => setShowRodada(true)}
+          className="px-4 py-2 rounded-lg bg-sky-500/15 text-sky-300 border border-sky-500/30 hover:bg-sky-500/25 text-sm font-bold flex items-center gap-2"
+          title="Abrir uma mesa de grupo (2 ou mais sócios) e dividir a conta ou rodar os pagadores"
+        >
+          <Users size={16} weight="duotone" /> Rodada Mista
+        </button>
       </div>
+
+      {showRodada && <RodadaMista onClose={() => setShowRodada(false)} onChanged={load} />}
 
       {/* Fichas temporárias · Cliente Ocasional / Não Cliente (máx. 3 ativas) */}
       <div className="mb-6">
@@ -204,7 +220,7 @@ export default function Vender() {
           </label>
           {selectedClient && (
             <span className="text-xs text-slate-400" data-testid="client-picker-badge">
-              Selecionado: <strong className="text-amber-300">{selectedClient.name}</strong>
+              Selecionado: <QuotaBall client={selectedClient} size={9} className="mr-1 align-middle" /> <strong className="text-amber-300">{selectedClient.name}</strong>
               {selectedClient.member_number ? <span className="text-slate-500"> · nº {selectedClient.member_number}</span> : null}
               {selectedClient.is_member ? <span className="ml-2 px-1.5 py-0.5 rounded bg-green-500/15 text-green-300 text-[10px] font-bold">SÓCIO</span> : null}
             </span>
@@ -221,13 +237,14 @@ export default function Vender() {
                 type="button"
                 data-testid={`client-quick-${c.id}`}
                 onClick={() => { setClientId(c.id); setClientSearch(""); }}
-                className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-colors ${
+                className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-colors inline-flex items-center gap-1.5 ${
                   clientId === c.id
                     ? "bg-amber-500 text-slate-950 border-amber-500"
                     : "bg-slate-950 border-slate-800 text-slate-200 hover:border-amber-500/50"
                 }`}
                 title={`${c.sales_count || 0} consumos registados`}
               >
+                <QuotaBall client={c} size={8} />
                 {c.name}
                 {c.member_number ? <span className="opacity-70"> · nº {c.member_number}</span> : null}
               </button>
@@ -254,6 +271,7 @@ export default function Vender() {
             <option value="">— Seleciona cliente —</option>
             {filteredClients.map((c) => (
               <option key={c.id} value={c.id}>
+                {c.is_member ? (c.quota_status?.status === "paid" ? "🟢 " : c.quota_status?.status === "debt" ? "🔴 " : "🟡 ") : ""}
                 {c.name}{c.member_number ? ` · nº ${c.member_number}` : ""}{c.is_member ? " · Sócio" : ""}
               </option>
             ))}

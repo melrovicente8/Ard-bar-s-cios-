@@ -4971,6 +4971,51 @@ async def socio_finance_summary(date_from: Optional[str] = None, date_to: Option
         "club_name": data["club_name"],
     }
 
+@api_router.get("/socio/expenses-quarterly")
+async def socio_expenses_quarterly(socio: dict = Depends(get_current_socio)):
+    """Despesas do trimestre corrente do clube — detalhe para consulta do sócio
+    (descrições sem nomes de sócios, substituídos pelo nº de sócio)."""
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Europe/Lisbon"))
+    except Exception:
+        now = datetime.now(timezone.utc)
+    quarter = (now.month - 1) // 3 + 1
+    start_month = 3 * (quarter - 1) + 1
+    date_from = f"{now.year}-{start_month:02d}-01"
+    date_to = now.strftime("%Y-%m-%d")
+    data = await _finance_summary(date_from, date_to)
+    items = []
+    for o in data["details"]["orders"]:
+        items.append({
+            "date": o.get("created_at"),
+            "kind": "Encomenda",
+            "description": o.get("description") or "Encomenda a fornecedor",
+            "supplier": o.get("supplier_name") or "—",
+            "amount": round(float(o.get("total") or 0), 2),
+        })
+    for e in data["details"]["expenses"]:
+        items.append({
+            "date": e.get("created_at"),
+            "kind": "Despesa",
+            "description": e.get("description") or "Despesa",
+            "supplier": e.get("supplier_name") or "—",
+            "amount": round(float(e.get("amount") or 0), 2),
+        })
+    items.sort(key=lambda x: x.get("date") or "", reverse=True)
+    return {
+        "quarter": f"T{quarter}/{now.year}",
+        "period": {"from": date_from, "to": date_to},
+        "total": data["expenses"]["total"],
+        "supplier_orders": data["expenses"]["supplier_orders"],
+        "supplier_expenses": data["expenses"]["supplier_expenses"],
+        "count": len(items),
+        "items": items,
+        "generated_at": data["generated_at"],
+        "club_name": data["club_name"],
+    }
+
+
 @api_router.get("/socio/can-see-finance")
 async def socio_can_see_finance(socio: dict = Depends(get_current_socio)):
     year = datetime.now(timezone.utc).year
@@ -7514,6 +7559,404 @@ async def match_center_jornada(fixture_id: int, user: dict = Depends(get_current
         "generated_at": data["generated_at"],
         "club_name": data["club_name"],
     }
+
+# ---------- Rodada Mista (mesa de grupo no POS) ----------
+# Uma mesa junta 2+ sócios. As rodadas pedidas acumulam numa conta temporária
+# de grupo e são liquidadas de duas formas:
+#   · rotação de pagadores — cada rodada é assumida (e paga) por um sócio;
+#   · divisão da conta — partes iguais ou por consumo real de cada sócio.
+# Em qualquer dos casos cada sócio recebe presença do dia e os pontos da
+# rodada revertem para quem a liquidou.
+
+class GroupTableIn(BaseModel):
+    member_ids: List[str]
+    label: Optional[str] = None
+
+class GroupRoundIn(BaseModel):
+    items: List[SaleItemIn]
+
+class GroupRoundSettleIn(BaseModel):
+    payer_client_id: str
+    method: str = "account"  # account | cash | mbway
+
+class GroupSplitIn(BaseModel):
+    mode: str = "equal"  # equal | items
+    methods: Optional[dict] = None          # {client_id: account|cash|mbway}
+    items_by_member: Optional[dict] = None  # {client_id: [{product_id, quantity}]}
+
+
+def _group_member_ref(c: dict) -> str:
+    first = (c.get("name") or "").split(" ")[0]
+    mn = c.get("member_number")
+    return f"{first} (nº {mn})" if mn else first
+
+
+def _group_label(client_doc: dict) -> str:
+    return f"{client_doc['name'].split(' ')[0]} (nº {client_doc.get('member_number') or '—'})"
+
+
+async def _mark_presence(client_id: str, table_id: Optional[str] = None) -> None:
+    """Presença do dia (streak) — uma entrada por sócio e por dia."""
+    try:
+        from zoneinfo import ZoneInfo
+        day = datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%Y-%m-%d")
+    except Exception:
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    await db.presences.update_one(
+        {"client_id": client_id, "date": day},
+        {"$setOnInsert": {
+            "id": str(uuid.uuid4()),
+            "client_id": client_id,
+            "date": day,
+            "source": "group_round",
+            "table_id": table_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+
+
+async def _group_sale(table: dict, client_doc: dict, label: str, total: float,
+                      detail_items: list, user: dict, round_number: Optional[int] = None) -> dict:
+    """Cria a venda/lançamento de uma rodada ou partilha para um sócio.
+    O stock já foi abatido no lançamento da rodada, por isso aqui não se mexe no stock."""
+    total = round(float(total), 2)
+    is_member = bool(client_doc.get("is_member"))
+    points_earned, new_pending = (0, 0.0)
+    if is_member:
+        points_earned, new_pending = await _compute_points_with_rollover(client_doc, total)
+    tx_no = await _next_tx_number()
+    sale = {
+        "id": str(uuid.uuid4()),
+        "tx_number": tx_no,
+        "client_id": client_doc["id"],
+        "client_name": client_doc["name"],
+        "items": [{
+            "product_id": f"group-{table['id']}",
+            "product_name": label,
+            "unit_price": total,
+            "quantity": 1,
+            "subtotal": total,
+        }],
+        "group_items": detail_items,
+        "group_table_id": table["id"],
+        "group_round": round_number,
+        "group_label": label,
+        "total": total,
+        "points_earned": points_earned,
+        "is_member_at_sale": is_member,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "user_email": user["email"],
+        "source": "group_round",
+    }
+    await db.sales.insert_one(sale)
+    op = {"$inc": {"balance": total, "total_spent": total, "points": points_earned}}
+    if is_member:
+        op["$set"] = {"points_pending_value": new_pending}
+    await db.clients.update_one({"id": client_doc["id"]}, op)
+    if points_earned:
+        await _log_points(client_doc["id"], points_earned, "group_round", sale["id"], f"{label} · {total:.2f} €", user["email"])
+    await _audit("group_round_sale", user["email"], entity="sale", entity_id=sale["id"], tx_number=tx_no,
+                 summary=f"Rodada Mista · {client_doc['name']} · {label} · {total:.2f} €")
+    sale.pop("_id", None)
+    return sale
+
+
+async def _settle_group_sale(sale: dict, method: str, user: dict) -> Optional[dict]:
+    """Liquida na hora a venda da rodada (dinheiro/MBWay). Conta corrente fica em aberto."""
+    if method not in ("cash", "mbway"):
+        return None
+    pay = await create_payment(
+        PaymentIn(
+            client_id=sale["client_id"],
+            amount=float(sale["total"]),
+            note=f"Rodada Mista · {sale.get('group_label')}",
+            sale_ids=[sale["id"]],
+        ),
+        user,
+    )
+    if method == "mbway" and pay:
+        await db.payments.update_one({"id": pay["id"]}, {"$set": {"source": "mbway"}})
+        pay["source"] = "mbway"
+    return pay
+
+
+def _open_group_rounds(table: dict) -> list:
+    return [r for r in (table.get("rounds") or []) if r.get("status") != "paid"]
+
+
+@api_router.post("/group-tables")
+async def create_group_table(body: GroupTableIn, user: dict = Depends(get_current_user)):
+    ids = list(dict.fromkeys(body.member_ids or []))
+    if len(ids) < 2:
+        raise HTTPException(status_code=400, detail="Escolhe pelo menos 2 sócios para a Rodada Mista")
+    members = await db.clients.find({"id": {"$in": ids}}, {"_id": 0, "pin_hash": 0}).to_list(len(ids))
+    by_id = {m["id"]: m for m in members}
+    if any(i not in by_id for i in ids):
+        raise HTTPException(status_code=404, detail="Sócio não encontrado")
+    ordered = [by_id[i] for i in ids]
+    now_iso = datetime.now(timezone.utc).isoformat()
+    table = {
+        "id": str(uuid.uuid4()),
+        "label": (body.label or "").strip() or f"Mesa de {len(ordered)}",
+        "members": [{"client_id": m["id"], "name": m["name"], "member_number": m.get("member_number")} for m in ordered],
+        "rounds": [],
+        "status": "open",
+        "created_at": now_iso,
+        "created_by": user["email"],
+        "closed_at": None,
+    }
+    await db.group_tables.insert_one(table)
+    for m in ordered:
+        others = [f"{_group_member_ref(o)}" for o in ordered if o["id"] != m["id"]]
+        if len(others) <= 2:
+            companions = " e ".join(others)
+        else:
+            companions = f"{others[0]}, {others[1]} e mais {len(others) - 2} amigos"
+        await db.socio_messages.insert_one({
+            "id": str(uuid.uuid4()),
+            "client_id": m["id"],
+            "client_name": m["name"],
+            "subject": "🍻 Rodada Mista",
+            "message": f"Entraste numa Rodada Mista com {companions}! 🍻 Divirtam-se na ARDN, bebe com moderação.",
+            "from_staff": True,
+            "reply": None,
+            "created_at": now_iso,
+            "group_table_id": table["id"],
+        })
+        await _mark_presence(m["id"], table["id"])
+    await _audit("group_table_create", user["email"], entity="group_table", entity_id=table["id"],
+                 summary=f"Rodada Mista aberta · {', '.join(m['name'] for m in ordered)}")
+    table.pop("_id", None)
+    return table
+
+
+@api_router.get("/group-tables")
+async def list_group_tables(status_filter: Optional[str] = None, user: dict = Depends(get_current_user)):
+    q = {} if status_filter in (None, "", "all") else {"status": status_filter}
+    tables = await db.group_tables.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return tables
+
+
+@api_router.get("/group-tables/{table_id}")
+async def get_group_table(table_id: str, user: dict = Depends(get_current_user)):
+    table = await db.group_tables.find_one({"id": table_id}, {"_id": 0})
+    if not table:
+        raise HTTPException(status_code=404, detail="Rodada não encontrada")
+    return table
+
+
+@api_router.post("/group-tables/{table_id}/rounds")
+async def add_group_round(table_id: str, body: GroupRoundIn, user: dict = Depends(get_current_user)):
+    table = await db.group_tables.find_one({"id": table_id}, {"_id": 0})
+    if not table:
+        raise HTTPException(status_code=404, detail="Rodada não encontrada")
+    if table.get("status") != "open":
+        raise HTTPException(status_code=400, detail="Esta Rodada Mista já está fechada")
+    if not body.items:
+        raise HTTPException(status_code=400, detail="Sem itens")
+    pids = [it.product_id for it in body.items]
+    products = await db.products.find({"id": {"$in": pids}}, {"_id": 0}).to_list(len(pids))
+    pmap = {p["id"]: p for p in products}
+    role = user.get("role")
+    is_staff = role in ("admin", "tesoureiro")
+    try:
+        from zoneinfo import ZoneInfo
+        now_hour = datetime.now(ZoneInfo("Europe/Lisbon")).hour
+    except Exception:
+        now_hour = datetime.now(timezone.utc).hour
+    line_items = []
+    total = 0.0
+    for it in body.items:
+        prod = pmap.get(it.product_id)
+        if not prod:
+            raise HTTPException(status_code=404, detail="Produto não encontrado")
+        if it.quantity <= 0:
+            raise HTTPException(status_code=400, detail="Quantidade inválida")
+        if prod.get("is_food") and not is_staff and not (16 <= now_hour < 20):
+            raise HTTPException(status_code=400, detail=f"'{prod['name']}' só disponível das 16h às 20h")
+        if prod.get("unavailable") and not is_staff:
+            raise HTTPException(status_code=400, detail=f"'{prod['name']}' marcado como indisponível")
+        if int(prod.get("quantity") or 0) < it.quantity:
+            raise HTTPException(status_code=400, detail=f"Stock insuficiente para {prod['name']}")
+        unit_price = float(prod["price"])
+        qty = int(it.quantity)
+        subtotal = round(unit_price * qty, 2)
+        total += subtotal
+        line_items.append({
+            "product_id": prod["id"],
+            "product_name": prod["name"],
+            "unit_price": unit_price,
+            "quantity": qty,
+            "subtotal": subtotal,
+        })
+    for it in body.items:
+        await db.products.update_one({"id": it.product_id}, {"$inc": {"quantity": -int(it.quantity)}})
+    round_no = len(table.get("rounds") or []) + 1
+    round_doc = {
+        "number": round_no,
+        "items": line_items,
+        "total": round(total, 2),
+        "status": "open",
+        "added_at": datetime.now(timezone.utc).isoformat(),
+        "added_by": user["email"],
+        "payer_client_id": None,
+        "sale_id": None,
+    }
+    await db.group_tables.update_one({"id": table_id}, {"$push": {"rounds": round_doc}})
+    await _audit("group_round_add", user["email"], entity="group_table", entity_id=table_id,
+                 summary=f"Rodada Mista {table.get('label')} · rodada {round_no} · {total:.2f} € · "
+                         + ", ".join(f"{li['quantity']}× {li['product_name']}" for li in line_items))
+    table.pop("_id", None)
+    return await db.group_tables.find_one({"id": table_id}, {"_id": 0})
+
+
+@api_router.post("/group-tables/{table_id}/rounds/{round_number}/settle")
+async def settle_group_round(table_id: str, round_number: int, body: GroupRoundSettleIn,
+                             user: dict = Depends(get_current_user)):
+    """Rotação de pagadores: um sócio assume e liquida a rodada inteira."""
+    table = await db.group_tables.find_one({"id": table_id}, {"_id": 0})
+    if not table:
+        raise HTTPException(status_code=404, detail="Rodada não encontrada")
+    member_ids = {m["client_id"] for m in table.get("members") or []}
+    if body.payer_client_id not in member_ids:
+        raise HTTPException(status_code=400, detail="O pagador tem de ser um sócio da mesa")
+    rnd = next((r for r in table.get("rounds") or [] if r.get("number") == round_number), None)
+    if not rnd:
+        raise HTTPException(status_code=404, detail="Rodada não encontrada")
+    if rnd.get("status") == "paid":
+        raise HTTPException(status_code=400, detail="Esta rodada já foi paga")
+    payer = await db.clients.find_one({"id": body.payer_client_id}, {"_id": 0, "pin_hash": 0})
+    if not payer:
+        raise HTTPException(status_code=404, detail="Sócio não encontrado")
+    sale = await _group_sale(
+        table, payer, "Rodada Mista (Oferecida à Mesa)", rnd["total"], rnd.get("items") or [], user, round_number,
+    )
+    pay = await _settle_group_sale(sale, (body.method or "account").lower(), user)
+    await db.group_tables.update_one(
+        {"id": table_id, "rounds.number": round_number},
+        {"$set": {"rounds.$.status": "paid", "rounds.$.payer_client_id": body.payer_client_id,
+                  "rounds.$.payer_name": payer["name"], "rounds.$.method": (body.method or "account").lower(),
+                  "rounds.$.sale_id": sale["id"], "rounds.$.paid_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    for m in table.get("members") or []:
+        await _mark_presence(m["client_id"], table_id)
+    table = await db.group_tables.find_one({"id": table_id}, {"_id": 0})
+    table.pop("_id", None)
+    return {"table": table, "sale": sale, "payment": pay}
+
+
+@api_router.post("/group-tables/{table_id}/split")
+async def split_group_table(table_id: str, body: GroupSplitIn, user: dict = Depends(get_current_user)):
+    """Fecho da conta do grupo: partes iguais ou por consumo real de cada sócio."""
+    table = await db.group_tables.find_one({"id": table_id}, {"_id": 0})
+    if not table:
+        raise HTTPException(status_code=404, detail="Rodada não encontrada")
+    if table.get("status") != "open":
+        raise HTTPException(status_code=400, detail="Esta Rodada Mista já está fechada")
+    open_rounds = _open_group_rounds(table)
+    if not open_rounds:
+        raise HTTPException(status_code=400, detail="Não há rodadas por liquidar")
+    members = table.get("members") or []
+    n = len(members)
+    total = round(sum(float(r.get("total") or 0) for r in open_rounds), 2)
+    detail_all = [it for r in open_rounds for it in (r.get("items") or [])]
+    methods = body.methods or {}
+    sales, payments = [], []
+    mode = (body.mode or "equal").lower()
+
+    if mode == "items":
+        assigned = body.items_by_member or {}
+        price_map = {}
+        for it in detail_all:
+            price_map[it["product_id"]] = float(it.get("unit_price") or 0)
+        plans = []
+        assigned_total = 0.0
+        for m in members:
+            rows = assigned.get(m["client_id"]) or []
+            detail = []
+            for row in rows:
+                qty = int(row.get("quantity") or 0)
+                pid = row.get("product_id")
+                if qty <= 0 or pid not in price_map:
+                    continue
+                name = next((it["product_name"] for it in detail_all if it["product_id"] == pid), pid)
+                detail.append({"product_id": pid, "product_name": name, "unit_price": price_map[pid],
+                               "quantity": qty, "subtotal": round(price_map[pid] * qty, 2)})
+            subtotal = round(sum(d["subtotal"] for d in detail), 2)
+            if subtotal > 0:
+                plans.append((m, subtotal, detail))
+                assigned_total += subtotal
+        if not plans:
+            raise HTTPException(status_code=400, detail="Atribui os consumos aos sócios da mesa")
+        if abs(assigned_total - total) > 0.01:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Faltam consumos por atribuir: {total - assigned_total:.2f} € de {total:.2f} €",
+            )
+        for i, (m, subtotal, detail) in enumerate(plans):
+            client_doc = await db.clients.find_one({"id": m["client_id"]}, {"_id": 0, "pin_hash": 0})
+            if not client_doc:
+                continue
+            label = f"Rodada Mista (Partilha {i + 1}/{len(plans)})"
+            sale = await _group_sale(table, client_doc, label, subtotal, detail, user)
+            pay = await _settle_group_sale(sale, (methods.get(m["client_id"]) or "account").lower(), user)
+            sales.append(sale)
+            if pay:
+                payments.append(pay)
+    else:
+        share = round(total / n, 2)
+        for i, m in enumerate(members):
+            subtotal = share if i < n - 1 else round(total - share * (n - 1), 2)
+            if subtotal <= 0:
+                continue
+            client_doc = await db.clients.find_one({"id": m["client_id"]}, {"_id": 0, "pin_hash": 0})
+            if not client_doc:
+                continue
+            label = f"Rodada Mista (Partilha {i + 1}/{n})"
+            sale = await _group_sale(table, client_doc, label, subtotal, detail_all, user)
+            pay = await _settle_group_sale(sale, (methods.get(m["client_id"]) or "account").lower(), user)
+            sales.append(sale)
+            if pay:
+                payments.append(pay)
+
+    for m in members:
+        await _mark_presence(m["client_id"], table_id)
+    # Todas as rodadas em aberto ficam liquidadas pela divisão da conta
+    now_iso = datetime.now(timezone.utc).isoformat()
+    rounds = table.get("rounds") or []
+    for r in rounds:
+        if r.get("status") != "paid":
+            r["status"] = "paid"
+            r["method"] = "split"
+            r["paid_at"] = now_iso
+    await db.group_tables.update_one(
+        {"id": table_id},
+        {"$set": {"status": "closed", "closed_at": now_iso, "rounds": rounds,
+                  "split_mode": mode, "split_sale_ids": [s["id"] for s in sales]}},
+    )
+    await _audit("group_table_split", user["email"], entity="group_table", entity_id=table_id,
+                 summary=f"Rodada Mista {table.get('label')} dividida ({'partes iguais' if mode == 'equal' else 'por consumo'}) · {total:.2f} €")
+    updated = await db.group_tables.find_one({"id": table_id}, {"_id": 0})
+    return {"table": updated, "sales": sales, "payments": payments}
+
+
+@api_router.post("/group-tables/{table_id}/close")
+async def close_group_table(table_id: str, user: dict = Depends(get_current_user)):
+    table = await db.group_tables.find_one({"id": table_id}, {"_id": 0})
+    if not table:
+        raise HTTPException(status_code=404, detail="Rodada não encontrada")
+    if _open_group_rounds(table):
+        raise HTTPException(status_code=400, detail="Ainda há rodadas por liquidar nesta mesa")
+    await db.group_tables.update_one({"id": table_id}, {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc).isoformat()}})
+    return {"ok": True}
+
+
+@api_router.get("/presences/me")
+async def my_presences(socio: dict = Depends(get_current_socio)):
+    days = await db.presences.find({"client_id": socio["id"]}, {"_id": 0}).sort("date", -1).to_list(60)
+    return days
+
 
 # ---------- Mount ----------
 app.include_router(api_router)

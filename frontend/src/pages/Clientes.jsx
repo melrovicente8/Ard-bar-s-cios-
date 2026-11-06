@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
 import MessageModal from "../components/MessageModal";
 import QuotaBulkLaunchModal from "../components/QuotaBulkLaunchModal";
+import QuotaBall from "../components/QuotaBall";
 
 export default function Clientes() {
   const { user } = useAuth();
@@ -292,7 +293,7 @@ export default function Clientes() {
                     <tr key={c.id} data-testid={`client-row-${c.id}`} className="border-t border-slate-800/60 hover:bg-slate-900/60">
                       <td className="px-4 py-2.5 font-medium text-slate-100">
                         <Link to={`/clientes/${c.id}`} className="hover:text-amber-400 flex items-center gap-2">
-                          {c.name} <ArrowRight size={12} className="opacity-60" />
+                          <QuotaBall client={c} /> {c.name} <ArrowRight size={12} className="opacity-60" />
                         </Link>
                       </td>
                       <td className="px-4 py-2.5">
@@ -361,7 +362,9 @@ export default function Clientes() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-outfit text-lg font-semibold truncate">{c.name}</span>
+                      <span className="font-outfit text-lg font-semibold truncate flex items-center gap-2">
+                        <QuotaBall client={c} /> {c.name}
+                      </span>
                       {c.is_member ? (
                         <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-500/15 text-green-300 border border-green-500/30 flex items-center gap-1">
                           <Medal size={11} weight="fill" /> Sócio

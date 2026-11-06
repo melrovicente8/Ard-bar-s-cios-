@@ -5,6 +5,7 @@ import { printReceipt as printReceiptA6 } from "../lib/receipt";
 import { printCreditNoteTicket } from "../lib/tickets";
 import PaymentModal from "../components/PaymentModal";
 import SecondCopyDialog from "../components/SecondCopyDialog";
+import QuotaBall from "../components/QuotaBall";
 import {
   ArrowLeft,
   CurrencyEur,
@@ -707,7 +708,10 @@ export default function ClienteFicha() {
             </div>
             <div className="flex items-center gap-3 mt-1 flex-wrap">
               <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight" data-testid="ficha-client-name">
-                {c.name}
+                <span className="inline-flex items-center gap-2.5">
+                  <QuotaBall client={c} size={13} />
+                  {c.name}
+                </span>
               </h1>
               {canEditAny && (
                 <button

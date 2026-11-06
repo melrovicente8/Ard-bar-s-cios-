@@ -47,6 +47,21 @@ import { openQuarterlyDoc } from "../lib/quarterlyDoc";
 import { openMonthlyDoc } from "../lib/monthlyDoc";
 import { printReceipt as printReceiptA6 } from "../lib/receipt";
 
+/** Saudação consoante a hora do dia (Lisboa). */
+const timeGreeting = () => {
+  const h = new Date().getHours();
+  if (h < 12) return "Bom dia";
+  if (h < 20) return "Boa tarde";
+  return "Boa noite";
+};
+
+/** Mensagem do cabeçalho consoante o estado das quotas. */
+const QUOTA_GREETING = {
+  paid: "🟢 «Parabéns, tudo em dia, quotas regularizadas, és o especial one da ARDN 🏆»",
+  pending: "🟡 «Quotas por regularizar – não te esqueças de regularizar as tuas quotas – Não sejas Marcelo 😜»",
+  debt: "🔴 «Em dívida – O teu pagamento está em fora de jogo! – regulariza já na App ou na tua associação 😭»",
+};
+
 export default function SocioPortal() {
   const { data, logout, refresh } = useSocio();
   const navigate = useNavigate();
@@ -104,6 +119,10 @@ export default function SocioPortal() {
   const [quarterly, setQuarterly] = useState(null);
   const [monthlyDoc, setMonthlyDoc] = useState(null);
   const [canSeeFinance, setCanSeeFinance] = useState(null);
+  // Despesas do trimestre do clube (detalhe ao clicar em Despesas)
+  const [showExpenses, setShowExpenses] = useState(false);
+  const [expenses, setExpenses] = useState(null);
+  const [expensesError, setExpensesError] = useState(null);
   const [myRequests, setMyRequests] = useState([]);
   const [editingReq, setEditingReq] = useState(null);
   const [editItemInfo, setEditItemInfo] = useState({}); // nome/preço de itens do pedido em edição (fallback quando o produto sai da lista)
@@ -284,6 +303,28 @@ export default function SocioPortal() {
     });
     setReqCart(cart);
     setEditItemInfo(info);
+  };
+
+  const openExpenses = async () => {
+    setShowExpenses(true);
+    setExpenses(null);
+    setExpensesError(null);
+    try {
+      const { data } = await api.get("/socio/expenses-quarterly");
+      setExpenses(data);
+    } catch (e) {
+      setExpensesError(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const insistRequest = async (r) => {
+    try {
+      await api.post(`/socio/consumption-requests/${r.id}/insist`);
+      toast.success("Insistência enviada — o staff foi notificado em pop-up");
+      await loadMyRequests();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
   };
 
   const cancelRequest = async (r) => {
@@ -737,7 +778,7 @@ export default function SocioPortal() {
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-3 flex-wrap">
                 <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight" data-testid="socio-name">
-                  Olá, {c.name.split(" ")[0]}!
+                  {timeGreeting()}, {c.name.split(" ")[0]}!
                 </h1>
                 {(() => {
                   const st = c.quota_status?.status || (c.is_member ? "pending" : "none");
@@ -760,6 +801,24 @@ export default function SocioPortal() {
                   </span>
                 )}
               </div>
+              {(() => {
+                const st = c.quota_status?.status || (c.is_member ? "pending" : "none");
+                const msg = QUOTA_GREETING[st];
+                if (!msg) return null;
+                const tone = st === "paid"
+                  ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-200"
+                  : st === "debt"
+                  ? "bg-rose-500/10 border-rose-500/30 text-rose-200"
+                  : "bg-amber-500/10 border-amber-500/30 text-amber-200";
+                return (
+                  <div
+                    data-testid="socio-dynamic-greeting"
+                    className={`mt-2 rounded-lg border px-3.5 py-2 text-sm font-medium ${tone}`}
+                  >
+                    {msg}
+                  </div>
+                );
+              })()}
               <div className="flex items-center gap-3 mt-1 flex-wrap">
                 <p className="text-sm text-slate-400">
                   Conta corrente do bar · {club.name || "ARD Nespereira"}
@@ -939,7 +998,15 @@ export default function SocioPortal() {
               <ChartLine size={12} /> Movimento do clube · {new Date().toLocaleDateString("pt-PT", { month: "long", year: "numeric" })}
             </span>
             <span>Receitas <span className="text-slate-300 font-medium">{euro(monthly.income.total)}</span></span>
-            <span>Despesas <span className="text-slate-300 font-medium">{euro(monthly.expenses.total)}</span></span>
+            <button
+              data-testid="socio-expenses-btn"
+              onClick={openExpenses}
+              title="Ver as despesas do clube neste trimestre"
+              className="flex items-center gap-1 text-slate-400 hover:text-amber-300 underline decoration-dotted underline-offset-2"
+            >
+              Despesas <span className="text-slate-300 font-medium">{euro(monthly.expenses.total)}</span>
+              <span className="text-amber-400/80">trimestre ›</span>
+            </button>
             <span>Saldo <span className="text-slate-300 font-medium">{euro(monthly.balance)}</span></span>
             {quarterly && (
               <span title="Saldo final financeiro — dinheiro contabilístico em caixa e banco">
@@ -1147,6 +1214,15 @@ export default function SocioPortal() {
                           className="text-[10px] px-2 py-1 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1"
                         >
                           <PencilSimple size={11} weight="bold" /> Editar
+                        </button>
+                        <button
+                          data-testid={`socio-myreq-insist-${r.id}`}
+                          onClick={() => insistRequest(r)}
+                          disabled={Date.now() - new Date(r.created_at).getTime() < 5 * 60 * 1000}
+                          title="Insistir: avisa o staff em pop-up que ainda estás à espera (disponível 5 min após o pedido)"
+                          className="text-[10px] px-2 py-1 rounded bg-sky-500/10 text-sky-300 border border-sky-500/30 hover:bg-sky-500/20 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1"
+                        >
+                          <Lightning size={11} weight="fill" /> Insistir{r.insist_count ? ` (${r.insist_count})` : ""}
                         </button>
                         <button
                           data-testid={`socio-myreq-cancel-${r.id}`}
@@ -1818,6 +1894,61 @@ export default function SocioPortal() {
               <button type="button" onClick={() => { setShowRequest(false); setEditingReq(null); setEditItemInfo({}); }} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700">Cancelar</button>
               <button data-testid="req-submit" onClick={submitRequest} disabled={!Object.keys(reqCart).length} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold">{editingReq ? "Guardar alterações" : "Enviar pedido"}</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Despesas do trimestre do clube */}
+      {showExpenses && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+          onClick={() => setShowExpenses(false)}
+          data-testid="socio-expenses-modal"
+        >
+          <div
+            className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <ChartLine size={20} weight="duotone" className="text-amber-400" />
+              <h3 className="font-outfit text-xl font-semibold flex-1">
+                Despesas do clube · {expenses?.quarter || "trimestre"}
+              </h3>
+              <button onClick={() => setShowExpenses(false)} className="p-1.5 rounded bg-slate-800 hover:bg-slate-700" data-testid="socio-expenses-close">
+                <X size={14} weight="bold" />
+              </button>
+            </div>
+            {expenses ? (
+              <>
+                <div className="flex items-center justify-between bg-rose-500/5 border border-rose-500/20 rounded-lg px-4 py-3 my-3">
+                  <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-rose-300/80">Total de despesas</span>
+                  <span className="font-outfit text-2xl font-bold text-rose-300">{euro(expenses.total)}</span>
+                </div>
+                <div className="text-[11px] text-slate-500 mb-3">
+                  {expenses.period?.from} → {expenses.period?.to} · {expenses.count} despesa(s)
+                </div>
+                {expenses.items.length === 0 ? (
+                  <div className="text-sm text-slate-500 text-center py-8">Sem despesas registadas neste trimestre.</div>
+                ) : (
+                  <ul className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+                    {expenses.items.map((it, i) => (
+                      <li key={i} className="flex items-start gap-2 text-xs border-b border-slate-800/60 pb-1.5">
+                        <span className="text-slate-500 w-16 shrink-0">{it.date ? new Date(it.date).toLocaleDateString("pt-PT") : "—"}</span>
+                        <span className="flex-1 min-w-0">
+                          <span className="text-slate-200">{it.description}</span>
+                          <span className="block text-[10px] text-slate-500">{it.kind} · {it.supplier}</span>
+                        </span>
+                        <strong className="text-rose-300 shrink-0">{euro(it.amount)}</strong>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            ) : expensesError ? (
+              <div className="text-sm text-rose-300 py-6 text-center">{expensesError}</div>
+            ) : (
+              <div className="text-sm text-slate-500 py-8 text-center">A carregar despesas...</div>
+            )}
           </div>
         </div>
       )}
