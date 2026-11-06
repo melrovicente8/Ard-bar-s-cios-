@@ -122,7 +122,7 @@ export default function Dashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [pendingApps, setPendingApps] = useState(0);
-  // Valor de stock (custo/margem) fica oculto até ser revelado
+  // Valor de stock (venda/custo) fica oculto até ser revelado
   const [stockRevealed, setStockRevealed] = useState(false);
   const cashBank = data ? (data.cash_bank || null) : null;
   const greeting = useGreeting(user?.name || user?.email || "");
@@ -261,10 +261,6 @@ export default function Dashboard() {
               <div className="flex items-baseline justify-between gap-2">
                 <span className="text-[11px] text-slate-400">Preço de custo</span>
                 <span className={`font-outfit text-base font-bold ${stockRevealed ? "text-slate-300" : "text-slate-500"}`} data-testid="kpi-stock-value-cost">{stockRevealed ? euro(data.total_stock_cost || 0) : MASK}</span>
-              </div>
-              <div className="flex items-baseline justify-between gap-2 pt-1 border-t border-slate-800/60">
-                <span className="text-[10px] uppercase tracking-wider text-slate-500">Margem de lucro</span>
-                <span className="text-sm font-bold text-emerald-400" data-testid="kpi-stock-margin">{stockRevealed ? `${data.stock_margin_pct ?? 0}%` : MASK}</span>
               </div>
             </div>
           </Link>
