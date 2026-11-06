@@ -62,6 +62,7 @@ export function openFinanceDoc(d, fromLabel, toLabel, subtitle) {
   .totals .in{border-color:#15803d;background:#f0fdf4}.totals .in .val{color:#15803d}
   .totals .out{border-color:#b91c1c;background:#fef2f2}.totals .out .val{color:#b91c1c}
   .totals .bal{border-color:#0f172a;background:#f8fafc}.totals .bal .val{color:#0f172a}
+  .totals .total{border-color:#b45309;background:#fffbeb}.totals .total .val{color:#b45309}
   .balance{margin-top:22px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:14px;display:flex;justify-content:space-between;align-items:center}
   .balance .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.2em;color:#666}
   .balance .val{font-size:24px;font-weight:800}
@@ -86,6 +87,7 @@ export function openFinanceDoc(d, fromLabel, toLabel, subtitle) {
     <div class="box in"><div class="lbl">TOTAL RECEITAS</div><div class="val">${euro(d.income.total)}</div></div>
     <div class="box out"><div class="lbl">TOTAL DESPESAS</div><div class="val">${euro(d.expenses.total)}</div></div>
     <div class="box bal"><div class="lbl">SALDO DO PERÍODO</div><div class="val ${d.balance >= 0 ? "pos" : "neg"}">${d.balance >= 0 ? "+" : ""}${euro(d.balance)}</div></div>
+    ${d.accounts ? `<div class="box total"><div class="lbl">TOTAL EM CAIXA + BANCO</div><div class="val">${euro(d.accounts.total)}</div><div style="font-size:10px;color:#666;margin-top:4px">Caixa ${euro(d.accounts.cash)} · Banco ${euro(d.accounts.bank)}</div></div>` : ""}
   </div>
 
   <!-- Página 2: detalhes -->

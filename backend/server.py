@@ -5010,7 +5010,16 @@ async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> 
 async def report_finance(date_from: Optional[str] = None, date_to: Optional[str] = None, user: dict = Depends(get_current_user)):
     if user.get("role") == "funcionario":
         date_from, date_to = _clamp_month_range(date_from, date_to)
-    return await _finance_summary(date_from, date_to)
+    data = await _finance_summary(date_from, date_to)
+    # Saldo de tesouraria à data de hoje: gaveta (numerário) + banco (depósitos e MBWay).
+    # O saldo do período é receitas − despesas; este é o dinheiro que existe de facto.
+    balances = await _account_balances()
+    data["accounts"] = {
+        "cash": balances["cash_balance"],
+        "bank": balances["bank_balance"],
+        "total": balances["total_balance"],
+    }
+    return data
 
 @api_router.get("/socio/finance")
 async def socio_finance_summary(date_from: Optional[str] = None, date_to: Optional[str] = None, socio: dict = Depends(get_current_socio)):

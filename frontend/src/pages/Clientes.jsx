@@ -10,6 +10,7 @@ import QuotaBulkLaunchModal from "../components/QuotaBulkLaunchModal";
 import QuotaBall from "../components/QuotaBall";
 import AdesaoApprovals from "../components/AdesaoApprovals";
 import AdesaoForm from "../components/AdesaoForm";
+import Rankings from "./Rankings";
 
 export default function Clientes() {
   const { user } = useAuth();
@@ -27,9 +28,10 @@ export default function Clientes() {
   const [honoraryEnabled, setHonoraryEnabled] = useState(false);
   // A aba "Adesão de sócios" vive dentro de Clientes e sócios
   const [searchParams, setSearchParams] = useSearchParams();
-  const tab = searchParams.get("tab") === "adesao" ? "adesao" : "lista";
+  const tabParam = searchParams.get("tab");
+  const tab = tabParam === "adesao" || tabParam === "rankings" ? tabParam : "lista";
   const setTab = (value) =>
-    setSearchParams(value === "adesao" ? { tab: "adesao" } : {}, { replace: true });
+    setSearchParams(value === "lista" ? {} : { tab: value }, { replace: true });
   const [form, setForm] = useState({ name: "", contact: "", email: "", note: "", member_number: "", is_member: true, morada: "", pin: "" });
 
   // Ativação do estatuto de Sócio Honorário na app — desativada por defeito (só admin liga)
@@ -230,6 +232,7 @@ export default function Clientes() {
       <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900/60 p-1 mb-6" data-testid="clientes-tabs">
         {[
           { v: "lista", label: "Clientes e sócios" },
+          { v: "rankings", label: "Tabela de Feitos" },
           { v: "adesao", label: "Adesão de sócios" },
         ].map((opt) => (
           <button
@@ -250,6 +253,8 @@ export default function Clientes() {
           <AdesaoApprovals />
           <AdesaoForm embedded />
         </div>
+      ) : tab === "rankings" ? (
+        <Rankings embedded />
       ) : (
       <>
       {/* Estatísticas de sócios e cotas (da antiga aba Sócios) */}

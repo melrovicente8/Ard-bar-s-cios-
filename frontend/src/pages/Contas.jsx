@@ -203,6 +203,17 @@ export default function Contas() {
                 {data.balance >= 0 ? "+" : ""}{euro(data.balance)}
               </div>
               <div className="text-[11px] text-slate-500 mt-2">{data.counts.sales + data.counts.quotas} entradas · {data.counts.orders + data.counts.expenses} saídas</div>
+              {data.accounts && (
+                <div className="mt-3 pt-3 border-t border-amber-500/25" data-testid="contas-accounts-total">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">Total em caixa + banco</span>
+                    <span data-testid="contas-accounts-total-value" className="font-outfit text-lg font-bold text-amber-200">{euro(data.accounts.total)}</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1">
+                    Caixa (numerário) {euro(data.accounts.cash)} · Banco (depósitos + MBWay) {euro(data.accounts.bank)}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

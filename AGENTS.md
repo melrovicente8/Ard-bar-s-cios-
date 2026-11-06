@@ -46,6 +46,7 @@ docker compose -f docker-compose.base44.yml up -d
 ## Menu: páginas agrupadas em abas
 - **MBWay e Pedidos** (`nav-mbway`, `also: ["/pedidos","/mensagens"]`) → `src/pages/MbwayPedidos.jsx` com os separadores MBWay · Pedidos de sócio · Mensagens (`mbway-pedidos-tabs`). As rotas `/mbway`, `/pedidos` e `/mensagens` continuam a existir e abrem a aba certa (os links do `HeaderAlerts` mantêm o `?filter=`).
 - **Transações** (`nav-transacoes`, `also: ["/historico","/ofertas"]`) → `src/pages/TransacoesHub.jsx` com Transações · Histórico · Ofertas da casa (`transacoes-tabs`); a aba Histórico fica escondida para `funcionario` (rota continua `StaffOnly`). Os itens `nav-pedidos`, `nav-mensagens`, `nav-historico` e `nav-ofertas` saíram do menu; o `NavLink` usa `item.also` para ficar ativo nas rotas irmãs.
+- **Clientes e Sócios** (`nav-clients`, `also: ["/rankings"]`) → `src/pages/Clientes.jsx` com os separadores Clientes e sócios · Tabela de Feitos · Adesão de sócios (`clientes-tabs`, estado no `?tab=`). A antiga página/rota `/rankings` (`nav-rankings`) foi absorvida: `/rankings` redireciona para `/clientes?tab=rankings` e a página `Rankings.jsx` é renderizada em modo `embedded` (sem padding próprio).
 
 
 ## Secrets
@@ -113,6 +114,7 @@ docker compose -f docker-compose.base44.yml up -d
 - Pagamentos com `item_targets` mostram as linhas "N× pago · N× OFERTA DA CASA" com o valor da linha.
 - **Pagamento de uma linha de Rodada Mista**: `_allocate_payment_coverages()` devolve, para pagamentos com `item_targets`, a venda com `rounds` (`group_rounds`) e `items` — sem isso o recibo saía só com a linha-resumo "Rodada Mista (Partilha 1/1)" e sem os produtos.
 - **Relatórios por período**: em `/contas` os presets incluem "Trimestre" (`contas-preset-quarter`) e há "PDF mensal" / "PDF trimestral" (`contas-print-monthly` / `contas-print-quarterly`), todos sobre `GET /api/reports/finance`.
+- **Saldo do período vs. dinheiro em tesouraria**: `GET /api/reports/finance` acrescenta `accounts` (`cash`, `bank`, `total`, vindos de `_account_balances()`); o cartão "Saldo" em `/contas` mostra, por baixo do saldo do período, o **Total em caixa + banco** (`contas-accounts-total`) com a decomposição numerário/banco, e o PDF imprime o mesmo total numa quarta caixa.
 
 ## Adesão de novos sócios
 - Formulário público em `/aderir` (`Adesao.jsx`) → `POST /api/public/membership-application`; o pedido fica pendente para a direção aprovar em `/pedidos` (`ApprovalsPanel` → `/api/membership-applications/{id}/accept|reject`) ou no painel da própria página (`AdesaoApprovals`).

@@ -5,7 +5,7 @@ import RankingsBoard from "../components/RankingsBoard";
 import { toast } from "sonner";
 
 /** Tabela de Feitos (consulta do staff) — rankings Top 5 do mês. */
-export default function Rankings() {
+export default function Rankings({ embedded = false }) {
   const { user } = useAuth();
   const canManage = user?.role === "admin";
   const [data, setData] = useState(null);
@@ -38,7 +38,7 @@ export default function Rankings() {
   };
 
   return (
-    <div className="p-6 md:p-8 animate-in" data-testid="rankings-page">
+    <div className={embedded ? "animate-in" : "p-6 md:p-8 animate-in"} data-testid="rankings-page">
       {data ? (
         <RankingsBoard data={data} canManage={canManage} onToggleEnabled={toggle} saving={saving} />
       ) : (

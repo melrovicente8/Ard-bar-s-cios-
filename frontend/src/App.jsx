@@ -23,7 +23,6 @@ import Transacao from "./pages/Transacao";
 import TransacoesHub from "./pages/TransacoesHub";
 import Bilhetes from "./pages/Bilhetes";
 import Documentacao from "./pages/Documentacao";
-import Rankings from "./pages/Rankings";
 import Parceiros from "./pages/Parceiros";
 import Arquivo from "./pages/Arquivo";
 import SocioLogin from "./pages/SocioLogin";
@@ -134,7 +133,7 @@ function App() {
                 <Route path="transacoes" element={<AllStaffOnly><TransacoesHub /></AllStaffOnly>} />
                 <Route path="ofertas" element={<AllStaffOnly><TransacoesHub /></AllStaffOnly>} />
                 <Route path="bilhetes" element={<Bilhetes />} />
-                <Route path="rankings" element={<Rankings />} />
+                <Route path="rankings" element={<Navigate to="/clientes?tab=rankings" replace />} />
                 <Route path="parceiros" element={<AllStaffOnly><Parceiros /></AllStaffOnly>} />
                 <Route path="arquivo" element={<AllStaffOnly><Arquivo /></AllStaffOnly>} />
                 <Route path="documentacao" element={<AdminOnly><Documentacao /></AdminOnly>} />
