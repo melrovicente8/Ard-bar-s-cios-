@@ -1,10 +1,17 @@
 import React, { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
-import { printReceipt } from "../lib/receipt";
+import { printTransactionTicket } from "../lib/tickets";
 import { ArrowLeft, Printer, Receipt, ShoppingBag, User, ClockCounterClockwise, ShieldCheck } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
+
+const Detail = ({ label, value, className = "text-slate-200" }) => (
+  <div className="flex items-center justify-between gap-3">
+    <span className="text-slate-500 text-xs">{label}</span>
+    <span className={`text-sm ${className}`}>{value}</span>
+  </div>
+);
 
 export default function Transacao() {
   const { tx_number } = useParams();
@@ -58,10 +65,11 @@ export default function Transacao() {
 
   const print2 = () => {
     if (!tx) return;
-    const res = printReceipt(tx, {
+    const res = printTransactionTicket(tx, {
       client,
+      clientName: tx.client_name,
       quotaStatus: client?.quota_status,
-      coveredSales: tx.sale_tx_numbers || (tx.sale_ids ? [] : []),
+      coveredSales: tx.sale_tx_numbers || [],
       coveredSalesDocs: tx.covered_docs || [],
       secondCopy: true,
     });
@@ -78,6 +86,22 @@ export default function Transacao() {
   if (!tx) return null;
 
   const isSale = !!tx.items;
+  const KIND_TITLE = {
+    sale: "Venda",
+    payment: tx.source === "refund" ? "Nota de crédito (devolução)" : "Recibo de Pagamento",
+    expense: "Despesa",
+    order: "Encomenda",
+    cash_withdrawal: "Movimento de caixa / banco",
+    cash_close: "Fecho de caixa",
+  };
+  const kindTitle = KIND_TITLE[tx._kind] || "Transação";
+  const totalShown = isSale
+    ? tx.total
+    : tx._kind === "payment"
+    ? tx.total_credited || tx.amount || 0
+    : tx._kind === "cash_close"
+    ? tx.cash_counted || 0
+    : tx.amount || tx.total || 0;
   return (
     <div className="p-6 md:p-10 animate-in" data-testid="transacao-page">
       <Link to="/transacoes" className="inline-flex items-center gap-2 text-sm text-slate-400 hover:text-amber-400 mb-6"><ArrowLeft size={16} /> Voltar</Link>
@@ -85,11 +109,11 @@ export default function Transacao() {
         <div>
           <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">Transação</div>
           <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">Nº {tx.tx_number}</h1>
-          <div className="text-sm text-slate-400 mt-1">{isSale ? "Venda" : "Pagamento"} · {new Date(tx.created_at).toLocaleString("pt-PT")} · por <span className="text-amber-300">{tx.user_email || "—"}</span></div>
+          <div className="text-sm text-slate-400 mt-1">{kindTitle} · {new Date(tx.created_at).toLocaleString("pt-PT")} · por <span className="text-amber-300">{tx.user_email || "—"}</span></div>
         </div>
         <div className="flex gap-2">
           <button onClick={print2} data-testid="tx-print" className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold flex items-center gap-2 text-sm">
-            <Printer size={14} weight="bold" /> Imprimir 2ª via
+            <Printer size={14} weight="bold" /> {isSale || tx._kind === "payment" ? "Imprimir 2ª via" : "Imprimir ticket"}
           </button>
           {tx.client_id && (
             <Link to={`/clientes/${tx.client_id}`} className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm flex items-center gap-2">
@@ -102,7 +126,7 @@ export default function Transacao() {
       <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-6 max-w-2xl">
         <div className="flex items-center gap-2 mb-4">
           {isSale ? <ShoppingBag size={18} weight="duotone" className="text-amber-400" /> : <Receipt size={18} weight="duotone" className="text-emerald-400" />}
-          <h2 className="font-outfit text-xl font-semibold">{isSale ? "Venda" : "Recibo de Pagamento"}</h2>
+          <h2 className="font-outfit text-xl font-semibold">{kindTitle}</h2>
         </div>
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
@@ -111,7 +135,7 @@ export default function Transacao() {
           </div>
           <div>
             <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total</div>
-            <div className="text-amber-300 font-bold text-lg">{euro(isSale ? tx.total : (tx.total_credited || tx.amount || 0))}</div>
+            <div className="text-amber-300 font-bold text-lg">{euro(totalShown)}</div>
           </div>
           {!isSale && tx.tendered !== undefined && (
             <div>
@@ -165,6 +189,77 @@ export default function Transacao() {
                 </li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {isSale && (tx.payment_offer_items || []).length > 0 && (
+          <div className="mt-5" data-testid="tx-sale-offer">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-fuchsia-300 mb-2">
+              Oferta da casa · transação #{tx.payment_tx_number}
+            </div>
+            <ul className="space-y-1.5 text-sm">
+              {(tx.payment_offer_items || []).map((o, i) => (
+                <li key={i} className="flex items-center justify-between border-b border-slate-800/60 pb-1.5">
+                  <span><span className="text-slate-500">{o.quantity}×</span> {o.product_name}</span>
+                  <span className="text-fuchsia-300">−{euro(o.amount)}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="flex items-center justify-between mt-2 text-sm">
+              <span className="text-slate-400">A pagar pelo cliente</span>
+              <span className="font-outfit text-lg font-bold text-amber-300">{euro(Math.max((tx.total || 0) - (tx.payment_offer_amount || 0), 0))}</span>
+            </div>
+            {tx.payment_offer_by && <div className="text-[11px] text-slate-500 mt-1">Oferecido por {tx.payment_offer_by}</div>}
+          </div>
+        )}
+
+        {tx._kind === "expense" && (tx.house_items || []).length > 0 && (
+          <div className="mt-5" data-testid="tx-house-offer-detail">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-fuchsia-300 mb-2">O que foi oferecido</div>
+            <ul className="space-y-1.5 text-sm">
+              {(tx.house_items || []).map((o, i) => (
+                <li key={i} className="flex items-center justify-between border-b border-slate-800/60 pb-1.5">
+                  <span><span className="text-slate-500">{o.qty}×</span> {o.product_name} <span className="text-slate-500 text-xs">({euro(o.unit_price || 0)}/un)</span></span>
+                  <span className="text-slate-300">{euro(o.amount)}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="text-[11px] text-slate-500 mt-1">Oferecido por {tx.user_email || "—"}</div>
+          </div>
+        )}
+
+        {tx._kind === "cash_withdrawal" && (
+          <div className="mt-5 space-y-1 text-sm" data-testid="tx-cash-movement-detail">
+            <Detail label="Tipo" value={tx.kind === "bank_deposit" ? "Depósito no banco" : tx.kind === "credit_refund" ? "Devolução de crédito" : tx.kind} />
+            {tx.client_name && <Detail label="Cliente" value={tx.client_name} />}
+            {tx.supplier_name && <Detail label="Fornecedor" value={tx.supplier_name} />}
+            {tx.deposit_note && <Detail label="Nota de depósito" value={tx.deposit_note} />}
+            {tx.deposit_date && <Detail label="Data do depósito" value={new Date(tx.deposit_date).toLocaleDateString("pt-PT")} />}
+            {tx.payment_ref && <Detail label="Referência" value={tx.payment_ref} />}
+            {tx.note && <Detail label="Descrição" value={tx.note} />}
+            {tx.linked_payment?.credit_origins?.length > 0 && (
+              <div className="pt-2">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">Crédito devolvido · origem</div>
+                {tx.linked_payment.credit_origins.map((o, i) => (
+                  <div key={i} className="flex items-center justify-between text-xs text-slate-400">
+                    <span>#{o.tx_number} · {new Date(o.date).toLocaleDateString("pt-PT")}</span>
+                    <span>{euro(o.amount)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {tx._kind === "cash_close" && (
+          <div className="mt-5 space-y-1 text-sm" data-testid="tx-cash-close-detail">
+            <Detail label="Contado em caixa" value={euro(tx.cash_counted || 0)} />
+            <Detail label="Esperado" value={euro(tx.expected_cash || 0)} />
+            <Detail
+              label="Diferença"
+              value={`${(tx.difference || 0) >= 0 ? "+" : ""}${euro(tx.difference || 0)}`}
+              className={Math.abs(tx.difference || 0) >= 0.01 ? "text-rose-300" : "text-emerald-300"}
+            />
           </div>
         )}
 

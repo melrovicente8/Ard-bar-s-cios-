@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import EditableText from "../components/EditableText";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
-import { ShoppingCart, Check, X as XIcon, PencilSimple, Package, PaperPlaneTilt } from "@phosphor-icons/react";
+import { ShoppingCart, Check, X as XIcon, PencilSimple, Package, PaperPlaneTilt, ArrowUUpLeft } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import GiftsStaff from "../components/GiftsStaff";
 import ApprovalsPanel from "../components/ApprovalsPanel";
@@ -12,6 +12,7 @@ const STATUS_CLASS = {
   approved: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
   delivered: "bg-sky-500/15 text-sky-300 border-sky-500/30",
   rejected: "bg-rose-500/15 text-rose-300 border-rose-500/30",
+  cancelled: "bg-slate-500/15 text-slate-300 border-slate-500/30",
 };
 
 const STATUS_LABEL = {
@@ -19,10 +20,13 @@ const STATUS_LABEL = {
   approved: "Aprovado · pronto a levantar",
   delivered: "Entregue",
   rejected: "Rejeitado",
+  cancelled: "Anulado",
 };
 
 export default function Pedidos() {
-  const [filter, setFilter] = useState("pending");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const focusId = searchParams.get("focus") || "";
+  const [filter, setFilter] = useState(searchParams.get("filter") || "pending");
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);      // pedido em edição
@@ -45,6 +49,38 @@ export default function Pedidos() {
   };
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [filter]);
+
+  // Pedido em destaque (vindo da notificação do POS) — centra o cartão no ecrã
+  useEffect(() => {
+    if (!focusId || loading) return;
+    const el = document.getElementById(`pedido-card-${focusId}`);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [focusId, loading, requests]);
+
+  const changeFilter = (v) => {
+    setFilter(v);
+    const next = new URLSearchParams(searchParams);
+    if (v) next.set("filter", v);
+    else next.delete("filter");
+    next.delete("focus");
+    setSearchParams(next, { replace: true });
+  };
+
+  const cancelRequest = async (r) => {
+    if (
+      !window.confirm(
+        `Anular o pedido de ${r.client_name} (${euro(r.total)})? O valor é retirado da conta corrente e o stock é reposto.`
+      )
+    )
+      return;
+    try {
+      await api.post(`/consumption-requests/${r.id}/cancel`, { reason: "Anulado no balcão" });
+      toast.success("Pedido anulado · valor retirado da conta e stock reposto");
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
 
   const approve = async (r) => {
     if (!window.confirm(`Aprovar este pedido (${euro(r.total)}) de ${r.client_name}? Será criada uma venda e descontado o stock.`)) return;
@@ -140,12 +176,13 @@ export default function Pedidos() {
           { v: "approved", l: "Prontos a levantar" },
           { v: "delivered", l: "Entregues" },
           { v: "rejected", l: "Rejeitados" },
+          { v: "cancelled", l: "Anulados" },
           { v: "", l: "Todos" },
         ].map((opt) => (
           <button
             key={opt.v}
             data-testid={`pedidos-filter-${opt.v || "all"}`}
-            onClick={() => setFilter(opt.v)}
+            onClick={() => changeFilter(opt.v)}
             className={`px-3 py-1.5 rounded-md text-xs font-bold uppercase tracking-wider ${filter === opt.v ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"}`}
           >{opt.l}</button>
         ))}
@@ -161,7 +198,14 @@ export default function Pedidos() {
       ) : (
         <div className="space-y-3">
           {requests.map((r) => (
-            <div key={r.id} data-testid={`pedido-${r.id}`} className="bg-slate-900/40 border border-slate-800 rounded-xl p-5">
+            <div
+              key={r.id}
+              id={`pedido-card-${r.id}`}
+              data-testid={`pedido-${r.id}`}
+              className={`bg-slate-900/40 border rounded-xl p-5 ${
+                focusId === r.id ? "border-amber-400 ring-2 ring-amber-400/40" : "border-slate-800"
+              }`}
+            >
               <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
                 <div>
                   <Link to={`/clientes/${r.client_id}`} className="font-outfit text-lg font-semibold text-slate-100 hover:text-amber-400">
@@ -235,12 +279,31 @@ export default function Pedidos() {
                     >
                       <Package size={16} weight="bold" /> Marcar como entregue · pronto para pagamento
                     </button>
+                    <button
+                      data-testid={`cancel-${r.id}`}
+                      onClick={() => cancelRequest(r)}
+                      title="Anula o pedido, anula o valor na conta do sócio e repõe o stock"
+                      className="bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 border border-rose-500/30 font-bold rounded-lg px-4 py-2.5 flex items-center justify-center gap-2"
+                    >
+                      <ArrowUUpLeft size={16} weight="bold" /> Anular pedido
+                    </button>
                   </div>
                 </div>
               ) : (
                 <div className="text-[11px] text-slate-500">
                   {r.status === "delivered" ? (
-                    <>Entregue por {r.delivered_by} em {new Date(r.delivered_at).toLocaleString("pt-PT")} · valor na conta corrente, pronto para pagamento</>
+                    <>
+                      Entregue por {r.delivered_by} em {new Date(r.delivered_at).toLocaleString("pt-PT")} · valor na conta corrente, pronto para pagamento
+                      <button
+                        data-testid={`cancel-delivered-${r.id}`}
+                        onClick={() => cancelRequest(r)}
+                        className="ml-2 text-rose-300 hover:text-rose-200 underline"
+                      >
+                        Anular pedido
+                      </button>
+                    </>
+                  ) : r.status === "cancelled" ? (
+                    <>Anulado por {r.cancelled_by} em {new Date(r.cancelled_at).toLocaleString("pt-PT")}{r.cancel_reason ? ` · ${r.cancel_reason}` : ""}</>
                   ) : (
                     <>Decidido por {r.decided_by} em {new Date(r.decided_at).toLocaleString("pt-PT")}</>
                   )}

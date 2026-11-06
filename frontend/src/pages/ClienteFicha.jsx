@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { printReceipt as printReceiptA6 } from "../lib/receipt";
+import { printCreditNoteTicket } from "../lib/tickets";
 import PaymentModal from "../components/PaymentModal";
 import {
   ArrowLeft,
@@ -69,6 +70,7 @@ export default function ClienteFicha() {
     is_minor: false,
     family_head_client_id: "",
     consumption_limit: "",
+    orders_unblocked: false,
   });
   const [titulares, setTitulares] = useState([]);
   // Sell modal state
@@ -524,6 +526,7 @@ export default function ClienteFicha() {
       is_minor: !!c.is_minor,
       family_head_client_id: c.family_head_client_id || "",
       consumption_limit: c.consumption_limit != null ? String(c.consumption_limit) : "",
+      orders_unblocked: !!c.orders_unblocked,
     });
     setShowEdit(true);
     // Titulares para escolher a tutela (só admin/tesoureiro)
@@ -546,6 +549,7 @@ export default function ClienteFicha() {
       body.is_member = editForm.is_member;
       if (editForm.pin) body.pin = editForm.pin;
       body.direction_role = editForm.direction_role || ""; // "" limpa o cargo no backend
+      body.orders_unblocked = !!editForm.orders_unblocked;
       // Tutela de menor: criar/alterar (" " vazio = sem tutela); sócio titular definido no backend
       if (user?.role === "admin" || user?.role === "tesoureiro") {
         body.is_minor = editForm.is_minor;
@@ -583,6 +587,8 @@ export default function ClienteFicha() {
     try {
       const { data: pay } = await api.post(`/clients/${id}/refund-credit`);
       toast.success(`Devolvidos ${euro(pay.amount)} em numerário (tx #${pay.tx_number})`);
+      // Nota de crédito para impressão, com origem e itens do valor devolvido
+      if (pay?.tx_number) printCreditNoteTicket(pay, { clientName: c.name });
       await load();
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
@@ -1464,6 +1470,21 @@ export default function ClienteFicha() {
                       <span className="text-xs font-medium text-slate-200">Pagamento de Quotas</span>
                     </label>
                   </div>
+                  <label className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-amber-500/40">
+                    <input
+                      data-testid="edit-orders-unblocked-toggle"
+                      type="checkbox"
+                      checked={editForm.orders_unblocked}
+                      onChange={(e) => setEditForm({ ...editForm, orders_unblocked: e.target.checked })}
+                      className="w-4 h-4 accent-amber-500"
+                    />
+                    <span className="text-xs font-medium text-slate-200">
+                      Desbloquear pedidos na app do sócio
+                      <span className="block text-[10px] text-slate-500 font-normal">
+                        Marcar depois de 3 rejeições para voltar a permitir pedidos
+                      </span>
+                    </span>
+                  </label>
                   <div>
                     <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
                       PIN do portal de sócio (deixar vazio = não alterar)

@@ -118,14 +118,29 @@ function BarStatusButton() {
     }
   }, [bar]);
 
-  const toggle = async (cash_declared) => {
+  const toggle = async (cashValue) => {
     const next = !bar?.open;
     try {
-      const { data } = await api.post("/bar-status", { open: next, cash_declared: next && cash_declared !== undefined ? cash_declared : undefined });
+      const payload = { open: next };
+      if (next) {
+        payload.cash_declared = cashValue;
+      } else if (cashValue !== undefined && cashValue !== "" && !isNaN(Number(cashValue))) {
+        payload.cash_counted = Number(cashValue);
+      }
+      const { data } = await api.post("/bar-status", payload);
       setBar(data);
-      toast.success(
-        `Bar ${data.open ? "ABERTO" : "FECHADO"} · valor em caixa: ${euro(data.cash_in_drawer)} (consta na ata)`
-      );
+      if (data.open) {
+        toast.success(`Bar ABERTO · dinheiro em caixa ao abrir: ${euro(data.opening_cash_declared ?? data.cash_in_drawer)} (consta na ata)`);
+      } else {
+        const diff = Number(data.closing_difference || 0);
+        toast.success(`Bar FECHADO · contado ${euro(data.closing_cash_counted ?? data.cash_in_drawer)} · esperado ${euro(data.closing_cash_expected ?? 0)} (consta na ata)`);
+        if (Math.abs(diff) >= 0.01) {
+          toast.error(
+            `Diferença de caixa: ${euro(Math.abs(diff))} ${diff > 0 ? "a mais" : "a menos"} — registado para verificação`,
+            { duration: 10000 }
+          );
+        }
+      }
       setConfirmOpen(false);
       setCashInput("");
       // Ao fechar o bar: gera o PDF de fecho de contas do dia (Deve / Haver)
@@ -152,8 +167,12 @@ function BarStatusButton() {
       <button
         data-testid="bar-status-btn"
         onClick={() => {
-          // Ao abrir: prefere o valor contado no fecho anterior
-          if (!bar?.open && bar?.last_close?.cash_counted != null) setCashInput(String(bar.last_close.cash_counted));
+          // Ao abrir: prefere o valor contado no fecho anterior. Ao fechar: sugere o esperado.
+          if (!bar?.open) {
+            setCashInput(bar?.last_close?.cash_counted != null ? String(bar.last_close.cash_counted) : "");
+          } else {
+            setCashInput(bar?.cash_in_drawer != null ? String(bar.cash_in_drawer) : "");
+          }
           setConfirmOpen(true);
         }}
         title={`Bar ${isOpen ? "aberto" : "fechado"} — clique no interruptor para ${isOpen ? "fechar" : "abrir"} · valor em caixa ${euro(bar.cash_in_drawer)}`}
@@ -204,8 +223,33 @@ function BarStatusButton() {
                 <span className="text-slate-400">Valor atual em caixa (esperado hoje)</span>
                 <span className="font-outfit text-xl font-bold text-amber-300">{euro(bar.cash_in_drawer)}</span>
               </div>
-              <p className="text-[11px] text-slate-500">Este valor fica registado na ata diária e no audit log.</p>
+              <p className="text-[11px] text-slate-500">
+                {isOpen
+                  ? "Conta o dinheiro na gaveta. O valor contado e a diferença ficam registados na ata e no audit log."
+                  : "Este valor fica registado na ata diária e no audit log."}
+              </p>
             </div>
+            {isOpen && (
+              <div className="mb-4">
+                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Dinheiro contado em caixa ao fechar (€)</label>
+                <input
+                  data-testid="bar-close-cash-input"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  inputMode="decimal"
+                  value={cashInput}
+                  onChange={(e) => setCashInput(e.target.value)}
+                  placeholder="0,00"
+                  className="mt-2 w-full bg-slate-950/80 border border-slate-800 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-rose-500/50 focus:border-rose-500"
+                />
+                {cashInput !== "" && !isNaN(parseFloat(cashInput)) && bar?.cash_in_drawer != null && (
+                  <p className={`text-[11px] mt-1.5 ${Math.abs(parseFloat(cashInput) - bar.cash_in_drawer) >= 0.01 ? "text-rose-300" : "text-emerald-300"}`}>
+                    Diferença face ao esperado: {euro(parseFloat(cashInput) - bar.cash_in_drawer)}
+                  </p>
+                )}
+              </div>
+            )}
             {!isOpen && bar?.last_close && (
               <div data-testid="bar-last-close-note" className="mb-4 bg-amber-500/5 border border-amber-500/30 rounded-lg p-3 text-[11px] text-amber-200">
                 <div className="font-bold uppercase tracking-[0.2em] text-[10px] text-amber-400/80 mb-1">Nota do fecho anterior</div>
@@ -239,8 +283,8 @@ function BarStatusButton() {
               <button onClick={() => setConfirmOpen(false)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700">Cancelar</button>
               <button
                 data-testid="bar-status-confirm"
-                onClick={() => toggle(!isOpen ? parseFloat(cashInput) : undefined)}
-                disabled={!isOpen && (cashInput === "" || isNaN(parseFloat(cashInput)) || parseFloat(cashInput) < 0)}
+                onClick={() => toggle(cashInput === "" ? undefined : parseFloat(cashInput))}
+                disabled={(!isOpen && (cashInput === "" || isNaN(parseFloat(cashInput)) || parseFloat(cashInput) < 0)) || (isOpen && cashInput !== "" && isNaN(parseFloat(cashInput)))}
                 className={`flex-1 px-4 py-2.5 rounded-lg font-bold disabled:opacity-40 ${isOpen ? "bg-rose-500 hover:bg-rose-400 text-slate-950" : "bg-emerald-500 hover:bg-emerald-400 text-slate-950"}`}
               >
                 {isOpen ? "Fechar bar" : "Abrir bar"}

@@ -148,11 +148,14 @@ export default function Stock() {
 
   const submitAdd = async (e) => {
     e.preventDefault();
+    if (form.cost_price === "" || isNaN(parseFloat(form.cost_price))) {
+      return toast.error("Indica o preço de custo (valor de aquisição)");
+    }
     try {
       await api.post("/products", {
         name: form.name,
         price: parseFloat(form.price),
-        cost_price: form.cost_price === "" ? null : parseFloat(form.cost_price),
+        cost_price: parseFloat(form.cost_price),
         quantity: parseInt(form.quantity, 10),
         low_stock_threshold: parseInt(form.low_stock_threshold, 10),
         category: form.category,
@@ -173,6 +176,9 @@ export default function Stock() {
 
   const submitEdit = async (e) => {
     e.preventDefault();
+    if (form.cost_price !== "" && isNaN(parseFloat(form.cost_price))) {
+      return toast.error("Preço de custo inválido");
+    }
     try {
       await api.put(`/products/${showEdit.id}`, {
         name: form.name,
@@ -605,7 +611,7 @@ function ProductForm({ form, setForm, onSubmit, cta, testidPrefix }) {
         />
       </Field>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Preço €" required>
+        <Field label="Preço de venda €" required>
           <input
             data-testid={`${testidPrefix}-price-input`}
             type="number"
@@ -628,19 +634,20 @@ function ProductForm({ form, setForm, onSubmit, cta, testidPrefix }) {
       </div>
       {/* Preço de custo + margem (só direção/tesouraria vê estes campos) */}
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Preço de custo €">
+        <Field label="Preço de custo (aquisição) €" required>
           <input
             data-testid={`${testidPrefix}-cost-input`}
             type="number"
             step="0.01"
             min="0"
+            required
             value={form.cost_price}
             onChange={(e) => setForm({ ...form, cost_price: e.target.value })}
-            placeholder="por omissão: 12% abaixo"
+            placeholder="valor pago na compra"
             className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
           />
         </Field>
-        <Field label="Margem de lucro %">
+        <Field label="Lucro %">
           <input
             data-testid={`${testidPrefix}-margin-input`}
             type="number"
@@ -650,7 +657,7 @@ function ProductForm({ form, setForm, onSubmit, cta, testidPrefix }) {
             value={(() => {
               const price = Number(form.price) || 0;
               const cost = Number(form.cost_price) || 0;
-              return price > 0 && cost > 0 ? ((price - cost) / price * 100).toFixed(1) : "";
+              return price > 0 && cost >= 0 ? ((price - cost) / price * 100).toFixed(1) : "";
             })()}
             onChange={(e) => {
               const m = Number(e.target.value);
@@ -661,6 +668,7 @@ function ProductForm({ form, setForm, onSubmit, cta, testidPrefix }) {
                 setForm({ ...form, price: form.price });
               }
             }}
+            title="Define o preço de venda a partir do custo"
             className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
           />
         </Field>

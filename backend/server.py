@@ -12,7 +12,7 @@ import jwt
 import bcrypt
 import asyncio
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import List, Optional, Union
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, status
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -64,7 +64,7 @@ class RegisterIn(BaseModel):
 class ProductIn(BaseModel):
     name: str
     price: float
-    cost_price: Optional[float] = None  # preço de custo — visível só à direção/tesouraria
+    cost_price: float  # preço de custo (aquisição) — sempre indicado à mão; visível só à direção/tesouraria
     quantity: int = 0
     low_stock_threshold: int = 5
     category: Optional[str] = "Bebida"
@@ -124,10 +124,12 @@ class ClientUpdate(BaseModel):
     credit_limit: Optional[float] = None
     family_head_client_id: Optional[str] = None
     is_minor: Optional[bool] = None
-    consumption_limit: Optional[float] = None
+    # "" = limpar o limite (o formulário envia string vazia quando o campo está vazio)
+    consumption_limit: Optional[Union[float, str]] = None
     direction_role: Optional[str] = None
     direction_history: Optional[List[dict]] = None
     is_walkin: Optional[bool] = None
+    orders_unblocked: Optional[bool] = None  # desbloqueia pedidos na app do sócio (após rejeições)
 
 class OccasionalClientIn(BaseModel):
     label: Optional[str] = None  # nome/alcunha rápida (ex.: "Mesa 2 - casaco preto"); vazio = "Não Cliente #N"
@@ -470,8 +472,8 @@ async def create_product(body: ProductIn, user: dict = Depends(require_role("adm
         "id": pid,
         "name": body.name,
         "price": float(body.price),
-        # Sem custo indicado: 12% abaixo do preço de venda (editável na ficha do produto)
-        "cost_price": round(float(body.cost_price), 2) if body.cost_price is not None else round(float(body.price) * 0.88, 2),
+        # Custo de aquisição — indicado manualmente (a margem resulta do preço de venda)
+        "cost_price": round(float(body.cost_price), 2),
         "quantity": int(body.quantity),
         "low_stock_threshold": int(body.low_stock_threshold),
         "category": body.category or "Bebida",
@@ -690,12 +692,14 @@ async def update_client(client_id: str, body: ClientUpdate, user: dict = Depends
         update["family_head_client_id"] = None
     if update.get("consumption_limit") == "":
         update["consumption_limit"] = None
+    elif isinstance(update.get("consumption_limit"), str):
+        update["consumption_limit"] = float(update["consumption_limit"].replace(",", "."))
     # Tutela: o titular tem de ser um sócio
     if update.get("family_head_client_id"):
         head = await db.clients.find_one({"id": update["family_head_client_id"]}, {"is_member": 1})
         if not head or not head.get("is_member"):
             raise HTTPException(status_code=400, detail="O titular da tutela tem de ser um sócio")
-    sensitive = {"pin", "is_member", "member_number", "is_minor", "family_head_client_id"}
+    sensitive = {"pin", "is_member", "member_number", "is_minor", "family_head_client_id", "orders_unblocked"}
     if any(k in update for k in sensitive) and user.get("role") not in ("admin", "tesoureiro"):
         raise HTTPException(status_code=403, detail="Sem permissão para alterar estes campos")
     existing_doc = await db.clients.find_one({"id": client_id}, {"_id": 0})
@@ -1803,6 +1807,29 @@ async def refund_client_credit(client_id: str, user: dict = Depends(require_role
     credit = round(-float(c.get("balance", 0) or 0), 2)
     if credit <= 0.004:
         raise HTTPException(status_code=400, detail="O cliente não tem crédito a favor para devolver")
+    # Origem do crédito devolvido (transações e itens que o geraram) — detalhe da nota de crédito
+    origins = []
+    items_detail = []
+    credit_pays = await db.payments.find(
+        {"client_id": client_id, "source": {"$ne": "refund"}},
+        {"_id": 0, "id": 1, "tx_number": 1, "created_at": 1, "total_credited": 1, "sale_ids": 1, "keep_change_as_credit": 1},
+    ).sort("created_at", -1).to_list(200)
+    for p in credit_pays[:20]:
+        lines = []
+        if p.get("sale_ids"):
+            covered = await db.sales.find({"id": {"$in": p["sale_ids"]}}, {"_id": 0, "items": 1}).to_list(50)
+            for s in covered:
+                for it in s.get("items", []):
+                    lines.append({"product_name": it.get("product_name"), "quantity": it.get("quantity"), "unit_price": it.get("unit_price"), "subtotal": it.get("subtotal")})
+        origins.append({
+            "tx_number": p.get("tx_number"),
+            "date": p.get("created_at"),
+            "amount": float(p.get("total_credited") or 0),
+            "kept_as_credit": bool(p.get("keep_change_as_credit")),
+        })
+        for ln in lines:
+            if ln not in items_detail:
+                items_detail.append(ln)
     pay = {
         "id": str(uuid.uuid4()),
         "tx_number": await _next_tx_number(),
@@ -1816,6 +1843,8 @@ async def refund_client_credit(client_id: str, user: dict = Depends(require_role
         "points_value": 0.0,
         "note": "Devolução de crédito em numerário",
         "source": "refund",
+        "credit_origins": origins,
+        "credit_items": items_detail,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "user_email": user["email"],
     }
@@ -1839,8 +1868,8 @@ async def refund_client_credit(client_id: str, user: dict = Depends(require_role
     await db.cash_withdrawals.insert_one(wd)
     await db.club_state.update_one({"_id": "bar"}, {"$inc": {"cash_in_drawer": -credit}})
     await _audit(
-        "credit_refund", user["email"], entity="client", entity_id=client_id,
-        summary=f"Devolução de crédito de {credit:.2f} € em numerário a {c['name']}",
+        "credit_refund", user["email"], entity="client", entity_id=client_id, tx_number=pay["tx_number"],
+        summary=f"Devolução de crédito de {credit:.2f} € em numerário a {c['name']} · nota de crédito #{pay['tx_number']} (saída de caixa #{wd['tx_number']})",
     )
     pay.pop("_id", None)
     return pay
@@ -2092,6 +2121,24 @@ async def reject_consumption_request(req_id: str, user: dict = Depends(get_curre
         "request_id": req_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
+    client_doc = await db.clients.find_one({"id": req["client_id"]}, {"_id": 0})
+    if client_doc:
+        blocked, rejected = await _client_orders_blocked(client_doc)
+        if blocked:
+            await db.socio_messages.insert_one({
+                "id": str(uuid.uuid4()),
+                "client_id": req["client_id"],
+                "client_name": req["client_name"],
+                "subject": "🚫 Pedidos bloqueados na app",
+                "message": f"Após {rejected} pedidos rejeitados, os pedidos pela app ficaram bloqueados. Pede à direção para desbloquear na tua ficha.",
+                "from_staff": True,
+                "reply": None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+            await _audit(
+                "socio_orders_blocked", user["email"], entity="client", entity_id=req["client_id"],
+                summary=f"Pedidos na app bloqueados por {rejected} rejeições · {req['client_name']}",
+            )
     return {"ok": True}
 
 class ConsumptionReqEditIn(BaseModel):
@@ -2181,6 +2228,110 @@ async def deliver_consumption_request(req_id: str, user: dict = Depends(get_curr
     await _audit("request_deliver", user["email"], entity="consumption_request", entity_id=req_id,
                  summary=f"Pedido entregue no balcão · {req['client_name']} · {euro_fmt(req['total'])} · pronto para pagamento")
     return {"ok": True}
+
+async def _reverse_request_sale(req: dict, by: str, reason: str):
+    """Estorna a venda gerada por um pedido: repõe stock, anula o valor na conta
+    do sócio e retira os pontos ganhos."""
+    sale_id = req.get("sale_id")
+    if not sale_id:
+        return 0.0
+    sale = await db.sales.find_one({"id": sale_id}, {"_id": 0})
+    if not sale:
+        return 0.0
+    for it in sale.get("items", []):
+        if str(it.get("product_id", "")).startswith("quota-"):
+            continue
+        await db.products.update_one({"id": it["product_id"]}, {"$inc": {"quantity": int(it["quantity"])}})
+    total = float(sale.get("total", 0))
+    pts = int(sale.get("points_earned", 0) or 0)
+    inc = {"balance": -total, "total_spent": -total}
+    if pts:
+        inc["points"] = -pts
+    op: dict = {"$inc": inc}
+    if "points_pending_before" in sale:
+        op["$set"] = {"points_pending_value": float(sale["points_pending_before"])}
+    await db.clients.update_one({"id": sale["client_id"]}, op)
+    if pts:
+        await _log_points(sale["client_id"], -pts, "sale_cancel", sale_id, f"Pedido anulado · {reason}", by)
+    await db.quotas.delete_many({"client_id": sale["client_id"], "sale_id": sale_id, "status": "billed"})
+    await db.sales.delete_one({"id": sale_id})
+    await _sync_temp_client_state(sale["client_id"], by)
+    await _sync_quota_paid_status(sale["client_id"])
+    return total
+
+
+async def _cancel_request(req: dict, by: str, reason: str, *, automatic: bool = False):
+    """Anula um pedido: estorna a venda (stock + conta corrente) e avisa o sócio."""
+    await _reverse_request_sale(req, by, reason)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.consumption_requests.update_one(
+        {"id": req["id"]},
+        {"$set": {
+            "status": "cancelled",
+            "cancelled_at": now_iso,
+            "cancelled_by": by,
+            "cancel_reason": reason,
+            "cancelled_automatically": bool(automatic),
+        }},
+    )
+    await db.socio_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "client_id": req["client_id"],
+        "client_name": req.get("client_name"),
+        "subject": "↩️ Pedido anulado",
+        "message": f"O teu pedido ({euro_fmt(req.get('total') or 0)}) foi anulado. {reason} O valor foi retirado da tua conta corrente e o stock reposto.",
+        "from_staff": True,
+        "reply": None,
+        "request_id": req["id"],
+        "created_at": now_iso,
+    })
+    await _audit("request_cancel", by, entity="consumption_request", entity_id=req["id"],
+                 summary=f"Pedido anulado · {req.get('client_name')} · {euro_fmt(req.get('total') or 0)} · {reason}")
+
+
+class RequestCancelIn(BaseModel):
+    reason: Optional[str] = None
+
+
+@api_router.post("/consumption-requests/{req_id}/cancel")
+async def cancel_consumption_request(req_id: str, body: Optional[RequestCancelIn] = None, user: dict = Depends(get_current_user)):
+    """Anula um pedido (pendente, pronto a levantar ou entregue): estorna a venda,
+    anula o valor na conta do sócio e repõe o stock."""
+    req = await db.consumption_requests.find_one({"id": req_id}, {"_id": 0})
+    if not req:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if req.get("status") not in ("pending", "approved", "delivered"):
+        raise HTTPException(status_code=400, detail="Este pedido já não pode ser anulado")
+    reason = (body.reason if body and body.reason else "").strip() or f"Anulado por {user['email']}"
+    await _cancel_request(req, user["email"], reason)
+    return {"ok": True}
+
+
+# Anulação automática: pedido pronto a levantar, notificação lida e nada recolhido em 10 min
+PICKUP_AUTO_CANCEL_MINUTES = 10
+
+
+async def _auto_cancel_uncollected_requests():
+    limit = (datetime.now(timezone.utc) - timedelta(minutes=PICKUP_AUTO_CANCEL_MINUTES)).isoformat()
+    async for req in db.consumption_requests.find(
+        {"status": "approved", "pickup_read_at": {"$lte": limit}}, {"_id": 0}
+    ):
+        await _cancel_request(
+            req, "sistema",
+            f"O sócio leu o aviso de levantamento e não recolheu o pedido em {PICKUP_AUTO_CANCEL_MINUTES} minutos.",
+            automatic=True,
+        )
+
+
+async def _pickup_autocancel_loop():
+    """Verifica a cada minuto os pedidos prontos a levantar já lidos e não recolhidos."""
+    while True:
+        try:
+            await _auto_cancel_uncollected_requests()
+        except Exception:
+            logging.getLogger(__name__).exception("Falha na anulação automática de pedidos")
+        await asyncio.sleep(60)
+
 
 # ---------- Payments ----------
 @api_router.post("/payments")
@@ -2301,6 +2452,29 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
         "source": "points+cash" if (body.points_used and body.amount) else ("points" if body.points_used else "cash"),
     }
     await db.payments.insert_one(pay)
+    # Regista nas vendas cobertas o que foi oferecido pela casa — o recibo da venda
+    # passa a mostrar a oferta e o valor realmente pago pelo cliente
+    if body.item_targets:
+        for sid in sale_ids_clean:
+            offer_lines = [
+                {
+                    "product_name": t.product_name,
+                    "quantity": int(t.qty_offer),
+                    "unit_price": float(t.unit_price),
+                    "amount": round(float(t.unit_price) * int(t.qty_offer), 2),
+                }
+                for t in body.item_targets if t.sale_id == sid and int(t.qty_offer) > 0
+            ]
+            if offer_lines:
+                await db.sales.update_one(
+                    {"id": sid},
+                    {"$set": {
+                        "payment_offer_items": offer_lines,
+                        "payment_offer_amount": round(sum(o["amount"] for o in offer_lines), 2),
+                        "payment_tx_number": tx_no,
+                        "payment_offer_by": user["email"],
+                    }},
+                )
     credit_total = round(total_paid + offer_amount, 2)
     inc = {"balance": -credit_total}
     if body.points_used:
@@ -3350,11 +3524,22 @@ async def socio_mbway_request(body: MBWayRequestIn, socio: dict = Depends(get_cu
 
 @api_router.get("/transactions/{tx_number}")
 async def get_transaction(tx_number: int, user: dict = Depends(get_current_user)):
-    """Procura uma transação por nº em todas as collections (sale, payment, order, expense)."""
-    for coll, kind in [("sales", "sale"), ("payments", "payment"), ("supplier_orders", "order"), ("supplier_expenses", "expense")]:
+    """Procura uma transação por nº em todas as collections (venda, pagamento, encomenda,
+    despesa, depósito/levantamento de caixa e fecho de caixa)."""
+    for coll, kind in [
+        ("sales", "sale"), ("payments", "payment"), ("supplier_orders", "order"),
+        ("supplier_expenses", "expense"), ("cash_withdrawals", "cash_withdrawal"),
+        ("cash_closes", "cash_close"),
+    ]:
         doc = await db[coll].find_one({"tx_number": int(tx_number)}, {"_id": 0})
         if doc:
             doc["_kind"] = kind
+            if kind == "cash_withdrawal" and doc.get("kind") == "credit_refund":
+                # Devolução de crédito: junta o recibo/nota de crédito que deu origem à saída de caixa
+                doc["linked_payment"] = await db.payments.find_one(
+                    {"client_id": doc.get("client_id"), "source": "refund", "created_at": doc.get("created_at")},
+                    {"_id": 0},
+                )
             if kind == "sale":
                 # Histórico completo de edições (antes / depois) desta transação
                 doc["edits"] = await db.audit_log.find(
@@ -3628,8 +3813,24 @@ async def _check_credit_limit(client_id: str, new_total: float):
         )
 
 
+# Sócio com 3 rejeições deixa de poder pedir pela app até a direção desbloquear na ficha
+REJECTIONS_BLOCK_THRESHOLD = 3
+
+
+async def _client_orders_blocked(client: dict) -> tuple[bool, int]:
+    rejected = await db.consumption_requests.count_documents({"client_id": client["id"], "status": "rejected"})
+    blocked = (rejected >= REJECTIONS_BLOCK_THRESHOLD) and not client.get("orders_unblocked")
+    return blocked, rejected
+
+
 @api_router.post("/socio/consumption-request")
 async def socio_consumption_request(body: SocioConsumptionReqIn, socio: dict = Depends(get_current_socio)):
+    blocked, rejected = await _client_orders_blocked(socio)
+    if blocked:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Os pedidos pela app estão bloqueados ({rejected} rejeições). Fala com a direção para desbloquear na tua ficha.",
+        )
     if not body.items:
         raise HTTPException(status_code=400, detail="Sem itens")
     pids = [it.product_id for it in body.items]
@@ -3847,6 +4048,34 @@ async def _charge_gift_sale(payer: dict, line_items: list, total: float, gift_id
         await _log_points(payer["id"], points_earned, "sale", sale_id, f"Consumo entre sócios · {total:.2f} €", by)
     await _sync_quota_paid_status(payer["id"])
     return sale_id, tx_no
+
+
+async def _ensure_gift_charged(gift: dict, by: str) -> dict:
+    """Garante que o consumo entre sócios está lançado na conta de quem paga.
+    Se quem paga confirmou no portal a venda já existe; caso contrário (o staff
+    serviu/entregou primeiro) o valor é lançado agora — nunca fica sem transação."""
+    if gift.get("sale_id"):
+        return gift
+    payer = await db.clients.find_one({"id": gift["payer_id"]}, {"_id": 0})
+    if not payer:
+        raise HTTPException(status_code=400, detail="Sócio que paga não encontrado")
+    total = float(gift.get("total") or 0)
+    await _check_credit_limit(payer["id"], total)
+    sale_id, tx_no = await _charge_gift_sale(payer, gift["items"], total, gift["id"], by)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.socio_gifts.update_one(
+        {"id": gift["id"]},
+        {"$set": {"sale_id": sale_id, "tx_number": tx_no, "paid_at": now_iso, "charged_on_serve": True}},
+    )
+    await _gift_notify(
+        gift["payer_id"], gift["payer_name"],
+        "💳 Consumo lançado na tua conta",
+        f"O consumo de {euro_fmt(total)} para {gift['recipient_name']} foi servido e ficou lançado na tua conta corrente (transação #{tx_no}).",
+        gift["id"],
+    )
+    await _audit("socio_gift_charged", by, entity="socio_gift", entity_id=gift["id"], tx_number=tx_no,
+                 summary=f"Consumo entre sócios lançado ao servir · {gift['payer_name']} paga {euro_fmt(total)} para {gift['recipient_name']}")
+    return await db.socio_gifts.find_one({"id": gift["id"]}, {"_id": 0})
 
 
 @api_router.get("/socio/members")
@@ -4104,6 +4333,8 @@ async def staff_serve_gift(gift_id: str, user: dict = Depends(get_current_user))
         raise HTTPException(status_code=404, detail="Consumo não encontrado")
     if gift.get("status") not in ("claimed", "pending"):
         raise HTTPException(status_code=400, detail="Só consumos solicitados ou pendentes podem ser servidos")
+    # Se quem paga ainda não confirmou no portal, o valor é lançado agora na conta dele
+    gift = await _ensure_gift_charged(gift, user["email"])
     await db.socio_gifts.update_one({"id": gift_id}, {"$set": {"status": "served", "served_at": datetime.now(timezone.utc).isoformat(), "served_by": user["email"]}})
     await _gift_notify(
         gift["recipient_id"], gift["recipient_name"],
@@ -4124,6 +4355,8 @@ async def staff_confirm_gift_consumed(gift_id: str, user: dict = Depends(get_cur
         raise HTTPException(status_code=404, detail="Consumo não encontrado")
     if gift.get("status") != "served":
         raise HTTPException(status_code=400, detail="Só consumos já servidos podem ser confirmados")
+    # Consumos antigos servidos sem lançamento ficam regularizados aqui
+    gift = await _ensure_gift_charged(gift, user["email"])
     await db.socio_gifts.update_one({"id": gift_id}, {"$set": {"status": "consumed", "consumed_at": datetime.now(timezone.utc).isoformat(), "consumed_by": user["email"]}})
     await _gift_notify(
         gift["recipient_id"], gift["recipient_name"],
@@ -4287,7 +4520,18 @@ async def socio_mark_messages_read(body: SocioMessagesReadIn, socio: dict = Depe
     q = _socio_notif_query(socio["id"], unread_only=True)
     if body.ids:
         q["id"] = {"$in": body.ids}
-    res = await db.socio_messages.update_many(q, {"$set": {"read_at": datetime.now(timezone.utc).isoformat()}})
+    # Avisos de levantamento lidos: o pedido fica marcado — se não for recolhido
+    # nos 10 minutos seguintes é anulado automaticamente
+    now_iso = datetime.now(timezone.utc).isoformat()
+    pending_reads = await db.socio_messages.find(
+        {**q, "request_id": {"$exists": True, "$ne": None}}, {"_id": 0, "request_id": 1}
+    ).to_list(200)
+    for m in pending_reads:
+        await db.consumption_requests.update_one(
+            {"id": m["request_id"], "status": "approved"},
+            {"$set": {"pickup_read_at": now_iso, "pickup_read_by_socio": True}},
+        )
+    res = await db.socio_messages.update_many(q, {"$set": {"read_at": now_iso}})
     return {"ok": True, "count": res.modified_count}
 
 
@@ -5115,6 +5359,8 @@ async def on_startup():
     await db.products.create_index("id", unique=True)
     await db.clients.create_index("id", unique=True)
     await db.sales.create_index("created_at")
+    # Pedidos prontos a levantar e não recolhidos são anulados 10 min após a leitura
+    asyncio.create_task(_pickup_autocancel_loop())
 
     # seed users (admin + tesoureiro + 3 funcionários)
     seed_list = [
@@ -5610,25 +5856,58 @@ async def list_cash_closes(date_from: Optional[str] = None, date_to: Optional[st
 class BarStatusIn(BaseModel):
     open: bool
     cash_declared: Optional[float] = None  # obrigatório ao ABRIR: dinheiro em caixa
+    cash_counted: Optional[float] = None   # ao FECHAR: dinheiro contado na gaveta
 
 @api_router.post("/bar-status")
 async def set_bar_status(body: BarStatusIn, user: dict = Depends(get_current_user)):
-    cash = await _expected_cash_today()
+    now_iso = datetime.now(timezone.utc).isoformat()
     # Ao abrir o bar é OBRIGATÓRIO indicar o dinheiro em caixa
     if body.open and body.cash_declared is None:
         raise HTTPException(status_code=400, detail="Indica obrigatoriamente o dinheiro em caixa para abrir o bar")
     if body.open and body.cash_declared is not None and body.cash_declared < 0:
         raise HTTPException(status_code=400, detail="Valor em caixa inválido")
+    if not body.open and body.cash_counted is not None and body.cash_counted < 0:
+        raise HTTPException(status_code=400, detail="Valor contado em caixa inválido")
+    previous = await db.club_state.find_one({"_id": "bar"}, {"_id": 0}) or {}
+    if body.open:
+        declared = round(float(body.cash_declared), 2)
+        doc = {
+            "open": True,
+            "changed_at": now_iso,
+            "changed_by": user["email"],
+            "cash_in_drawer": declared,
+            "opening_cash_declared": declared,
+            "opened_at": now_iso,
+            "opened_by": user["email"],
+        }
+        await db.club_state.find_one_and_replace({"_id": "bar"}, {"_id": "bar", **doc}, upsert=True)
+        await _audit("bar_open", user["email"],
+                     summary=f"Bar ABERTO · dinheiro em caixa ao abrir: {declared:.2f} € (inserido por {user['email']}) · fecho automático às 02:00")
+        return doc
+    # Fechar: registar o valor contado e comparar com o esperado
+    expected = round(float(previous.get("cash_in_drawer") or 0), 2)
+    if body.cash_counted is None:
+        expected = await _expected_cash_today()
+    counted = round(float(body.cash_counted), 2) if body.cash_counted is not None else expected
+    difference = round(counted - expected, 2)
     doc = {
-        "open": bool(body.open),
-        "changed_at": datetime.now(timezone.utc).isoformat(),
+        "open": False,
+        "changed_at": now_iso,
         "changed_by": user["email"],
-        "cash_in_drawer": cash,
-        "opening_cash_declared": round(float(body.cash_declared), 2) if (body.open and body.cash_declared is not None) else None,
+        "cash_in_drawer": counted,
+        "opening_cash_declared": previous.get("opening_cash_declared"),
+        "closing_cash_counted": counted,
+        "closing_cash_expected": expected,
+        "closing_difference": difference,
+        "closing_counted_declared": body.cash_counted is not None,
     }
     await db.club_state.find_one_and_replace({"_id": "bar"}, {"_id": "bar", **doc}, upsert=True)
-    await _audit("bar_open" if body.open else "bar_close", user["email"],
-                 summary=f"Bar {'ABERTO' if body.open else 'FECHADO'} manualmente · valor em caixa: {cash:.2f} € · fecho automático às 02:00")
+    await _audit("bar_close", user["email"],
+                 summary=f"Bar FECHADO · dinheiro contado em caixa: {counted:.2f} € · esperado {expected:.2f} € · diferença {difference:+.2f} €")
+    if abs(difference) >= 0.01:
+        side = "a mais" if difference > 0 else "a menos"
+        await _audit("cash_difference", user["email"],
+                     summary=f"⚠ Diferença de caixa no fecho: {abs(difference):.2f} € {side} (contado {counted:.2f} € · esperado {expected:.2f} €) — verificar")
     return doc
 
 @api_router.get("/bar-status")
@@ -5642,25 +5921,41 @@ async def get_bar_status(user: dict = Depends(get_current_user)):
     # Fecho automático: se o bar estiver aberto entre as 02:00 e as 05:00 (hora de Lisboa), fecha e registra na ata
     auto_closed = False
     if doc and doc.get("open") and 2 <= now.hour < 5:
-        cash = await _expected_cash_today()
+        expected = round(float(doc.get("cash_in_drawer") or 0), 2) or await _expected_cash_today()
+        opening = doc.get("opening_cash_declared")
         doc = {
             "open": False,
             "changed_at": now.isoformat(),
             "changed_by": "auto",
-            "cash_in_drawer": cash,
+            "cash_in_drawer": expected,
+            "opening_cash_declared": opening,
+            "closing_cash_expected": expected,
+            "closing_cash_counted": None,
+            "closing_counted_declared": False,
         }
         await db.club_state.find_one_and_replace({"_id": "bar"}, {"_id": "bar", **doc}, upsert=True)
-        await _audit("bar_auto_close", user["email"], summary=f"Bar FECHADO automaticamente às 02:00 · valor em caixa: {cash:.2f} €")
+        await _audit(
+            "bar_auto_close", user["email"],
+            summary=f"Bar FECHADO automaticamente às 02:00 · dinheiro em caixa esperado: {expected:.2f} €"
+                    + (f" · aberto com {float(opening):.2f} €" if opening is not None else "")
+                    + " · fecho não contado (por conferir)",
+        )
         auto_closed = True
-    cash = await _expected_cash_today()
+    state = await _bar_state()
+    is_open = bool(doc and doc.get("open")) and state["open"]
+    # Durante a sessão o valor da gaveta vem do estado (abertura + movimentos)
+    cash = round(float(doc.get("cash_in_drawer") or 0), 2) if is_open else await _expected_cash_today()
     # Nota do último fecho de caixa — mostra ao abrir o bar qual era o valor em caixa
     last_close = await db.cash_closes.find({}, {"_id": 0}).sort("created_at", -1).to_list(1)
-    state = await _bar_state()
     return {
-        "open": bool(doc and doc.get("open")) and state["open"],
+        "open": is_open,
         "changed_at": doc.get("changed_at") if doc else None,
         "changed_by": doc.get("changed_by") if doc else None,
         "cash_in_drawer": cash,
+        "opening_cash_declared": doc.get("opening_cash_declared") if doc else None,
+        "closing_cash_counted": doc.get("closing_cash_counted") if doc else None,
+        "closing_cash_expected": doc.get("closing_cash_expected") if doc else None,
+        "closing_difference": doc.get("closing_difference") if doc else None,
         "auto_closed": auto_closed,
         "closing_soon": state["closing_soon"],
         "minutes_to_close": state["minutes_to_close"],

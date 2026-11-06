@@ -46,6 +46,16 @@ export function printReceipt(tx, extras = {}) {
   const credited = tx.total_credited || tx.amount || 0;
   const change = tx.change_returned || 0;
   const tip = tx.tip || 0;
+  // Oferta da casa aplicada a esta venda aquando do pagamento (itens oferecidos)
+  const saleOfferItems = isSale ? tx.payment_offer_items || [] : [];
+  const saleOfferTotal = isSale
+    ? Number(tx.payment_offer_amount || saleOfferItems.reduce((s, o) => s + Number(o.amount || 0), 0))
+    : 0;
+  const saleOfferHtml = saleOfferItems.length
+    ? `<hr/><div class="muted">Oferecido pela casa:</div>${saleOfferItems
+        .map((o) => `<div class="row"><span>${o.quantity}× ${o.product_name}</span><span>${euro(o.amount)}</span></div>`)
+        .join("")}${tx.payment_offer_by ? `<div class="muted">Oferecido por: ${tx.payment_offer_by}</div>` : ""}`
+    : "";
   const coveredDocs = extras.coveredSalesDocs || [];
   const coveredItemsHtml = coveredDocs.length
     ? `<hr/><div class="muted">Itens das vendas abatidas:</div>${coveredDocs.map((s) => `
@@ -82,12 +92,14 @@ ${client.member_number ? `<div class="row"><span>Sócio</span><strong>nº ${clie
 ${tx.tutelado ? '<div class="row"><span>Estatuto</span><strong>Sócio Tutelado</strong></div>' : ""}
 ${tx.minor_alcohol_alert ? '<div style="text-align:center;background:#b91c1c;color:#fff;padding:4px;border-radius:3px;margin:6px 0;font-weight:bold">⚠ BEBIDA ALCOÓLICA · SÓCIO TUTELADO</div>' : ""}
 ${quota ? `<div class="row"><span>Cotas</span><strong style="color:${quotaColor[quota.status] || "#000"}">${quota.label}</strong></div>` : ""}
-${isSale ? `<hr/>${itemsHtml}<hr/>
+${isSale ? `<hr/>${itemsHtml}${saleOfferHtml}<hr/>
 <div class="row big"><span>TOTAL</span><span>${euro(tx.total)}</span></div>
+${saleOfferTotal > 0 ? `<div class="row"><span>Oferta da casa</span><span>−${euro(saleOfferTotal)}</span></div>
+<div class="row big"><span>A PAGAR</span><span>${euro(tx.total - saleOfferTotal)}</span></div>` : ""}
 ${tx.points_earned ? `<div class="row"><span>Pontos ganhos</span><span>+${tx.points_earned}</span></div>` : ""}` : `${payItemsHtml ? `<hr/><div class="muted">Itens:</div>${payItemsHtml}` : ""}
 ${tx.offer_amount > 0 ? '<div style="text-align:center;background:#a21caf;color:#fff;padding:4px;border-radius:3px;margin:6px 0;font-weight:bold">★ OFERTA DA CASA ★</div>' : ""}
 <hr/>
-<div class="row"><span>Valor a pagar</span><span>${euro(balanceOwed != null ? balanceOwed + credited : credited)}</span></div>
+<div class="row"><span>Valor liquidado</span><span>${euro(credited)}</span></div>
 ${tx.offer_amount > 0 ? `<div class="row"><span>Oferta da casa (despesa do bar)</span><span>${euro(tx.offer_amount)}</span></div>` : ""}
 <div class="row"><span>Numerário entregue</span><span>${euro(tendered)}</span></div>
 ${tx.points_used ? `<div class="row"><span>Pontos usados</span><span>${tx.points_used} pts (${euro(tx.points_value || tx.points_used / 5)})</span></div>` : ""}
