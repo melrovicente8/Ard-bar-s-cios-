@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import EditableText from "../components/EditableText";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { DeviceMobile, Check, X, Clock, ArrowRight } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -42,7 +43,7 @@ export default function MBWay() {
             Pagamentos online
           </div>
           <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">
-            MBWay
+            <EditableText k="page.mbway.title">MBWay</EditableText>
           </h1>
         </div>
         <div className="flex gap-2">

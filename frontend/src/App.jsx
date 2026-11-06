@@ -4,6 +4,7 @@ import "@/App.css";
 import { Toaster } from "sonner";
 
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { ContentProvider } from "./context/ContentContext";
 import { SocioProvider } from "./context/SocioContext";
 import Login from "./pages/Login";
 import AppLayout from "./pages/AppLayout";
@@ -80,6 +81,7 @@ function App() {
   return (
     <div className="App">
       <AuthProvider>
+        <ContentProvider>
         <SocioProvider>
           <BrowserRouter>
             <Routes>
@@ -150,6 +152,7 @@ function App() {
             }}
           />
         </SocioProvider>
+        </ContentProvider>
       </AuthProvider>
     </div>
   );

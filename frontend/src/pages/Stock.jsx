@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
+import EditableText from "../components/EditableText";
 import { Plus, Package, ArrowsClockwise, PencilSimple, Trash, WarningCircle, ClockCounterClockwise } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
@@ -237,7 +238,7 @@ export default function Stock() {
             Inventário
           </div>
           <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">
-            Stock
+            <EditableText k="page.stock.title">Stock</EditableText>
           </h1>
         </div>
         <div className="flex items-center gap-2">

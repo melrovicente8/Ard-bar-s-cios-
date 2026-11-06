@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import api, { euro } from "../lib/api";
+import EditableText from "../components/EditableText";
 import { Gift, Crown, User } from "@phosphor-icons/react";
 
 const ROLE_LABEL = {
@@ -33,7 +34,7 @@ export default function OfertasCasa() {
       <div className="mb-6">
         <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">Despesa do bar</div>
         <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1 flex items-center gap-3">
-          <Gift size={32} weight="duotone" className="text-fuchsia-400" /> Ofertas da casa
+          <Gift size={32} weight="duotone" className="text-fuchsia-400" /> <EditableText k="page.ofertas.title">Ofertas da casa</EditableText>
         </h1>
         <p className="text-sm text-slate-400 mt-1">
           Consulta de quem ofereceu mais · limites mensais: funcionário 20 € · admin/tesoureiro 50 €. Cada oferta é lançada como despesa "Conta da Casa".

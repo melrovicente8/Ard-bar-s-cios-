@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import EditableText from "../components/EditableText";
 import api, { euro } from "../lib/api";
 import { Wallet, ArrowRight, Medal, MagnifyingGlass } from "@phosphor-icons/react";
 
@@ -39,7 +40,7 @@ export default function DividasHoje() {
           A receber
         </div>
         <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1 flex items-center gap-3">
-          <Wallet size={32} weight="duotone" className="text-amber-400" /> Dívidas em aberto
+          <Wallet size={32} weight="duotone" className="text-amber-400" /> <EditableText k="page.dividas.title">Dívidas em aberto</EditableText>
         </h1>
         <p className="text-sm text-slate-400 mt-1">
           Lista de sócios e clientes com saldo por pagar — clica para abrir a ficha e registar pagamento.

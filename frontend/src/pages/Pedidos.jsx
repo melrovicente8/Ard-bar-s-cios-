@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import EditableText from "../components/EditableText";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { ShoppingCart, Check, X as XIcon, PencilSimple, Package, PaperPlaneTilt } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -126,7 +127,7 @@ export default function Pedidos() {
         <ShoppingCart size={32} weight="duotone" className="text-amber-400" />
         <div>
           <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">Validação</div>
-          <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">Pedidos de sócio</h1>
+          <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1"><EditableText k="page.pedidos.title">Pedidos de sócio</EditableText></h1>
         </div>
       </div>
       <p className="text-sm text-slate-400 mb-5">

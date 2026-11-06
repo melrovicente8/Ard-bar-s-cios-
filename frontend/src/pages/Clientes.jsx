@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import EditableText from "../components/EditableText";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { Plus, User, ArrowRight, MagnifyingGlass, Trash, Medal, Funnel, Star, SealCheck } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -150,7 +151,7 @@ export default function Clientes() {
             Diretório
           </div>
           <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">
-            Clientes e Sócios
+            <EditableText k="page.clientes.title">Clientes e Sócios</EditableText>
           </h1>
         </div>
         <div className="flex items-center gap-2">

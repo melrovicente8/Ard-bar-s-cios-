@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import EditableText from "../components/EditableText";
 import api, { formatApiErrorDetail } from "../lib/api";
 import { ChatCircle, ChatCircleDots, PaperPlaneTilt, EnvelopeSimpleOpen, Plus } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -82,7 +83,7 @@ export default function Mensagens() {
           <ChatCircle size={32} weight="duotone" className="text-amber-400" />
           <div>
             <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">Comunicação</div>
-            <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">Mensagens de sócios</h1>
+            <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1"><EditableText k="page.mensagens.title">Mensagens de sócios</EditableText></h1>
           </div>
         </div>
         {view === "socio" && (

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import api, { formatApiErrorDetail } from "../lib/api";
+import EditableText from "../components/EditableText";
 import { toast } from "sonner";
 import { UsersThree, PencilSimple, Check, X as XIcon, Plus, Trash } from "@phosphor-icons/react";
 
@@ -81,7 +82,7 @@ export default function Equipa() {
           <UsersThree size={32} weight="duotone" className="text-amber-400" />
           <div>
             <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">Administração</div>
-            <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">Equipa</h1>
+            <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1"><EditableText k="page.equipa.title">Equipa</EditableText></h1>
           </div>
         </div>
         <button

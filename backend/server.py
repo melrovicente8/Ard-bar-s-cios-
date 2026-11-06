@@ -130,6 +130,14 @@ class ClientUpdate(BaseModel):
 class OccasionalClientIn(BaseModel):
     label: Optional[str] = None  # nome/alcunha rápida (ex.: "Mesa 2 - casaco preto"); vazio = "Não Cliente #N"
 
+class TransferOccasionalIn(BaseModel):
+    target_client_id: str  # cliente/sócio que fica com os consumos da ficha temporária
+
+
+class SiteContentIn(BaseModel):
+    key: str            # identificador estável do texto (ex.: "page.vender.title")
+    value: Optional[str] = None  # vazio = repõe o texto original
+
 
 class SaleItemIn(BaseModel):
     product_id: str
@@ -968,6 +976,103 @@ async def discard_occasional_client(client_id: str, user: dict = Depends(get_cur
         summary=f"Ficha temporária fechada: {c.get('name')}",
     )
     return {"ok": True}
+
+
+@api_router.post("/occasional-clients/{client_id}/transfer")
+async def transfer_occasional_client(
+    client_id: str, body: TransferOccasionalIn, user: dict = Depends(get_current_user)
+):
+    """Passa todos os consumos de uma ficha temporária para um sócio/cliente e fecha a ficha."""
+    src = await db.clients.find_one({"id": client_id, "is_temp": True}, {"_id": 0, "pin_hash": 0})
+    if not src:
+        raise HTTPException(status_code=404, detail="Ficha temporária não encontrada")
+    target = await db.clients.find_one({"id": body.target_client_id}, {"_id": 0, "pin_hash": 0})
+    if not target or target.get("is_temp") or target.get("archived"):
+        raise HTTPException(status_code=400, detail="Escolhe um sócio/cliente válido (não uma ficha temporária)")
+    if target["id"] == client_id:
+        raise HTTPException(status_code=400, detail="A ficha temporária não pode ser transferida para si própria")
+    sales = await db.sales.find({"client_id": client_id}, {"_id": 0}).to_list(500)
+    if not sales:
+        raise HTTPException(status_code=400, detail="Esta ficha ainda não tem consumos para transferir")
+    total_moved = 0.0
+    points_diff = 0
+    for s in sales:
+        total_s = float(s.get("total") or 0)
+        old_pts = int(s.get("points_earned") or 0)
+        new_pts = int(total_s // (5.0 if target.get("is_member") else 10.0))
+        await db.sales.update_one(
+            {"id": s["id"]},
+            {
+                "$set": {
+                    "client_id": target["id"],
+                    "client_name": target["name"],
+                    "points_earned": new_pts,
+                    "is_temp_sale": False,
+                    "transferred_from_client_id": client_id,
+                    "transferred_from_name": src.get("name"),
+                    "transferred_at": datetime.now(timezone.utc).isoformat(),
+                    "transferred_by": user["email"],
+                },
+                "$unset": {"source": ""},
+            },
+        )
+        total_moved += total_s
+        points_diff += new_pts - old_pts
+    inc = {"balance": round(total_moved, 2), "total_spent": round(total_moved, 2)}
+    if points_diff:
+        inc["points"] = points_diff
+    await db.clients.update_one({"id": target["id"]}, {"$inc": inc})
+    if points_diff:
+        await _log_points(
+            target["id"], points_diff, "sale", client_id,
+            f"Consumos transferidos da ficha temporária {src.get('name')}", user["email"],
+        )
+    # A ficha fica sem consumos: elimina o cartão e liberta a vaga
+    await db.clients.delete_one({"id": client_id})
+    await _audit(
+        "temp_client_transfer", user["email"], entity="client", entity_id=target["id"],
+        summary=(
+            f"{len(sales)} consumo(s) transferidos de {src.get('name')} para {target['name']} · "
+            f"{round(total_moved, 2):.2f} € · ficha temporária fechada"
+        ),
+    )
+    target.pop("_id", None)
+    return {"ok": True, "moved": len(sales), "total": round(total_moved, 2), "target": target}
+
+
+# ---------- Textos do portal editáveis pela direção ----------
+@api_router.get("/site-content")
+async def get_site_content(user: dict = Depends(get_current_user)):
+    """Overrides de títulos/frases do portal (só devolve chaves personalizadas)."""
+    docs = await db.site_content.find({}, {"_id": 0}).to_list(1000)
+    return {d["key"]: d["value"] for d in docs if d.get("key") and d.get("value")}
+
+
+@api_router.put("/site-content")
+async def put_site_content(body: SiteContentIn, user: dict = Depends(require_role("admin"))):
+    """Guarda (ou repõe, se o valor vier vazio) o texto de uma chave do portal."""
+    key = (body.key or "").strip()
+    if not key or len(key) > 120:
+        raise HTTPException(status_code=400, detail="Chave de texto inválida")
+    value = (body.value or "").strip()
+    if not value:
+        await db.site_content.delete_one({"key": key})
+        await _audit("site_content_reset", user["email"], entity="site_content", entity_id=key,
+                     summary=f"Texto reposto ao original: {key}")
+        return {"key": key, "value": None}
+    await db.site_content.update_one(
+        {"key": key},
+        {"$set": {
+            "key": key,
+            "value": value[:500],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_by": user["email"],
+        }},
+        upsert=True,
+    )
+    await _audit("site_content_edit", user["email"], entity="site_content", entity_id=key,
+                 summary=f"Texto do portal alterado: {key} → \"{value[:80]}\"")
+    return {"key": key, "value": value[:500]}
 
 async def _audit(action_type: str, by: str, *, entity: Optional[str] = None, entity_id: Optional[str] = None, before: Optional[dict] = None, after: Optional[dict] = None, summary: Optional[str] = None, changes: Optional[dict] = None, tx_number: Optional[int] = None):
     """Regista uma entrada genérica no audit log (sempre com descrição e, quando aplicável, nº de transação)."""

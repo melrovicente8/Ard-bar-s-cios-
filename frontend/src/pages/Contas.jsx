@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
+import EditableText from "../components/EditableText";
 import { openFinanceDoc } from "../lib/financeDoc";
 import { Bank, Printer, ArrowDown, ArrowUp, Equals } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -74,7 +75,7 @@ export default function Contas() {
         <Bank size={32} weight="duotone" className="text-amber-400" />
         <div>
           <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">Contabilidade</div>
-          <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">Contas da Associação</h1>
+          <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1"><EditableText k="page.contas.title">Contas da Associação</EditableText></h1>
         </div>
       </div>
       <p className="text-sm text-slate-400 mb-5">

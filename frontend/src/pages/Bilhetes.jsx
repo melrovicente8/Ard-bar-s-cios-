@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
+import EditableText from "../components/EditableText";
 import { Ticket, TShirt, MagnifyingGlass, ShoppingCart } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -60,7 +61,7 @@ export default function Bilhetes() {
         <Ticket size={32} weight="duotone" className="text-amber-400" />
         <div>
           <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">Bilheteira</div>
-          <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">Bilhetes e Merchandising</h1>
+          <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1"><EditableText k="page.bilhetes.title">Bilhetes e Merchandising</EditableText></h1>
         </div>
       </div>
       <p className="text-sm text-slate-400 mb-6">

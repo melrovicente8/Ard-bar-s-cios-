@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import EditableText from "../components/EditableText";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { ListDashes, Printer, FileXls, FunnelSimple, MagnifyingGlass } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -135,7 +136,7 @@ th{background:#f3f4f6;text-transform:uppercase;letter-spacing:.08em;font-size:10
         <ListDashes size={32} weight="duotone" className="text-amber-400" />
         <div>
           <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">Contabilidade</div>
-          <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">Transações</h1>
+          <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1"><EditableText k="page.transacoes.title">Transações</EditableText></h1>
         </div>
       </div>
       <p className="text-sm text-slate-400 mb-5">Todas as transações numeradas — vendas, pagamentos, encomendas, despesas e fechos de caixa.</p>

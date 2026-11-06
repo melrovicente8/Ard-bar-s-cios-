@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import EditableText from "../components/EditableText";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import { Vault, Bank, ClipboardText, CalendarBlank, Money, ArrowsLeftRight, HandCoins } from "@phosphor-icons/react";
@@ -104,7 +105,7 @@ export default function Banco() {
           Tesouraria
         </div>
         <h1 className="font-outfit text-2xl sm:text-3xl font-bold tracking-tight mt-1">
-          Caixa e Banco
+          <EditableText k="page.banco.title">Caixa e Banco</EditableText>
         </h1>
         <p className="text-sm text-slate-400 mt-1">
           Depósitos de valores, transferências entre caixa e banco e movimentos detalhados.

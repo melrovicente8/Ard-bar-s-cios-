@@ -28,9 +28,21 @@ docker compose -f docker-compose.base44.yml up -d
 
 ## Fichas temporárias · Cartão "Não Cliente"
 - Doc em `db.clients` com `is_temp: true` + `temp_slot` (1..3) e `archived`. Máximo **3 ativas** (`OCCASIONAL_MAX_ACTIVE`).
-- Endpoints: `GET/POST /api/occasional-clients`, `DELETE /api/occasional-clients/{id}`. O `POST /api/clients` antigo com `is_walkin` continua a existir, mas o botão "Não cliente" usa o endpoint novo (limite + arquivo automático).
+- Endpoints: `GET/POST /api/occasional-clients`, `DELETE /api/occasional-clients/{id}`, `POST /api/occasional-clients/{id}/transfer`. O `POST /api/clients` antigo com `is_walkin` continua a existir, mas o botão "Não cliente" usa o endpoint novo (limite + arquivo automático).
+- Os cartões aparecem **só na aba Vender** (`OccasionalCards`), não no Dashboard.
+- Cada cartão tem um lápis (`OccasionalCardEditor`): renomear a ficha (`PUT /api/clients/{id}`), editar os produtos dos consumos em aberto (`PUT /api/sales/{id}` com a lista de items) e **transferir para um sócio** (`POST /occasional-clients/{id}/transfer` — move as vendas, ajusta saldo/pontos do sócio, apaga a ficha e liberta a vaga).
 - `_sync_temp_client_state()` corre após pagamentos, estornos, cancelamento e edição de vendas: a 0,00 € a ficha é arquivada (vaga libertada) e reaberta se voltar a ter dívida. Fichas arquivadas saem de `/api/clients` e das contagens do dashboard.
 - Vendas destas fichas ficam com `source: "temp_client"` (mostrado como **Venda Não Cliente** em Transações) e não acumulam pontos.
+
+## Textos do portal editáveis (cadeado do cabeçalho)
+- `db.site_content` guarda `{key, value}`. `GET /api/site-content` devolve o mapa de overrides; `PUT /api/site-content` (só **admin**) grava um texto ou repõe o original quando `value` vem vazio.
+- No frontend: `ContentProvider` (`src/context/ContentContext.jsx`, em `App.jsx`) + `src/components/EditableText.jsx`. Uso: `<EditableText k="page.vender.title" as="h1" className="...">Vender</EditableText>` — sem override mostra o texto original; com o cadeado aberto fica editável (Enter guarda, Esc cancela, reescrever o texto original repõe).
+- O cadeado (`content-lock-btn`) fica no cabeçalho da sidebar, junto ao símbolo ARDN, e só aparece para `admin`. Enquanto está aberto mostra a barra `content-edit-banner`.
+- Já marcados: títulos de todas as páginas de staff, etiquetas/grupos da navegação e os textos do cartão de Consumo Ocasional. Basta envolver mais textos em `EditableText` para os tornar editáveis.
+
+## Cabeçalho em telemóvel
+- O topbar (`AppLayout`) e as notificações (`HeaderAlerts`) usam `flex-wrap`: os avisos passam para a linha seguinte em ecrãs estreitos em vez de serem cortados. O relógio está escondido abaixo de `sm`.
+
 
 ## Secrets
 - `RESEND_API_KEY` (opcional) via dashboard Base44 → `/run/base44/app.env`, ligado ao serviço backend como último `env_file`. Sem ela, `send_email` falha graciosamente.

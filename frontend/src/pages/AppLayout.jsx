@@ -31,9 +31,13 @@ import {
   X as XIcon,
   Storefront as BarIcon,
   Gift,
+  LockSimple,
+  LockSimpleOpen,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import HeaderAlerts from "../components/HeaderAlerts";
+import EditableText from "../components/EditableText";
+import { useContent } from "../context/ContentContext";
 
 const ROLE_LABEL = {
   admin: "Administrador",
@@ -252,6 +256,7 @@ function BarStatusButton() {
 
 export default function AppLayout() {
   const { user, logout } = useAuth();
+  const { editMode, toggleEdit } = useContent();
   const navigate = useNavigate();
   const location = useLocation();
   const isHome = location.pathname === "/" || location.pathname === "";
@@ -293,7 +298,7 @@ export default function AppLayout() {
                 ARD<span className="text-amber-400">.</span>
               </div>
               <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500 -mt-0.5">
-                Nespereira · Bar
+                <EditableText k="brand.subtitle">Nespereira · Bar</EditableText>
               </div>
             </div>
             <Link
@@ -304,6 +309,22 @@ export default function AppLayout() {
             >
               <DeviceMobile size={14} weight="duotone" />
             </Link>
+            {user?.role === "admin" && (
+              <button
+                type="button"
+                data-testid="content-lock-btn"
+                onClick={toggleEdit}
+                title={editMode ? "Bloquear edição de textos" : "Desbloquear edição de títulos e frases"}
+                aria-label={editMode ? "Bloquear edição de textos" : "Desbloquear edição de textos"}
+                className={`p-1.5 rounded-md flex items-center transition-colors ${
+                  editMode
+                    ? "bg-amber-400 text-slate-950"
+                    : "bg-slate-800/80 text-slate-400 hover:text-amber-300 hover:bg-slate-800"
+                }`}
+              >
+                {editMode ? <LockSimpleOpen size={14} weight="fill" /> : <LockSimple size={14} weight="bold" />}
+              </button>
+            )}
           </div>
           <button
             onClick={() => setMobileOpen(false)}
@@ -322,7 +343,7 @@ export default function AppLayout() {
               <div key={gi} className="space-y-1">
                 {group.section && (
                   <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-slate-600 px-4 mb-2">
-                    {group.section}
+                    <EditableText k={`nav.section.${group.section}`}>{group.section}</EditableText>
                   </div>
                 )}
                 {visible.map((item) => (
@@ -340,7 +361,7 @@ export default function AppLayout() {
                     }
                   >
                     <item.icon size={20} weight="duotone" />
-                    {item.label}
+                    <EditableText k={`nav.${item.testid}`}>{item.label}</EditableText>
                   </NavLink>
                 ))}
               </div>
@@ -375,7 +396,7 @@ export default function AppLayout() {
 
       {/* Main */}
       <main className="flex-1 overflow-x-clip flex flex-col min-w-0">
-        <div className="sticky top-0 z-20 bg-slate-950/80 backdrop-blur-xl border-b border-slate-900 px-3 md:px-6 py-3 flex items-center gap-2">
+        <div className="sticky top-0 z-20 bg-slate-950/80 backdrop-blur-xl border-b border-slate-900 px-3 md:px-6 py-2 md:py-3 flex flex-wrap items-center gap-1.5 md:gap-2">
           <button
             data-testid="mobile-menu-btn"
             onClick={() => setMobileOpen(true)}
@@ -409,11 +430,30 @@ export default function AppLayout() {
           >
             <ArrowClockwise size={16} weight="bold" /> <span className="hidden sm:inline">Refresh</span>
           </button>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5 md:gap-2 min-w-0 max-w-full">
             <HeaderAlerts />
             <BarStatusButton />
           </div>
         </div>
+        {editMode && (
+          <div
+            data-testid="content-edit-banner"
+            className="bg-amber-400/10 border-b border-amber-400/30 px-3 md:px-6 py-2 flex flex-wrap items-center gap-2 text-[11px] text-amber-200"
+          >
+            <LockSimpleOpen size={13} weight="fill" className="text-amber-400 shrink-0" />
+            <span className="flex-1 min-w-[180px]">
+              Modo edição: clica em qualquer título ou frase sublinhado a tracejado para alterar. Enter guarda, Esc cancela.
+            </span>
+            <button
+              type="button"
+              onClick={toggleEdit}
+              data-testid="content-edit-done"
+              className="px-3 py-1 rounded-md bg-amber-400 text-slate-950 font-bold"
+            >
+              Bloquear edição
+            </button>
+          </div>
+        )}
         <div className="flex-1" key={refreshKey}>
           <Outlet />
         </div>

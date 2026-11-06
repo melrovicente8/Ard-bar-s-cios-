@@ -1,8 +1,7 @@
 import React, { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import api, { euro } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
-import OccasionalCards from "../components/OccasionalCards";
 import {
   CurrencyEur,
   Package,
@@ -103,7 +102,6 @@ function getPresidentMessage() {
 
 export default function Dashboard() {
   const { user } = useAuth();
-  const navigate = useNavigate();
   const canSeeStockValue = user?.role === "admin" || user?.role === "tesoureiro";
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -157,12 +155,6 @@ export default function Dashboard() {
           </div>
         )}
       </div>
-
-      {/* Cartão "Cliente Ocasional / Não Cliente" — até 3 fichas temporárias ativas */}
-      <OccasionalCards
-        onSell={(card) => navigate(`/vender?cliente=${card.id}`)}
-        onChanged={load}
-      />
 
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-5">
         <StatCard

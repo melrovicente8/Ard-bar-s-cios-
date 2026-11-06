@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import EditableText from "../components/EditableText";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import OccasionalCards from "../components/OccasionalCards";
@@ -163,7 +164,7 @@ export default function Vender() {
           Ponto de Venda
         </div>
         <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">
-          Vender
+          <EditableText k="page.vender.title">Vender</EditableText>
         </h1>
       </div>
 

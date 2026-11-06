@@ -7,8 +7,11 @@ import {
   CashRegister,
   ShoppingCart,
   UsersThree,
+  PencilSimple,
 } from "@phosphor-icons/react";
 import PaymentModal from "./PaymentModal";
+import OccasionalCardEditor from "./OccasionalCardEditor";
+import EditableText from "./EditableText";
 
 /**
  * Cartão "Cliente Ocasional / Não Cliente" — fichas temporárias (máx. 3 ativas).
@@ -23,6 +26,7 @@ export default function OccasionalCards({ onSell = null, onChanged = null, refre
   const [label, setLabel] = useState("");
   const [busy, setBusy] = useState(false);
   const [paying, setPaying] = useState(null); // { client, debt, unpaidSales }
+  const [editing, setEditing] = useState(null); // ficha em edição (nome / produtos / transferência)
 
   const load = async () => {
     try {
@@ -99,10 +103,10 @@ export default function OccasionalCards({ onSell = null, onChanged = null, refre
           </div>
           <div>
             <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-slate-500">
-              Consumo ocasional
+              <EditableText k="occasional.kicker">Consumo ocasional</EditableText>
             </div>
             <h3 className="font-outfit text-lg font-semibold leading-tight">
-              Cliente Ocasional · Não Cliente
+              <EditableText k="occasional.title">Cliente Ocasional · Não Cliente</EditableText>
             </h3>
             <div className="text-[11px] text-slate-500">
               {cards.length}/{limit} fichas ativas · {free} vaga{free === 1 ? "" : "s"} livre{free === 1 ? "" : "s"} · sem cotas nem pontos
@@ -116,7 +120,7 @@ export default function OccasionalCards({ onSell = null, onChanged = null, refre
           className="px-3 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 text-xs font-bold flex items-center gap-1.5"
           title={free === 0 ? "Limite de 3 fichas ativas" : "Abrir nova ficha temporária"}
         >
-          <UserPlus size={13} weight="bold" /> Novo Consumo Ocasionado
+          <UserPlus size={13} weight="bold" /> <EditableText k="occasional.new_btn">Novo Consumo Ocasional</EditableText>
         </button>
       </div>
 
@@ -169,14 +173,24 @@ export default function OccasionalCards({ onSell = null, onChanged = null, refre
                       {card.name}
                     </div>
                   </div>
-                  <button
-                    data-testid={`occasional-discard-${card.temp_slot}`}
-                    onClick={() => discard(card)}
-                    className="p-1.5 rounded-md bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
-                    title="Fechar esta ficha temporária"
-                  >
-                    <Trash size={12} weight="bold" />
-                  </button>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      data-testid={`occasional-edit-${card.temp_slot}`}
+                      onClick={() => setEditing(card)}
+                      className="p-1.5 rounded-md bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
+                      title="Editar nome, produtos ou transferir para um sócio"
+                    >
+                      <PencilSimple size={12} weight="bold" />
+                    </button>
+                    <button
+                      data-testid={`occasional-discard-${card.temp_slot}`}
+                      onClick={() => discard(card)}
+                      className="p-1.5 rounded-md bg-rose-500/10 text-rose-300 hover:bg-rose-500/20"
+                      title="Fechar esta ficha temporária"
+                    >
+                      <Trash size={12} weight="bold" />
+                    </button>
+                  </div>
                 </div>
                 <div className="flex items-baseline justify-between">
                   <span className="text-[10px] uppercase tracking-wider text-slate-500">A pagar</span>
@@ -224,6 +238,17 @@ export default function OccasionalCards({ onSell = null, onChanged = null, refre
             )
           )}
         </div>
+      )}
+
+      {editing && (
+        <OccasionalCardEditor
+          card={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            load();
+            onChanged?.();
+          }}
+        />
       )}
 
       {paying && (

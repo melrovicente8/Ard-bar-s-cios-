@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import EditableText from "../components/EditableText";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import {
   Plus,
@@ -387,7 +388,7 @@ export default function Fornecedores() {
             Compras
           </div>
           <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">
-            Fornecedores
+            <EditableText k="page.fornecedores.title">Fornecedores</EditableText>
           </h1>
         </div>
         <div className="flex gap-2">

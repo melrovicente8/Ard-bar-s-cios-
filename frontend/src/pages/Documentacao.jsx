@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import EditableText from "../components/EditableText";
 import { useAuth } from "../context/AuthContext";
 import { DownloadSimple, Code, Book, ArrowLeft } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -430,7 +431,7 @@ export default function Documentacao() {
         <div>
           <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">Administrador</div>
           <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1 flex items-center gap-2">
-            <Book size={28} weight="duotone" className="text-amber-400" /> Documentação técnica
+            <Book size={28} weight="duotone" className="text-amber-400" /> <EditableText k="page.documentacao.title">Documentação técnica</EditableText>
           </h1>
           <p className="text-sm text-slate-400 mt-1">Manual completo da construção da app (stack, modelos, regras, endpoints, papéis).</p>
         </div>
