@@ -7,6 +7,7 @@ const STATUS_STYLE = {
   pending: { label: "Pendente de validação", cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
   validated: { label: "Validado", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" },
   rejected: { label: "Rejeitado", cls: "bg-rose-500/15 text-rose-300 border-rose-500/30" },
+  invalidated: { label: "Anulado", cls: "bg-slate-500/15 text-slate-300 border-slate-500/30" },
 };
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -81,11 +82,7 @@ export default function SocioParceiros() {
         note: form.note || null,
         photo_data: photo,
       });
-      toast.success(
-        data.status === "validated"
-          ? "Talão validado automaticamente — benefício creditado!"
-          : "Talão enviado · pendente de validação"
-      );
+      toast.success("Talão enviado · a direção confirma a validade antes de creditar os pontos");
       setForm({ partner_id: form.partner_id, amount: "", purchase_date: todayISO(), doc_number: "", note: "" });
       setPhoto(null);
       load();
@@ -214,7 +211,7 @@ export default function SocioParceiros() {
                   {busy ? "A enviar..." : "Enviar talão"}
                 </button>
                 <p className="text-[10px] text-slate-500">
-                  Máximo de 3 talões por dia e submissão nas 48h seguintes à compra. O mesmo talão não pode ser carregado duas vezes.
+                  Máximo de 3 talões por dia e submissão nas 48h seguintes à compra. O mesmo talão não pode ser carregado duas vezes. Cada talão é validado pela direção (a fotografia é lida automaticamente para confirmar o parceiro, a data e o valor).
                 </p>
               </form>
             )}

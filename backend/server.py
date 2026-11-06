@@ -14,7 +14,7 @@ import bcrypt
 import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Union
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, status
+from fastapi import FastAPI, APIRouter, BackgroundTasks, HTTPException, Depends, Request, Response, status
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr
@@ -8758,7 +8758,6 @@ class PartnerIn(BaseModel):
     name: str
     emoji: Optional[str] = None
     active: bool = True
-    auto_validate: bool = True
     points_per_5eur: float = 0.5
     note: Optional[str] = None
 
@@ -8767,7 +8766,6 @@ class PartnerUpdate(BaseModel):
     name: Optional[str] = None
     emoji: Optional[str] = None
     active: Optional[bool] = None
-    auto_validate: Optional[bool] = None
     points_per_5eur: Optional[float] = None
     note: Optional[str] = None
 
@@ -8802,7 +8800,6 @@ async def create_partner(body: PartnerIn, user: dict = Depends(require_role("adm
         "name": body.name.strip(),
         "emoji": (body.emoji or "🤝").strip()[:4],
         "active": bool(body.active),
-        "auto_validate": bool(body.auto_validate),
         "points_per_5eur": float(body.points_per_5eur or 0),
         "note": body.note,
         "created_at": now_iso,
@@ -8862,6 +8859,7 @@ async def _award_partner_ticket(ticket: dict, by: str) -> dict:
         await _log_points(ticket["client_id"], whole, "partner_ticket", ticket["id"],
                           f"Talão {partner.get('name')} · {ticket['amount']:.2f} €", by)
     await db.clients.update_one({"id": ticket["client_id"]}, {"$set": {"partner_points_carry": carry}})
+    carry_delta = round(earned - whole, 2)
     # Presença do dia com o selo do parceiro (mantém o streak mesmo com o bar fechado)
     presence = await _mark_presence(ticket["client_id"], None, "partner_ticket")
     if presence:
@@ -8873,13 +8871,166 @@ async def _award_partner_ticket(ticket: dict, by: str) -> dict:
     await db.partner_tickets.update_one(
         {"id": ticket["id"]},
         {"$set": {"status": "validated", "points_awarded": whole, "quota_eligible": eligible,
-                  "presence_granted": bool(presence), "validated_at": datetime.now(timezone.utc).isoformat()}},
+                  "points_carry_delta": carry_delta, "presence_id": presence["id"] if presence else None,
+                  "presence_granted": bool(presence), "points_reverted": False,
+                  "validated_at": datetime.now(timezone.utc).isoformat()}},
     )
     await _audit("partner_ticket_validated", by, entity="partner_ticket", entity_id=ticket["id"],
                  summary=f"Talão {partner.get('name')} validado · {ticket['client_name']} · "
                          f"{ticket['amount']:.2f} € · +{whole} ponto(s)"
                          + ("" if eligible else " · cotas não regularizadas (sem pontos)"))
     return await db.partner_tickets.find_one({"id": ticket["id"]}, {"_id": 0})
+
+
+# ---------- Leitura automática do talão (IA) ----------
+# O talão nunca é validado por confiança no que o sócio escreveu: a leitura da
+# fotografia tem de identificar o parceiro, a data e o valor. Mesmo assim, a
+# direção pode anular a entrada e os pontos atribuídos são retirados.
+PARTNER_TICKET_AI_PROMPT = (
+    "Analisas a fotografia de um talão de compra de um parceiro local da ARDN. "
+    "Responde APENAS com JSON válido, sem texto à volta, com as chaves: "
+    '{"readable": true|false, "partner": "<nome do estabelecimento impresso>"|null, '
+    '"purchase_date": "AAAA-MM-DD"|null, "amount": <total pago em euros>|null, '
+    '"doc_number": "<número do talão>"|null}. '
+    "Não inventes: se um campo não estiver legível com segurança, devolve null."
+)
+
+
+def _ai_norm(value) -> str:
+    import unicodedata
+    txt = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode("utf-8")
+    return " ".join(txt.lower().split())
+
+
+def _ai_amount(value) -> Optional[float]:
+    if isinstance(value, (int, float)):
+        return round(float(value), 2)
+    txt = str(value or "").replace("€", "").replace(" ", "").replace(",", ".")
+    try:
+        return round(float(txt), 2)
+    except ValueError:
+        return None
+
+
+def _ai_date(value) -> Optional[str]:
+    txt = str(value or "").strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(txt, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _ai_match_partner(reading: Optional[str], partners: list) -> Optional[dict]:
+    """Encontra o parceiro registado cujo nome aparece no talão lido pela IA."""
+    name = _ai_norm(reading)
+    if not name:
+        return None
+    for partner in partners:
+        other = _ai_norm(partner.get("name"))
+        if not other:
+            continue
+        if name == other or (len(other) >= 4 and other in name) or (len(name) >= 4 and name in other):
+            return partner
+    return None
+
+
+def _ticket_ai_read(api_key: str, model: str, photo_data: str) -> dict:
+    """Lê a fotografia do talão com a Gemini (visão) e devolve o JSON identificado."""
+    import json as _json
+    import urllib.request
+
+    header, _, b64 = (photo_data or "").partition(",")
+    mime = "image/jpeg"
+    if header.startswith("data:") and ";" in header:
+        mime = header[5:header.index(";")] or mime
+    if not b64:
+        raise ValueError("fotografia do talão inválida")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    payload = _json.dumps({
+        "contents": [{"role": "user", "parts": [
+            {"text": PARTNER_TICKET_AI_PROMPT},
+            {"inline_data": {"mime_type": mime, "data": b64}},
+        ]}],
+        # O modelo gasta parte dos tokens a "pensar": abaixo disto o JSON sai truncado.
+        "generationConfig": {"temperature": 0, "responseMimeType": "application/json", "maxOutputTokens": 2048},
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=payload, method="POST",
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+    )
+    with urllib.request.urlopen(req, timeout=45) as resp:
+        data = _json.loads(resp.read().decode("utf-8", "replace"))
+    parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts")) or []
+    raw = "".join(p.get("text", "") for p in parts).strip()
+    if not raw:
+        return {}
+    start, end = raw.find("{"), raw.rfind("}")
+    return _json.loads(raw[start:end + 1]) if start >= 0 and end > start else {}
+
+
+async def _ai_check_partner_ticket(ticket_id: str, auto_award: bool = False) -> Optional[dict]:
+    """Lê o talão e guarda o resultado em `ai_check`. Com `auto_award`, aceita o
+    talão automaticamente quando parceiro, data e valor coincidem com a submissão."""
+    ticket = await db.partner_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        return None
+    if ticket.get("status") != "pending":
+        return ticket.get("ai_check")
+    api_key = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
+    check = {
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "model": ASSISTANT_MODEL,
+        "readable": None,
+        "partner": None,
+        "purchase_date": None,
+        "amount": None,
+        "doc_number": None,
+        "matched_partner_id": None,
+        "matched_partner_name": None,
+        "match": {"partner": False, "date": False, "amount": False},
+        "confident": False,
+        "error": None,
+    }
+    if not api_key:
+        check["error"] = "Leitura automática indisponível (falta a chave da IA)"
+    elif not ticket.get("photo_data"):
+        check["error"] = "Talão enviado sem fotografia"
+    else:
+        try:
+            data = await asyncio.to_thread(_ticket_ai_read, api_key, ASSISTANT_MODEL, ticket["photo_data"])
+        except Exception as exc:
+            logger.warning("Leitura automática do talão %s falhou: %s", ticket_id, exc)
+            data = {}
+            check["error"] = "Não foi possível ler o talão"
+        if data:
+            check["readable"] = data.get("readable") is not False
+            check["partner"] = str(data.get("partner")).strip() if data.get("partner") else None
+            check["purchase_date"] = _ai_date(data.get("purchase_date"))
+            check["amount"] = _ai_amount(data.get("amount"))
+            check["doc_number"] = str(data.get("doc_number")).strip() if data.get("doc_number") else None
+            partners = await db.partners.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(100)
+            matched = _ai_match_partner(check["partner"], partners)
+            if matched:
+                check["matched_partner_id"] = matched.get("id")
+                check["matched_partner_name"] = matched.get("name")
+            declared_amount = float(ticket.get("amount") or 0)
+            check["match"] = {
+                "partner": bool(matched) and matched.get("id") == ticket.get("partner_id"),
+                "date": check["purchase_date"] == ticket.get("purchase_date"),
+                "amount": check["amount"] is not None and abs(check["amount"] - declared_amount) <= 0.02,
+            }
+            check["confident"] = bool(check["readable"] and all(check["match"].values()))
+        elif not check["error"]:
+            check["error"] = "Não foi possível ler os campos do talão"
+    await db.partner_tickets.update_one({"id": ticket_id}, {"$set": {"ai_check": check}})
+    if auto_award and check["confident"] and not ticket.get("duplicate_of"):
+        fresh = await db.partner_tickets.find_one({"id": ticket_id}, {"_id": 0})
+        if fresh and fresh.get("status") == "pending":
+            await _award_partner_ticket(fresh, "sistema (leitura automática do talão)")
+            await db.partner_tickets.update_one({"id": ticket_id}, {"$set": {"validation": "auto"}})
+    return check
 
 
 @api_router.get("/socio/partners")
@@ -8896,7 +9047,8 @@ async def socio_partner_tickets(socio: dict = Depends(get_current_socio)):
 
 
 @api_router.post("/socio/partner-tickets")
-async def socio_submit_partner_ticket(body: PartnerTicketIn, socio: dict = Depends(get_current_socio)):
+async def socio_submit_partner_ticket(body: PartnerTicketIn, background: BackgroundTasks,
+                                     socio: dict = Depends(get_current_socio)):
     """Sócio envia a fotografia do talão de um parceiro local."""
     partner = await db.partners.find_one({"id": body.partner_id}, {"_id": 0})
     if not partner or not partner.get("active"):
@@ -8956,10 +9108,11 @@ async def socio_submit_partner_ticket(body: PartnerTicketIn, socio: dict = Depen
                      entity="partner_ticket", entity_id=ticket["id"],
                      summary=(f"Talão duplicado detetado · documento {doc_no} de {partner.get('name')} · "
                               f"enviado por {socio.get('name')} (já carregado por {duplicate.get('client_name')})"))
-    # Validação automática simples: parceiro com auto-validação e sem sinais de duplicação
-    if partner.get("auto_validate", True) and not duplicate:
-        ticket = await _award_partner_ticket(ticket, "sistema (validação automática)")
-        await db.partner_tickets.update_one({"id": ticket["id"]}, {"$set": {"validation": "auto"}})
+    # O talão fica SEMPRE pendente: quem valida e credita os pontos é a direção.
+    # A leitura automática só aceita o talão quando identifica, na fotografia, o
+    # parceiro, a data e o valor — e mesmo assim a entrada pode ser anulada depois.
+    if body.photo_data:
+        background.add_task(_ai_check_partner_ticket, ticket["id"], True)
     ticket.pop("_id", None)
     ticket.pop("photo_data", None)
     return ticket
@@ -8976,10 +9129,58 @@ async def validate_partner_ticket(ticket_id: str, user: dict = Depends(require_r
     ticket = await db.partner_tickets.find_one({"id": ticket_id}, {"_id": 0})
     if not ticket:
         raise HTTPException(status_code=404, detail="Talão não encontrado")
-    if ticket.get("status") == "validated":
-        raise HTTPException(status_code=400, detail="Talão já validado")
-    updated = await _award_partner_ticket(ticket, user["email"])
+    if ticket.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Só talões pendentes podem ser validados")
+    await _award_partner_ticket(ticket, user["email"])
     await db.partner_tickets.update_one({"id": ticket_id}, {"$set": {"validation": "manual", "validated_by": user["email"]}})
+    return await db.partner_tickets.find_one({"id": ticket_id}, {"_id": 0})
+
+
+@api_router.post("/partner-tickets/{ticket_id}/ai-check")
+async def check_partner_ticket(ticket_id: str, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    """Relê a fotografia do talão (parceiro, data e valor) sem validar nada."""
+    ticket = await db.partner_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Talão não encontrado")
+    if ticket.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Só talões pendentes podem ser lidos")
+    await _ai_check_partner_ticket(ticket_id, False)
+    return await db.partner_tickets.find_one({"id": ticket_id}, {"_id": 0})
+
+
+@api_router.post("/partner-tickets/{ticket_id}/invalidate")
+async def invalidate_partner_ticket(ticket_id: str, body: PartnerTicketReject,
+                                    user: dict = Depends(require_role("admin", "tesoureiro"))):
+    """Anula um talão já validado: retira os pontos, a fração acumulada e a presença."""
+    ticket = await db.partner_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Talão não encontrado")
+    if ticket.get("status") != "validated":
+        raise HTTPException(status_code=400, detail="Só talões validados podem ser anulados")
+    awarded = int(ticket.get("points_awarded") or 0)
+    if awarded:
+        client = await db.clients.find_one({"id": ticket["client_id"]}, {"_id": 0, "points": 1}) or {}
+        points = max(0, int(client.get("points") or 0) - awarded)
+        await db.clients.update_one({"id": ticket["client_id"]}, {"$set": {"points": points}})
+        await _log_points(ticket["client_id"], -awarded, "partner_ticket_invalidated", ticket_id,
+                          f"Anulação do talão {ticket.get('partner_name')}", user["email"])
+    carry_delta = float(ticket.get("points_carry_delta") or 0)
+    if carry_delta:
+        client = await db.clients.find_one({"id": ticket["client_id"]}, {"_id": 0, "partner_points_carry": 1}) or {}
+        carry = max(0.0, round(float(client.get("partner_points_carry") or 0) - carry_delta, 2))
+        await db.clients.update_one({"id": ticket["client_id"]}, {"$set": {"partner_points_carry": carry}})
+    if ticket.get("presence_id"):
+        await db.presences.delete_one({"id": ticket["presence_id"]})
+    reason = (body.reason or "").strip() or None
+    await db.partner_tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {"status": "invalidated", "invalidated_by": user["email"],
+                  "invalidated_at": datetime.now(timezone.utc).isoformat(),
+                  "invalidate_reason": reason, "points_reverted": bool(awarded)}},
+    )
+    await _audit("partner_ticket_invalidated", user["email"], entity="partner_ticket", entity_id=ticket_id,
+                 summary=f"Talão de {ticket.get('client_name')} ({ticket.get('partner_name')}) anulado · "
+                         f"{-awarded} ponto(s) retirados" + (f" · {reason}" if reason else ""))
     return await db.partner_tickets.find_one({"id": ticket_id}, {"_id": 0})
 
 

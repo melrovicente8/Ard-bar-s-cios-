@@ -8,6 +8,7 @@ const STATUS_STYLE = {
   pending: { label: "Pendente", cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
   validated: { label: "Validado", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" },
   rejected: { label: "Rejeitado", cls: "bg-rose-500/15 text-rose-300 border-rose-500/30" },
+  invalidated: { label: "Anulado", cls: "bg-slate-500/15 text-slate-300 border-slate-500/30" },
 };
 
 /**
@@ -19,7 +20,7 @@ export default function Parceiros() {
   const [partners, setPartners] = useState([]);
   const [tickets, setTickets] = useState([]);
   const [filter, setFilter] = useState("pending");
-  const [form, setForm] = useState({ name: "", emoji: "🤝", points_per_5eur: 0.5, active: true, auto_validate: true });
+  const [form, setForm] = useState({ name: "", emoji: "🤝", points_per_5eur: 0.5, active: true });
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
@@ -39,7 +40,7 @@ export default function Parceiros() {
     setBusy(true);
     try {
       await api.post("/partners", form);
-      setForm({ name: "", emoji: "🤝", points_per_5eur: 0.5, active: true, auto_validate: true });
+      setForm({ name: "", emoji: "🤝", points_per_5eur: 0.5, active: true });
       load();
       toast.success("Parceiro criado");
     } catch (err) {
@@ -78,6 +79,30 @@ export default function Parceiros() {
     }
   };
 
+  const readTicket = async (id) => {
+    try {
+      const { data } = await api.post(`/partner-tickets/${id}/ai-check`);
+      const check = data?.ai_check;
+      if (check?.confident) toast.success("Leitura automática: parceiro, data e valor confirmados");
+      else if (check?.error) toast.warning(check.error);
+      else toast.warning("A leitura automática não confirmou todos os campos do talão");
+      load();
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    }
+  };
+
+  const invalidate = async (id) => {
+    const reason = window.prompt("Motivo da anulação (os pontos atribuídos são retirados):") || "";
+    try {
+      await api.post(`/partner-tickets/${id}/invalidate`, { reason });
+      load();
+      toast.success("Talão anulado · pontos retirados");
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    }
+  };
+
   const reject = async (id) => {
     const reason = window.prompt("Motivo da rejeição (opcional):") || "";
     try {
@@ -97,7 +122,7 @@ export default function Parceiros() {
           <Storefront size={28} weight="duotone" className="text-sky-400" /> Parceiros Locais
         </h1>
         <p className="text-sm text-slate-400 mt-1">
-          Os sócios enviam a fotografia do talão pela app; aqui validas (ou a validação é automática) e os pontos são creditados.
+          Os sócios enviam a fotografia do talão pela app. A validação é sempre manual — a leitura automática só confirma (ou não) o parceiro, a data e o valor do talão.
         </p>
       </div>
 
@@ -135,17 +160,6 @@ export default function Parceiros() {
                     />
                     Parceria ativa na app do sócio
                   </label>
-                  <label className="flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer">
-                    <input
-                      data-testid={`partner-auto-${p.id}`}
-                      type="checkbox"
-                      checked={p.auto_validate !== false}
-                      disabled={!isAdmin}
-                      onChange={(e) => patch(p.id, { auto_validate: e.target.checked })}
-                      className="accent-sky-500"
-                    />
-                    Validação automática
-                  </label>
                 </div>
               </div>
             ))}
@@ -174,10 +188,6 @@ export default function Parceiros() {
                 <label className="flex items-center gap-1.5 text-[11px] text-slate-300">
                   <input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} className="accent-emerald-500" />
                   Ativa
-                </label>
-                <label className="flex items-center gap-1.5 text-[11px] text-slate-300">
-                  <input type="checkbox" checked={form.auto_validate} onChange={(e) => setForm({ ...form, auto_validate: e.target.checked })} className="accent-sky-500" />
-                  Validação automática
                 </label>
                 <label className="flex items-center gap-1.5 text-[11px] text-slate-300 ml-auto">
                   pts / 5,01 €
@@ -245,32 +255,66 @@ export default function Parceiros() {
                     <div className="text-[10px] text-slate-500 mt-1">
                       {t.partner_name} · compra {new Date(`${t.purchase_date}T12:00:00`).toLocaleDateString("pt-PT")}
                       {t.doc_number ? ` · doc. ${t.doc_number}` : ""}
-                      {t.validation ? ` · validação ${t.validation === "auto" ? "automática" : "manual"}` : ""}
+                      {t.validation ? ` · validação ${t.validation === "auto" ? "por leitura automática" : "manual"}` : ""}
                       {t.points_awarded ? ` · +${t.points_awarded} pts` : ""}
                       {t.duplicate_of ? ` · ⚠️ duplicado de ${t.duplicate_of}` : ""}
+                      {t.invalidate_reason ? ` · motivo: ${t.invalidate_reason}` : ""}
                     </div>
+                    {t.ai_check && (
+                      <div data-testid={`ticket-ai-${t.id}`} className="text-[10px] mt-1 text-slate-400">
+                        🤖{" "}
+                        {t.ai_check.error
+                          ? t.ai_check.error
+                          : `Leitura: ${t.ai_check.partner || "parceiro ilegível"} · ${
+                              t.ai_check.purchase_date
+                                ? new Date(`${t.ai_check.purchase_date}T12:00:00`).toLocaleDateString("pt-PT")
+                                : "data ilegível"
+                            } · ${t.ai_check.amount != null ? euro(t.ai_check.amount) : "valor ilegível"}`}
+                        {t.ai_check.confident ? <span className="text-emerald-300"> · confirmado</span> : null}
+                      </div>
+                    )}
                     {t.photo_data && (
                       <a href={t.photo_data} target="_blank" rel="noreferrer" className="mt-2 block">
                         <img src={t.photo_data} alt="talão" className="max-h-28 rounded border border-slate-800" />
                       </a>
                     )}
                     {t.status === "pending" && (
-                      <div className="flex gap-2 mt-2">
-                        <button
-                          data-testid={`ticket-validate-${t.id}`}
-                          onClick={() => validate(t.id)}
-                          className="flex-1 py-1.5 rounded bg-emerald-500 text-slate-950 text-xs font-bold flex items-center justify-center gap-1"
-                        >
-                          <Check size={12} weight="bold" /> Validar
-                        </button>
-                        <button
-                          data-testid={`ticket-reject-${t.id}`}
-                          onClick={() => reject(t.id)}
-                          className="flex-1 py-1.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/30 text-xs font-bold flex items-center justify-center gap-1"
-                        >
-                          <X size={12} weight="bold" /> Rejeitar
-                        </button>
-                      </div>
+                      <>
+                        <div className="flex gap-2 mt-2">
+                          <button
+                            data-testid={`ticket-validate-${t.id}`}
+                            onClick={() => validate(t.id)}
+                            className="flex-1 py-1.5 rounded bg-emerald-500 text-slate-950 text-xs font-bold flex items-center justify-center gap-1"
+                          >
+                            <Check size={12} weight="bold" /> Validar
+                          </button>
+                          <button
+                            data-testid={`ticket-reject-${t.id}`}
+                            onClick={() => reject(t.id)}
+                            className="flex-1 py-1.5 rounded bg-rose-500/15 text-rose-300 border border-rose-500/30 text-xs font-bold flex items-center justify-center gap-1"
+                          >
+                            <X size={12} weight="bold" /> Rejeitar
+                          </button>
+                        </div>
+                        {t.photo_data && (
+                          <button
+                            data-testid={`ticket-read-${t.id}`}
+                            onClick={() => readTicket(t.id)}
+                            className="mt-1.5 w-full py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold"
+                          >
+                            🤖 Ler o talão (parceiro, data e valor)
+                          </button>
+                        )}
+                      </>
+                    )}
+                    {t.status === "validated" && (
+                      <button
+                        data-testid={`ticket-invalidate-${t.id}`}
+                        onClick={() => invalidate(t.id)}
+                        className="mt-2 w-full py-1.5 rounded border border-slate-600 text-slate-300 text-xs font-bold hover:bg-slate-800"
+                      >
+                        Anular talão e retirar os pontos
+                      </button>
                     )}
                   </li>
                 );
