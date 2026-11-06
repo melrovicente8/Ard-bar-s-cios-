@@ -38,7 +38,8 @@ export function printReceipt(tx, extras = {}) {
             const parts = [];
             if (t.qty_pay > 0) parts.push(`${t.qty_pay}× pago`);
             if (t.qty_offer > 0) parts.push(`${t.qty_offer}× OFERTA DA CASA`);
-            return `<div class="row"><span>${t.product_name} <span class="muted">(${euro(t.unit_price || 0)}/un)</span></span><span class="muted">${parts.join(" + ")}</span></div>`;
+            const lineTotal = (Number(t.unit_price) || 0) * (Number(t.qty_pay || 0) + Number(t.qty_offer || 0));
+            return `<div class="row"><span>${t.product_name} <span class="muted">(${euro(t.unit_price || 0)}/un)</span></span><span>${parts.join(" + ")} · ${euro(lineTotal)}</span></div>`;
           })
           .join("")
       : "";

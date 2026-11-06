@@ -823,7 +823,7 @@ async def client_detail(client_id: str, user: dict = Depends(get_current_user)):
     # Recibos: itens das vendas abatidas por cada pagamento (inclui pagamentos antigos sem item_targets)
     coverage = _allocate_payment_coverages(sales, payments)
     for p in payments:
-        p["covered_docs"] = coverage.get(p.get("id"), [])
+        p["covered_docs"] = p.get("covered_docs") or coverage.get(p.get("id"), [])
     # Consumption breakdown
     now = datetime.now(timezone.utc)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
@@ -2544,6 +2544,11 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
         "source": "points+cash" if (body.points_used and body.amount) else ("points" if body.points_used else "cash"),
     }
     await db.payments.insert_one(pay)
+    # Recibo detalhado: o pagamento devolve já as vendas/itens que abateu, para o
+    # talão emitido logo a seguir à cobrança mostrar os consumos e não só o valor.
+    sales_all = await db.sales.find({"client_id": body.client_id}, {"_id": 0}).sort("created_at", 1).to_list(2000)
+    pays_all = await db.payments.find({"client_id": body.client_id}, {"_id": 0}).sort("created_at", 1).to_list(2000)
+    pay["covered_docs"] = _allocate_payment_coverages(sales_all, pays_all).get(pid, [])
     # Regista nas vendas cobertas o que foi oferecido pela casa — o recibo da venda
     # passa a mostrar a oferta e o valor realmente pago pelo cliente
     if body.item_targets:
@@ -3788,8 +3793,9 @@ async def get_transaction(tx_number: int, user: dict = Depends(get_current_user)
                 payments = await db.payments.find(
                     {"client_id": doc["client_id"]}, {"_id": 0}
                 ).sort("created_at", 1).to_list(5000)
-                coverage = _allocate_payment_coverages(sales, payments)
-                doc["covered_docs"] = coverage.get(doc["id"], [])
+                if not doc.get("covered_docs"):
+                    coverage = _allocate_payment_coverages(sales, payments)
+                    doc["covered_docs"] = coverage.get(doc["id"], [])
             return doc
     raise HTTPException(status_code=404, detail="Transação não encontrada")
 
@@ -9300,7 +9306,7 @@ ARDN_SYSTEM_PROMPT = (
     "Nunca dás conselhos médicos, jurídicos ou fiscais."
 )
 
-ASSISTANT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
+ASSISTANT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
 
 class AssistantChatIn(BaseModel):

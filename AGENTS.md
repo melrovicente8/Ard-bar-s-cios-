@@ -46,7 +46,7 @@ docker compose -f docker-compose.base44.yml up -d
 
 ## Secrets
 - `RESEND_API_KEY` (opcional) via dashboard Base44 → `/run/base44/app.env`, ligado ao serviço backend como último `env_file`. Sem ela, `send_email` falha graciosamente.
-- `GEMINI_API_KEY` (necessária ao Lagarto Amarelo) no mesmo `env_file`. Modelo por omissão: `gemini-3.5-flash` (`GEMINI_MODEL` sobrescreve). A Gemini descontinua modelos antigos: `gemini-2.5-flash`/`gemini-2.0-flash` já devolvem 404 "no longer available to new users", e `gemini-3.8-flash`/`gemini-flash-latest` dão timeout no `generateContent`. Se o widget responder 502, testar `GET https://generativelanguage.googleapis.com/v1beta/models` e trocar o modelo.
+- `GEMINI_API_KEY` (necessária ao Lagarto Amarelo e à leitura de talões) no mesmo `env_file`. Modelo por omissão: `gemini-3.5-flash-lite` (`GEMINI_MODEL` sobrescreve), usado por `_gemini_generate` e pela visão dos talões. O `gemini-3.5-flash` esgota a quota free-tier (`429 generate_content_free_tier_requests` → widget com 502 "Algo correu mal"), por isso o lite é o default. A Gemini descontinua modelos antigos: `gemini-2.5-flash`/`gemini-2.0-flash` já devolvem 404 "no longer available to new users", e `gemini-3.8-flash`/`gemini-flash-latest` dão timeout no `generateContent`. Se o widget responder 502, ler o log (`Lagarto Amarelo (Gemini) falhou`) e testar `GET https://generativelanguage.googleapis.com/v1beta/models`.
 
 ## Portal do sócio
 - Cabeçalho: saudação por hora do dia (`Bom dia/Boa tarde/Boa noite`) + mensagem fixa por estado de quotas (`QUOTA_GREETING` em `SocioPortal.jsx`, testid `socio-dynamic-greeting`).
@@ -78,6 +78,11 @@ docker compose -f docker-compose.base44.yml up -d
 - `GET /api/club-archive` e `GET /api/socio/club-archive` devolvem o documento de `db.club_archive` **mais** `legacy` (o arquivo estático) e `legacy` também vem na resposta do `PUT` — sem isso o separador Plantéis/Resultados ficava vazio depois de gravar.
 - `_seed_club_archive_history()` (arranque) preenche história, palmarés e documentos (fontes) **só quando estão vazios**. Para repor o texto oficial: apagar o doc `db.club_archive {_id:"ardn"}` e reiniciar o backend.
 - Frontend: `ClubArchive.jsx` tem os separadores e `ClubArchiveLegacy.jsx` renderiza as secções só de leitura (identidade, cronologia, plantéis, resultados, tradições). O botão "Editar" fica `disabled` enquanto o GET não chega — um clique antes do load gravava o arquivo vazio.
+
+## Recibos (talão A6)
+- `frontend/src/lib/receipt.js` (`printReceipt`) desenha vendas e recibos de pagamento: itens com quantidade/preço unitário, valor entregue, abatido na dívida e troco.
+- Recibo de pagamento detalha as vendas abatidas em `covered_docs` (`{tx_number, applied, items[]}`). `POST /api/payments` já devolve `covered_docs` — sem isso o talão emitido logo após a cobrança (modal "Enviar recibo?" da ficha) saía sem itens. `GET /transactions/{n}` e `GET /clients/{id}` calculam-no por FIFO (`_allocate_payment_coverages`) quando não vem no documento.
+- Pagamentos com `item_targets` mostram as linhas "N× pago · N× OFERTA DA CASA" com o valor da linha.
 
 ## Adesão de novos sócios
 - Formulário público em `/aderir` (`Adesao.jsx`) → `POST /api/public/membership-application`; o pedido fica pendente para a direção aprovar em `/pedidos` (`ApprovalsPanel` → `/api/membership-applications/{id}/accept|reject`) ou no painel da própria página (`AdesaoApprovals`).
