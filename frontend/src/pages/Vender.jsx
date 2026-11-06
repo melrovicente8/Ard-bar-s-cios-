@@ -33,21 +33,25 @@ export default function Vender() {
   const [submitting, setSubmitting] = useState(false);
   const [houseOffer, setHouseOffer] = useState(false);
   const [topProducts, setTopProducts] = useState([]);
+  const [frequent, setFrequent] = useState([]);
   const [cardsVersion, setCardsVersion] = useState(0); // força atualização dos cartões temporários
 
   const load = async () => {
     setLoading(true);
     try {
-      const [p, c, top] = await Promise.all([
+      const [p, c, top, freq] = await Promise.all([
         api.get("/products"),
         api.get("/clients"),
         api.get("/products/top", { params: { limit: 10 } }).catch(() => ({ data: [] })),
+        api.get("/clients-frequent", { params: { limit: 5 } }).catch(() => ({ data: [] })),
       ]);
       setProducts(p.data);
       setClients(c.data);
       setTopProducts(top.data || []);
+      setFrequent(freq.data || []);
+      // Por defeito NÃO fica nenhum cliente selecionado — escolha explícita (rápida ou pesquisa)
       if (presetClientId && c.data.some((x) => x.id === presetClientId)) setClientId(presetClientId);
-      else if (!clientId && c.data.length) setClientId(c.data[0].id);
+      else if (clientId && !c.data.some((x) => x.id === clientId)) setClientId("");
     } finally {
       setLoading(false);
     }
@@ -187,6 +191,30 @@ export default function Vender() {
             </span>
           )}
         </div>
+        {frequent.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-3" data-testid="client-picker-frequent">
+            <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 self-center mr-1">
+              Mais frequentes
+            </span>
+            {frequent.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                data-testid={`client-quick-${c.id}`}
+                onClick={() => { setClientId(c.id); setClientSearch(""); }}
+                className={`px-3 py-1.5 rounded-full border text-xs font-medium transition-colors ${
+                  clientId === c.id
+                    ? "bg-amber-500 text-slate-950 border-amber-500"
+                    : "bg-slate-950 border-slate-800 text-slate-200 hover:border-amber-500/50"
+                }`}
+                title={`${c.sales_count || 0} consumos registados`}
+              >
+                {c.name}
+                {c.member_number ? <span className="opacity-70"> · nº {c.member_number}</span> : null}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div className="relative md:col-span-1">
             <MagnifyingGlass size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />

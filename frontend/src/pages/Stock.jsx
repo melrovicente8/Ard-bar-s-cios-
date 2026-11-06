@@ -39,6 +39,7 @@ export default function Stock() {
   const [form, setForm] = useState({
     name: "",
     price: "",
+    cost_price: "",
     quantity: "0",
     low_stock_threshold: "5",
     category: "Bebida",
@@ -113,6 +114,7 @@ export default function Stock() {
     setForm({
       name: "",
       price: "",
+      cost_price: "",
       quantity: "0",
       low_stock_threshold: "5",
       category: "Bebida",
@@ -130,6 +132,7 @@ export default function Stock() {
     setForm({
       name: p.name,
       price: String(p.price),
+      cost_price: p.cost_price != null ? String(p.cost_price) : "",
       quantity: String(p.quantity),
       low_stock_threshold: String(p.low_stock_threshold),
       category: p.category || "",
@@ -149,6 +152,7 @@ export default function Stock() {
       await api.post("/products", {
         name: form.name,
         price: parseFloat(form.price),
+        cost_price: form.cost_price === "" ? null : parseFloat(form.cost_price),
         quantity: parseInt(form.quantity, 10),
         low_stock_threshold: parseInt(form.low_stock_threshold, 10),
         category: form.category,
@@ -173,6 +177,7 @@ export default function Stock() {
       await api.put(`/products/${showEdit.id}`, {
         name: form.name,
         price: parseFloat(form.price),
+        cost_price: form.cost_price === "" ? null : parseFloat(form.cost_price),
         quantity: parseInt(form.quantity, 10),
         low_stock_threshold: parseInt(form.low_stock_threshold, 10),
         category: form.category,
@@ -276,6 +281,8 @@ export default function Stock() {
                   <th className="px-5 py-3 font-medium">Produto</th>
                   <th className="px-5 py-3 font-medium">Categoria</th>
                   <th className="px-5 py-3 font-medium text-right">Preço</th>
+                  {canManage && <th className="px-5 py-3 font-medium text-right">Custo</th>}
+                  {canManage && <th className="px-5 py-3 font-medium text-right">Margem</th>}
                   <th className="px-5 py-3 font-medium text-right">Stock</th>
                   <th className="px-5 py-3 font-medium">Estado</th>
                   <th className="px-5 py-3 font-medium text-right">Ações</th>
@@ -293,7 +300,7 @@ export default function Stock() {
                   const cats = Object.keys(groups).sort((a, b) => a.localeCompare(b, "pt"));
                   return cats.flatMap((cat) => [
                     <tr key={`hd-${cat}`} className="bg-slate-950/60 border-t border-slate-800">
-                      <td colSpan={6} className="px-5 py-2 text-[11px] font-bold uppercase tracking-[0.2em] text-amber-400/80">
+                      <td colSpan={canManage ? 8 : 6} className="px-5 py-2 text-[11px] font-bold uppercase tracking-[0.2em] text-amber-400/80">
                         {cat} · {groups[cat].length} {groups[cat].length === 1 ? "produto" : "produtos"}
                       </td>
                     </tr>,
@@ -335,6 +342,18 @@ export default function Stock() {
                       <td className="px-5 py-4 text-right text-amber-400 font-semibold">
                         {euro(p.price)}
                       </td>
+                      {canManage && (
+                        <td className="px-5 py-4 text-right text-slate-400">
+                          {euro(p.cost_price != null ? p.cost_price : p.price * 0.88)}
+                        </td>
+                      )}
+                      {canManage && (
+                        <td className="px-5 py-4 text-right text-emerald-400 font-semibold">
+                          {p.price > 0
+                            ? `${(((p.price - (p.cost_price != null ? p.cost_price : p.price * 0.88)) / p.price) * 100).toFixed(1)}%`
+                            : "—"}
+                        </td>
+                      )}
                       <td className="px-5 py-4 text-right text-slate-200">{p.is_quota ? "—" : p.quantity}</td>
                       <td className="px-5 py-4">
                         {p.is_quota ? (
@@ -603,6 +622,45 @@ function ProductForm({ form, setForm, onSubmit, cta, testidPrefix }) {
             type="number"
             value={form.quantity}
             onChange={(e) => setForm({ ...form, quantity: e.target.value })}
+            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+          />
+        </Field>
+      </div>
+      {/* Preço de custo + margem (só direção/tesouraria vê estes campos) */}
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Preço de custo €">
+          <input
+            data-testid={`${testidPrefix}-cost-input`}
+            type="number"
+            step="0.01"
+            min="0"
+            value={form.cost_price}
+            onChange={(e) => setForm({ ...form, cost_price: e.target.value })}
+            placeholder="por omissão: 12% abaixo"
+            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+          />
+        </Field>
+        <Field label="Margem de lucro %">
+          <input
+            data-testid={`${testidPrefix}-margin-input`}
+            type="number"
+            step="0.1"
+            min="0"
+            max="99"
+            value={(() => {
+              const price = Number(form.price) || 0;
+              const cost = Number(form.cost_price) || 0;
+              return price > 0 && cost > 0 ? ((price - cost) / price * 100).toFixed(1) : "";
+            })()}
+            onChange={(e) => {
+              const m = Number(e.target.value);
+              const cost = Number(form.cost_price) || 0;
+              if (cost > 0 && m >= 0 && m < 100) {
+                setForm({ ...form, price: (cost / (1 - m / 100)).toFixed(2) });
+              } else {
+                setForm({ ...form, price: form.price });
+              }
+            }}
             className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
           />
         </Field>

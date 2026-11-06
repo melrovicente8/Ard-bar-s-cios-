@@ -53,7 +53,7 @@ const navGroups = [
     section: null,
     items: [
       { to: "/", label: "Dashboard", icon: ChartLineUp, testid: "nav-dashboard", roles: [...STAFF_ROLES, "funcionario"] },
-      { to: "/dividas", label: "Dívidas hoje", icon: Wallet, testid: "nav-dividas", roles: [...STAFF_ROLES, "funcionario"] },
+      { to: "/dividas", label: "Dívidas em aberto", icon: Wallet, testid: "nav-dividas", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/vender", label: "Vender", icon: Storefront, testid: "nav-sell", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/bilhetes", label: "Bilhetes", icon: Ticket, testid: "nav-bilhetes", roles: [...STAFF_ROLES, "funcionario"] },
     ],
@@ -79,7 +79,7 @@ const navGroups = [
     items: [
       { to: "/equipa", label: "Equipa", icon: UsersThree, testid: "nav-equipa", roles: ["admin"] },
       { to: "/contas", label: "Contas", icon: Bank, testid: "nav-contas", roles: [...STAFF_ROLES, "funcionario"] },
-      { to: "/banco", label: "Banco", icon: Vault, testid: "nav-banco", roles: ["admin", "tesoureiro"] },
+      { to: "/banco", label: "Caixa e Banco", icon: Vault, testid: "nav-banco", roles: ["admin", "tesoureiro"] },
       { to: "/historico", label: "Histórico", icon: ClockCounterClockwise, testid: "nav-historico", roles: STAFF_ROLES },
       { to: "/transacoes", label: "Transações", icon: ListDashes, testid: "nav-transacoes", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/ofertas", label: "Ofertas casa", icon: Gift, testid: "nav-ofertas", roles: STAFF_ROLES },
@@ -263,6 +263,17 @@ export default function AppLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
   // Refresh de todas as abas: remonta a página atual (recarrega os dados)
   const [refreshKey, setRefreshKey] = useState(0);
+  // Hora junto ao símbolo ARD (liberta espaço no topbar)
+  const [clock, setClock] = useState("");
+  useEffect(() => {
+    const tick = () => {
+      const n = new Date();
+      setClock(String(n.getHours()).padStart(2, "0") + ":" + String(n.getMinutes()).padStart(2, "0"));
+    };
+    tick();
+    const t = setInterval(tick, 10000);
+    return () => clearInterval(t);
+  }, []);
 
   React.useEffect(() => { setMobileOpen(false); }, [location.pathname]);
 
@@ -294,8 +305,13 @@ export default function AppLayout() {
               <SoccerBall size={24} weight="duotone" className="text-amber-400" />
             </div>
             <div>
-              <div className="font-outfit text-xl font-bold tracking-tight leading-tight">
-                ARD<span className="text-amber-400">.</span>
+              <div className="flex items-baseline gap-2 leading-tight">
+                <span className="font-outfit text-xl font-bold tracking-tight">
+                  ARD<span className="text-amber-400">.</span>
+                </span>
+                <span className="font-mono text-[11px] text-slate-400 tabular-nums" data-testid="header-clock" title="Hora local">
+                  {clock}
+                </span>
               </div>
               <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500 -mt-0.5">
                 <EditableText k="brand.subtitle">Nespereira · Bar</EditableText>

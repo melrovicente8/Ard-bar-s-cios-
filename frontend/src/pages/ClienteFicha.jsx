@@ -46,6 +46,8 @@ export default function ClienteFicha() {
   const canEditAny = !!user;
   const canCancelSale = !!user; // funcionários até 24h (backend faz cumprir)
   const canEditSale = !!user;
+  // Funcionários também podem lançar cotas na conta corrente (extornar é só direção/tesouraria)
+  const canLaunchQuotas = !!user;
   const canDeleteClient = user?.role === "admin";
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -83,6 +85,7 @@ export default function ClienteFicha() {
   // Edit sale modal (alter itens + transferir cliente)
   const [editSale, setEditSale] = useState(null);
   const [editSaleItems, setEditSaleItems] = useState({}); // {product_id: qty}
+  const [editSaleReason, setEditSaleReason] = useState(""); // motivo da exclusão (funcionários)
   const [editSaleClient, setEditSaleClient] = useState("");
   const [allClients, setAllClients] = useState([]);
   const [editSaleSearch, setEditSaleSearch] = useState("");
@@ -318,6 +321,7 @@ export default function ClienteFicha() {
       sale.items.forEach((it) => { items[it.product_id] = it.quantity; });
       setEditSaleItems(items);
       setEditSaleClient(sale.client_id);
+      setEditSaleReason("");
       setEditSale(sale);
       setEditSaleSearch("");
     } catch (e) {
@@ -332,6 +336,13 @@ export default function ClienteFicha() {
     if (!items.length) return toast.error("Tem de existir pelo menos 1 item");
     const body = { items };
     if (editSaleClient && editSaleClient !== editSale.client_id) body.client_id = editSaleClient;
+    const originalQty = (editSale?.items || []).reduce((a, it) => a + it.quantity, 0);
+    const newQty = items.reduce((a, it) => a + it.quantity, 0);
+    const removes = newQty < originalQty;
+    if (user?.role === "funcionario" && removes) {
+      if (!editSaleReason.trim()) return toast.error("Indica o motivo da exclusão dos itens");
+      body.removal_reason = editSaleReason.trim();
+    }
     try {
       await api.put(`/sales/${editSale.id}`, body);
       const transferred = body.client_id && body.client_id !== id;
@@ -609,6 +620,21 @@ export default function ClienteFicha() {
   });
   // Subset of unpaid sales (open or partial) for payment modal breakdown
   const unpaidSales = sales.filter((s) => paidStatus[s.id] !== "paid");
+
+  // Regras de edição da venda (espelham o backend): 24h se servida pelo próprio;
+  // se não foi ele, só em vendas por pagar e (após 5 min) sem excluir/descontar itens.
+  const esAgeMs = editSale ? Date.now() - new Date(editSale.created_at).getTime() : 0;
+  const esServedBySelf = editSale ? editSale.user_email === user?.email : false;
+  const esPaid = editSale ? paidStatus[editSale.id] === "paid" : false;
+  const esCanEdit = editSale
+    ? canEditAll || (esServedBySelf ? esAgeMs <= 86400000 : !esPaid)
+    : false;
+  const esCanRemove = editSale
+    ? canEditAll || (esServedBySelf ? esAgeMs <= 86400000 : (!esPaid && esAgeMs <= 300000))
+    : false;
+  const esOriginalQty = editSale ? editSale.items.reduce((a, it) => a + it.quantity, 0) : 0;
+  const esNewQty = Object.values(editSaleItems).reduce((a, q) => a + q, 0);
+  const esHasRemoval = esNewQty < esOriginalQty;
 
   // Filtro temporal (Hoje por defeito) para Consumo e Histórico
   const inRange = (iso) => {
@@ -981,7 +1007,7 @@ export default function ClienteFicha() {
                 <button
                   key={q.month}
                   type="button"
-                  disabled={!canEditAll}
+                  disabled={!canLaunchQuotas}
                   data-testid={`quota-${q.month}`}
                   title={billed ? "Lançada na conta corrente — podes selecionar para extornar" : paid ? "Paga — podes selecionar para extornar" : undefined}
                   onClick={() => setQuotaSelection({ ...quotaSelection, [q.month]: !selected })}
@@ -1004,7 +1030,7 @@ export default function ClienteFicha() {
               );
             })}
           </div>
-          {canEditAll && (() => {
+          {canLaunchQuotas && (() => {
             const selMonths = Object.entries(quotaSelection).filter(([, v]) => v).map(([m]) => Number(m));
             const byMonth = Object.fromEntries(quotas.quotas.map((q) => [q.month, q]));
             const billable = selMonths.filter((m) => (byMonth[m]?.status || "open") === "open");
@@ -1017,7 +1043,7 @@ export default function ClienteFicha() {
                     : "Seleciona meses por pagar"}
                 </span>
                 <div className="flex items-center gap-2">
-                  {reversible.length > 0 && (
+                  {canEditAll && reversible.length > 0 && (
                     <button
                       type="button"
                       data-testid="quotas-reverse-btn"
@@ -1818,9 +1844,22 @@ export default function ClienteFicha() {
             <p className="text-[11px] text-slate-500 mb-4">
               Registo original: {new Date(editSale.created_at).toLocaleString("pt-PT")} · por {editSale.user_email || "—"}
               {user?.role === "funcionario" && (
-                <span className="text-amber-400 ml-2">⚠ funcionários só podem editar até 24h após o registo</span>
+                <span className="text-amber-400 ml-2">
+                  ⚠ {esServedBySelf
+                    ? "até 24h após o registo"
+                    : esPaid
+                    ? "venda já paga — só quem a serviu pode editar"
+                    : esCanRemove
+                    ? "venda por pagar · até 5 min pode excluir itens"
+                    : "já passaram 5 min — só pode acrescentar itens ou transferir"}
+                </span>
               )}
             </p>
+            {!esCanEdit && (
+              <p className="text-[11px] text-rose-300 mb-3" data-testid="edit-sale-blocked">
+                Não tem permissão para editar esta venda. Contacte a administração.
+              </p>
+            )}
 
             {/* Selector de cliente */}
             <div className="mb-4">
@@ -1865,11 +1904,11 @@ export default function ClienteFicha() {
                 return (
                   <div key={pid} data-testid={`edit-sale-item-${pid}`} className="flex items-center gap-2 text-sm bg-slate-950 border border-slate-800 rounded px-3 py-2">
                     <span className="flex-1 truncate">{p.name}</span>
-                    <button onClick={() => setEditSaleItems({ ...editSaleItems, [pid]: Math.max(0, qty - 1) })} className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700 flex items-center justify-center"><Minus size={11} /></button>
+                    <button disabled={!esCanRemove} onClick={() => setEditSaleItems({ ...editSaleItems, [pid]: Math.max(0, qty - 1) })} className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center"><Minus size={11} /></button>
                     <span className="w-8 text-center text-sm font-bold">{qty}</span>
-                    <button onClick={() => setEditSaleItems({ ...editSaleItems, [pid]: qty + 1 })} className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700 flex items-center justify-center"><Plus size={11} /></button>
+                    <button disabled={!esCanEdit} onClick={() => setEditSaleItems({ ...editSaleItems, [pid]: qty + 1 })} className="w-7 h-7 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center"><Plus size={11} /></button>
                     <span className="w-20 text-right text-xs text-slate-400">{euro((p.price || 0) * qty)}</span>
-                    <button onClick={() => { const c = { ...editSaleItems }; delete c[pid]; setEditSaleItems(c); }} data-testid={`edit-sale-remove-${pid}`} className="text-rose-400 hover:text-rose-300"><Trash size={13} /></button>
+                    <button disabled={!esCanRemove} onClick={() => { const c = { ...editSaleItems }; delete c[pid]; setEditSaleItems(c); }} data-testid={`edit-sale-remove-${pid}`} className="text-rose-400 hover:text-rose-300 disabled:opacity-30 disabled:cursor-not-allowed"><Trash size={13} /></button>
                   </div>
                 );
               })}
@@ -1883,8 +1922,9 @@ export default function ClienteFicha() {
                   <button
                     key={p.id}
                     type="button"
+                    disabled={!esCanEdit}
                     onClick={() => setEditSaleItems({ ...editSaleItems, [p.id]: (editSaleItems[p.id] || 0) + 1 })}
-                    className="text-left px-2 py-1.5 rounded bg-slate-900 border border-slate-800 hover:border-amber-500/40 text-xs"
+                    className="text-left px-2 py-1.5 rounded bg-slate-900 border border-slate-800 hover:border-amber-500/40 disabled:opacity-30 disabled:cursor-not-allowed text-xs"
                   >
                     <div className="truncate">{p.name}</div>
                     <div className="text-amber-400 font-bold text-[11px]">{euro(p.price)}</div>
@@ -1892,6 +1932,21 @@ export default function ClienteFicha() {
                 ))}
               </div>
             </details>
+
+            {user?.role === "funcionario" && esHasRemoval && (
+              <div className="mt-3" data-testid="edit-sale-removal-reason">
+                <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-rose-300/80">
+                  Motivo da exclusão (obrigatório — fica pendente de validação da direção)
+                </label>
+                <textarea
+                  value={editSaleReason}
+                  onChange={(e) => setEditSaleReason(e.target.value)}
+                  rows={2}
+                  placeholder="Ex.: item errado / cliente desistiu"
+                  className="mt-1.5 w-full bg-slate-950 border border-rose-500/30 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-rose-500/40"
+                />
+              </div>
+            )}
 
             <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-800">
               <span className="text-xs uppercase tracking-widest text-slate-500 font-bold">Total</span>
@@ -1905,7 +1960,7 @@ export default function ClienteFicha() {
 
             <div className="flex gap-2 mt-4">
               <button type="button" onClick={() => setEditSale(null)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Cancelar</button>
-              <button data-testid="edit-sale-submit-btn" onClick={submitEditSale} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold">Guardar alterações</button>
+              <button data-testid="edit-sale-submit-btn" onClick={submitEditSale} disabled={!esCanEdit} className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold">Guardar alterações</button>
             </div>
           </div>
         </div>

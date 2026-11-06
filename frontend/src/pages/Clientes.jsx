@@ -159,7 +159,9 @@ export default function Clientes() {
             <button
               data-testid="quota-launch-btn"
               onClick={() => setShowQuotaLaunch(true)}
-              className="bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 font-bold px-4 py-2.5 rounded-lg flex items-center gap-2 transition-colors"
+              disabled={year === 2026}
+              title={year === 2026 ? "Lançamento de cotas 2026 desativado" : `Lançar cotas ${year}`}
+              className="bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-500/15 font-bold px-4 py-2.5 rounded-lg flex items-center gap-2 transition-colors"
             >
               <SealCheck size={18} weight="fill" /> Lançar cotas {year}
             </button>

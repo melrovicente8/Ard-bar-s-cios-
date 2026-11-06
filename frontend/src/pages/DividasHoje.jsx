@@ -25,8 +25,7 @@ export default function DividasHoje() {
     ? debtors.filter(
         (c) =>
           c.name.toLowerCase().includes(q) ||
-          (c.member_number || "").toLowerCase().includes(q) ||
-          (c.contact || "").toLowerCase().includes(q)
+          (c.member_number || "").toLowerCase().includes(q)
       )
     : debtors;
 
@@ -79,8 +78,7 @@ export default function DividasHoje() {
                 <tr className="text-slate-500 text-xs uppercase tracking-wider bg-slate-950/40">
                   <th className="px-5 py-3 font-medium">Nome</th>
                   <th className="px-5 py-3 font-medium">Estatuto</th>
-                  <th className="px-5 py-3 font-medium">Contacto</th>
-                  <th className="px-5 py-3 font-medium text-right">Pontos</th>
+                  <th className="px-5 py-3 font-medium">Data da dívida</th>
                   <th className="px-5 py-3 font-medium text-right">Dívida</th>
                   <th className="px-5 py-3 font-medium text-right">Ações</th>
                 </tr>
@@ -102,8 +100,9 @@ export default function DividasHoje() {
                         <span className="text-xs text-slate-500">—</span>
                       )}
                     </td>
-                    <td className="px-5 py-3 text-slate-400">{c.contact || "—"}</td>
-                    <td className="px-5 py-3 text-right text-amber-300">{c.points || 0}</td>
+                    <td className="px-5 py-3 text-slate-400 text-xs" data-testid={`debtor-since-${c.id}`}>
+                      {c.debt_since ? new Date(c.debt_since).toLocaleDateString("pt-PT") : "—"}
+                    </td>
                     <td className="px-5 py-3 text-right">
                       <span className="font-outfit text-lg font-bold text-rose-400">{euro(c.balance)}</span>
                     </td>

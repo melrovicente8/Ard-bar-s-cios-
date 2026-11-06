@@ -48,6 +48,7 @@ export function openQuarterlyDoc(d) {
   <table><tbody>
     <tr><td>Consumo no bar</td><td class="right pos"><strong>${euro(d.income.consumption)}</strong></td></tr>
     <tr><td>Cotas de sócios</td><td class="right pos"><strong>${euro(d.income.quotas)}</strong></td></tr>
+    ${(d.income.donations || 0) > 0 ? `<tr><td>Donativos / gratificações (superiores a 10 €)</td><td class="right pos"><strong>${euro(d.income.donations)}</strong></td></tr>` : ""}
     <tr style="border-top:2px solid #0f172a"><td><strong>TOTAL RECEITAS</strong></td><td class="right pos"><strong>${euro(d.income.total)}</strong></td></tr>
   </tbody></table>
 
@@ -57,6 +58,7 @@ export function openQuarterlyDoc(d) {
     <tr><td>Despesas mensais</td><td class="right neg"><strong>${euro(d.expenses.supplier_expenses)}</strong></td></tr>
     <tr style="border-top:2px solid #0f172a"><td><strong>TOTAL DESPESAS</strong></td><td class="right neg"><strong>${euro(despesasReais)}</strong></td></tr>
   </tbody></table>
+  <p class="note" style="margin-top:6px">Transferências entre caixa e banco são movimentação de saldo e não são contabilizadas como despesa.</p>
 
   <h2 style="font-size:14px;margin:22px 0 6px;color:#475569">SALDOS CONTABILÍSTICOS (BANCO + CAIXA)</h2>
   <table><tbody>

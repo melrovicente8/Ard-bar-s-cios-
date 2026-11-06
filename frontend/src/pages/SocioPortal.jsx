@@ -44,6 +44,7 @@ import SocioMerch from "../components/SocioMerch";
 import SocioFamily from "../components/SocioFamily";
 import SocioGifts from "../components/SocioGifts";
 import { openQuarterlyDoc } from "../lib/quarterlyDoc";
+import { openMonthlyDoc } from "../lib/monthlyDoc";
 
 export default function SocioPortal() {
   const { data, logout, refresh } = useSocio();
@@ -93,6 +94,7 @@ export default function SocioPortal() {
   // Financeiro do clube: movimento do mês (todos os sócios) + balanço trimestral (cotas em dia)
   const [monthly, setMonthly] = useState(null);
   const [quarterly, setQuarterly] = useState(null);
+  const [monthlyDoc, setMonthlyDoc] = useState(null);
   const [canSeeFinance, setCanSeeFinance] = useState(null);
   const [myRequests, setMyRequests] = useState([]);
   const [editingReq, setEditingReq] = useState(null);
@@ -122,8 +124,9 @@ export default function SocioPortal() {
     api.get("/socio/bar-status").then((r) => setBarOpen(!!r.data.open)).catch(() => setBarOpen(null));
     // Resumo discreto do mês corrente — todos os sócios (apenas totalizadores)
     api.get("/socio/finance").then((r) => setMonthly(r.data)).catch(() => {});
-    // Balanço trimestral — só devolve dados se as cotas estiverem em dia (403 caso contrário)
+    // Balanço trimestral e mensal — só devolvem dados se as cotas estiverem em dia (403 caso contrário)
     api.get("/socio/balance-quarterly").then((r) => setQuarterly(r.data)).catch(() => {});
+    api.get("/socio/balance-monthly").then((r) => setMonthlyDoc(r.data)).catch(() => {});
     // Cotas em dia? Se não, o sócio não vê saldos do clube — vê aviso
     api.get("/socio/can-see-finance").then((r) => setCanSeeFinance(!!r.data.can_see)).catch(() => setCanSeeFinance(null));
     loadMyRequests();
@@ -217,6 +220,7 @@ export default function SocioPortal() {
       await refresh();
       api.get("/socio/finance").then((r) => setMonthly(r.data)).catch(() => {});
       api.get("/socio/balance-quarterly").then((r) => setQuarterly(r.data)).catch(() => {});
+      api.get("/socio/balance-monthly").then((r) => setMonthlyDoc(r.data)).catch(() => {});
       api.get("/socio/can-see-finance").then((r) => setCanSeeFinance(!!r.data.can_see)).catch(() => {});
       loadMyRequests();
       loadNotifications();
@@ -856,16 +860,28 @@ export default function SocioPortal() {
             {quarterly && (
               <span title="Saldo final financeiro — dinheiro contabilístico em caixa e banco">Saldo final financeiro <span className="text-slate-300 font-medium">{euro(quarterly.total_balance ?? 0)}</span> <span className="text-slate-600">(banco {euro(quarterly.bank_balance ?? 0)} + caixa {euro(quarterly.cash_balance ?? 0)})</span></span>
             )}
-            {quarterly && (
-              <button
-                data-testid="socio-quarterly-pdf-btn"
-                onClick={() => { if (!openQuarterlyDoc(quarterly)) toast.error("Permite popups para imprimir o balanço"); }}
-                className="ml-auto text-amber-400/80 hover:text-amber-300 flex items-center gap-1.5 font-medium"
-                title="Balanço trimestral — sócio com cotas em dia"
-              >
-                <Printer size={12} /> Balanço trimestral ({quarterly.quarter}) · PDF
-              </button>
-            )}
+            <div className="ml-auto flex items-center gap-3">
+              {monthlyDoc && (
+                <button
+                  data-testid="socio-monthly-pdf-btn"
+                  onClick={() => { if (!openMonthlyDoc(monthlyDoc)) toast.error("Permite popups para imprimir o balanço"); }}
+                  className="text-amber-400/80 hover:text-amber-300 flex items-center gap-1.5 font-medium"
+                  title="Balanço mensal com detalhe de despesas — sócio com cotas em dia"
+                >
+                  <Printer size={12} /> Balanço mensal ({monthlyDoc.month}) · PDF
+                </button>
+              )}
+              {quarterly && (
+                <button
+                  data-testid="socio-quarterly-pdf-btn"
+                  onClick={() => { if (!openQuarterlyDoc(quarterly)) toast.error("Permite popups para imprimir o balanço"); }}
+                  className="text-amber-400/80 hover:text-amber-300 flex items-center gap-1.5 font-medium"
+                  title="Balanço trimestral — sócio com cotas em dia"
+                >
+                  <Printer size={12} /> Balanço trimestral ({quarterly.quarter}) · PDF
+                </button>
+              )}
+            </div>
           </div>
         )}
 

@@ -2,15 +2,33 @@ import React, { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { printReceipt } from "../lib/receipt";
-import { ArrowLeft, Printer, Receipt, ShoppingBag, User } from "@phosphor-icons/react";
+import { ArrowLeft, Printer, Receipt, ShoppingBag, User, ClockCounterClockwise, ShieldCheck } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { useAuth } from "../context/AuthContext";
 
 export default function Transacao() {
   const { tx_number } = useParams();
+  const { user } = useAuth();
+  const canValidate = ["admin", "tesoureiro", "presidente"].includes(user?.role);
   const [tx, setTx] = useState(null);
   const [client, setClient] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
+
+  const reload = async () => {
+    const { data } = await api.get(`/transactions/${tx_number}`);
+    setTx(data);
+  };
+
+  const validateRemoval = async (removalId) => {
+    try {
+      await api.post(`/sales/${tx.id}/removals/${removalId}/validate`);
+      toast.success("Exclusão validada");
+      await reload();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
 
   useEffect(() => {
     setLoading(true);
@@ -144,6 +162,75 @@ export default function Transacao() {
                 <li key={i} className="flex items-center justify-between border-b border-slate-800/60 pb-1.5">
                   <span><span className="text-slate-500">{it.quantity}×</span> {it.product_name} <span className="text-slate-500 text-xs">({euro(it.unit_price || 0)}/un)</span></span>
                   <span className="text-slate-300">{euro(it.subtotal)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {isSale && (tx.pending_removals || []).length > 0 && (
+          <div className="mt-6 border-t border-slate-800 pt-4" data-testid="tx-pending-removals">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-rose-300/80 mb-2">
+              Exclusões de itens por validar
+            </div>
+            <ul className="space-y-2">
+              {(tx.pending_removals || []).map((r) => (
+                <li key={r.id} className={`rounded-lg border p-3 text-xs ${r.status === "pending" ? "border-rose-500/30 bg-rose-500/5" : "border-emerald-500/30 bg-emerald-500/5"}`}>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <span className="font-medium text-slate-200">
+                      {(r.items || []).map((it) => `${it.quantity}× ${it.product_name}`).join(", ")}
+                    </span>
+                    <span className={r.status === "pending" ? "text-rose-300" : "text-emerald-300"}>
+                      {r.status === "pending" ? "Pendente" : `Validada por ${r.validated_by || "—"}`}
+                    </span>
+                  </div>
+                  <div className="text-slate-400 mt-1">Motivo: {r.reason}</div>
+                  <div className="text-slate-500 mt-1">
+                    {new Date(r.at).toLocaleString("pt-PT")} · por {r.by}
+                  </div>
+                  {r.status === "pending" && canValidate && (
+                    <button
+                      data-testid={`tx-validate-removal-${r.id}`}
+                      onClick={() => validateRemoval(r.id)}
+                      className="mt-2 px-3 py-1.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 text-[11px] font-bold flex items-center gap-1.5"
+                    >
+                      <ShieldCheck size={12} weight="bold" /> Validar exclusão
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {isSale && (tx.edits || []).length > 0 && (
+          <div className="mt-6 border-t border-slate-800 pt-4" data-testid="tx-edit-history">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-1.5">
+              <ClockCounterClockwise size={12} /> Histórico de edições · antes / depois
+            </div>
+            <ul className="space-y-2">
+              {(tx.edits || []).map((ed) => (
+                <li key={ed.id} className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs space-y-1">
+                  <div className="text-slate-500">{new Date(ed.at).toLocaleString("pt-PT")} · por {ed.by}</div>
+                  {ed.changes?.client && (
+                    <div className="text-slate-300">Cliente: <span className="line-through text-slate-500">{ed.changes.client.before}</span> → <span className="text-slate-100">{ed.changes.client.after}</span></div>
+                  )}
+                  {ed.changes?.items && (
+                    <div className="text-slate-300">
+                      Itens: <span className="line-through text-slate-500">{(ed.changes.items.before || []).join(", ") || "—"}</span> → <span className="text-slate-100">{(ed.changes.items.after || []).join(", ") || "—"}</span>
+                    </div>
+                  )}
+                  {ed.changes?.removed && (
+                    <div className="text-rose-300">Removidos: {(ed.changes.removed || []).join(", ")}</div>
+                  )}
+                  {ed.changes?.removal_reason && (
+                    <div className="text-slate-400">Motivo: {ed.changes.removal_reason}</div>
+                  )}
+                  {ed.changes?.total && (
+                    <div className="text-slate-300">
+                      Total: <span className="line-through text-slate-500">{euro(ed.changes.total.before)}</span> → <span className="text-amber-300">{euro(ed.changes.total.after)}</span>
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>

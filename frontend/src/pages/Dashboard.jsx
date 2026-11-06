@@ -203,15 +203,32 @@ export default function Dashboard() {
           masked
         />
         {canSeeStockValue && (
-          <StatCard
-            testid="kpi-stock-value"
-            icon={Package}
-            label="Valor stock"
-            value={euro(data.total_stock_value)}
-            accent="bg-emerald-500/10 text-emerald-400"
+          <Link
             to="/stock"
-            masked
-          />
+            data-testid="kpi-stock-value"
+            className="block bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-5 hover:border-amber-500/40 transition-colors"
+          >
+            <div className="flex items-start justify-between">
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Valor de stock</div>
+              <div className="p-2.5 rounded-lg bg-emerald-500/10 text-emerald-400">
+                <Package size={20} weight="duotone" />
+              </div>
+            </div>
+            <div className="mt-3 space-y-1.5">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-[11px] text-slate-400">Venda ao público</span>
+                <span className="font-outfit text-xl font-bold text-white" data-testid="kpi-stock-value-sale">{euro(data.total_stock_value)}</span>
+              </div>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-[11px] text-slate-400">Preço de custo</span>
+                <span className="font-outfit text-base font-bold text-slate-300" data-testid="kpi-stock-value-cost">{euro(data.total_stock_cost || 0)}</span>
+              </div>
+              <div className="flex items-baseline justify-between gap-2 pt-1 border-t border-slate-800/60">
+                <span className="text-[10px] uppercase tracking-wider text-slate-500">Margem de lucro</span>
+                <span className="text-sm font-bold text-emerald-400" data-testid="kpi-stock-margin">{data.stock_margin_pct ?? 0}%</span>
+              </div>
+            </div>
+          </Link>
         )}
         {cashBank && (
           <StatCard

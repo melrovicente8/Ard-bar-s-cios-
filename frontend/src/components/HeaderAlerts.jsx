@@ -7,7 +7,6 @@ import { Bell, ChatCircle, DeviceMobile, Package, Gift } from "@phosphor-icons/r
  * Relógio + notificações pendentes no topo — presente em todas as abas.
  */
 export default function HeaderAlerts() {
-  const [clock, setClock] = useState("");
   const [pending, setPending] = useState({ requests: 0, messages: 0, mbway: 0, toDeliver: 0, gifts: 0 });
 
   const loadPending = async () => {
@@ -33,22 +32,15 @@ export default function HeaderAlerts() {
   };
 
   useEffect(() => {
-    const tick = () => {
-      const n = new Date();
-      setClock(String(n.getHours()).padStart(2, "0") + ":" + String(n.getMinutes()).padStart(2, "0"));
-    };
-    tick();
-    const t = setInterval(tick, 10000);
     loadPending();
     const p = setInterval(loadPending, 15000);
-    return () => { clearInterval(t); clearInterval(p); };
+    return () => { clearInterval(p); };
   }, []);
 
   const pill = "px-2.5 py-1 md:px-3 md:py-1.5 rounded-full text-[11px] md:text-xs font-bold flex items-center gap-1 md:gap-1.5 animate-pulse whitespace-nowrap ring-2 ring-offset-2 ring-offset-slate-950 shadow-lg";
 
   return (
     <div className="flex flex-wrap items-center justify-end gap-1.5 md:gap-2.5 max-w-full" data-testid="header-alerts">
-      <span className="hidden sm:inline font-mono text-xs text-slate-400 tabular-nums" data-testid="header-clock">{clock}</span>
       {pending.requests > 0 && (
         <Link to="/pedidos" data-testid="header-alert-requests" className={`${pill} bg-amber-400 text-slate-950 ring-amber-400/70`}>
           <Bell size={13} weight="fill" /> {pending.requests} pedido{pending.requests > 1 ? "s" : ""}

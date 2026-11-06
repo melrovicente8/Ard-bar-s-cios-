@@ -64,6 +64,7 @@ class RegisterIn(BaseModel):
 class ProductIn(BaseModel):
     name: str
     price: float
+    cost_price: Optional[float] = None  # preço de custo — visível só à direção/tesouraria
     quantity: int = 0
     low_stock_threshold: int = 5
     category: Optional[str] = "Bebida"
@@ -77,6 +78,7 @@ class ProductIn(BaseModel):
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
     price: Optional[float] = None
+    cost_price: Optional[float] = None
     quantity: Optional[int] = None
     low_stock_threshold: Optional[int] = None
     category: Optional[str] = None
@@ -152,6 +154,7 @@ class SaleIn(BaseModel):
 class SaleEditIn(BaseModel):
     client_id: Optional[str] = None  # se fornecido, transfere a venda para este cliente
     items: Optional[List[SaleItemIn]] = None  # se fornecido, substitui todos os itens
+    removal_reason: Optional[str] = None  # motivo da exclusão/desconto de itens (obrigatório p/ funcionários)
 
 class PaymentItemTarget(BaseModel):
     sale_id: str
@@ -449,9 +452,15 @@ async def list_users(user: dict = Depends(require_role("admin"))):
     return items
 
 # ---------- Products ----------
+def _can_see_cost(user: dict) -> bool:
+    return user.get("role") in ("admin", "tesoureiro", "presidente")
+
+
 @api_router.get("/products")
 async def list_products(user: dict = Depends(get_current_user)):
-    items = await db.products.find({}, {"_id": 0}).sort("name", 1).to_list(1000)
+    # O preço de custo não é visível a funcionários nem sócios
+    projection = {"_id": 0} if _can_see_cost(user) else {"_id": 0, "cost_price": 0}
+    items = await db.products.find({}, projection).sort("name", 1).to_list(1000)
     return items
 
 @api_router.post("/products")
@@ -461,6 +470,8 @@ async def create_product(body: ProductIn, user: dict = Depends(require_role("adm
         "id": pid,
         "name": body.name,
         "price": float(body.price),
+        # Sem custo indicado: 12% abaixo do preço de venda (editável na ficha do produto)
+        "cost_price": round(float(body.cost_price), 2) if body.cost_price is not None else round(float(body.price) * 0.88, 2),
         "quantity": int(body.quantity),
         "low_stock_threshold": int(body.low_stock_threshold),
         "category": body.category or "Bebida",
@@ -817,7 +828,6 @@ async def list_debtors(user: dict = Depends(get_current_user)):
     clients = await db.clients.find({}, {"_id": 0, "pin_hash": 0}).to_list(5000)
     # Épsilon de 0,005 €: resíduos de vírgula flutuante (ex.: 4e-16) não são dívida
     debtors = [c for c in clients if (c.get("balance", 0) > 0.004)]
-    debtors.sort(key=lambda x: x.get("balance", 0), reverse=True)
     # vendas de hoje por cliente (para o filtro "Hoje" por defeito)
     try:
         from zoneinfo import ZoneInfo
@@ -828,9 +838,56 @@ async def list_debtors(user: dict = Depends(get_current_user)):
     today_by_client: dict = {}
     async for s in db.sales.find({"created_at": {"$gte": today_start}}, {"client_id": 1, "total": 1}):
         today_by_client[s["client_id"]] = today_by_client.get(s["client_id"], 0.0) + float(s.get("total", 0))
+    # Data da dívida: venda mais antiga ainda por cobrir (imputação FIFO dos pagamentos)
+    ids = [c["id"] for c in debtors]
+    debt_since: dict = {}
+    if ids:
+        paid_by_client: dict = {}
+        async for p in db.payments.find({"client_id": {"$in": ids}}, {"client_id": 1, "total_credited": 1, "amount": 1}):
+            paid_by_client[p["client_id"]] = paid_by_client.get(p["client_id"], 0.0) + float(p.get("total_credited") or p.get("amount") or 0)
+        sales_by_client: dict = {}
+        async for s in db.sales.find({"client_id": {"$in": ids}}, {"client_id": 1, "total": 1, "created_at": 1}).sort("created_at", 1):
+            sales_by_client.setdefault(s["client_id"], []).append(s)
+        for cid, slist in sales_by_client.items():
+            remaining = paid_by_client.get(cid, 0.0)
+            for s in slist:
+                total_s = float(s.get("total", 0) or 0)
+                if remaining >= total_s - 1e-9:
+                    remaining -= total_s
+                    continue
+                debt_since[cid] = s.get("created_at")
+                break
     for c in debtors:
         c["today_sales_total"] = round(today_by_client.get(c["id"], 0.0), 2)
+        c["debt_since"] = debt_since.get(c["id"])
+    # Apresentada por data da dívida (mais antiga primeiro)
+    debtors.sort(key=lambda x: (x.get("debt_since") or "9999", -x.get("balance", 0)))
     return debtors
+
+
+@api_router.get("/clients-frequent")
+async def frequent_clients(limit: int = 5, user: dict = Depends(get_current_user)):
+    """Clientes/sócios mais frequentes (nº de vendas) — escolha rápida no Ponto de Venda."""
+    limit = min(max(limit, 1), 10)
+    counts = await db.sales.aggregate([
+        {"$match": {"source": {"$nin": ["quota", "temp_client"]}}},
+        {"$group": {"_id": "$client_id", "sales_count": {"$sum": 1}}},
+        {"$sort": {"sales_count": -1}},
+        {"$limit": limit * 3},
+    ]).to_list(limit * 3)
+    out = []
+    for row in counts:
+        c = await db.clients.find_one(
+            {"id": row["_id"], "archived": {"$ne": True}},
+            {"_id": 0, "pin_hash": 0},
+        )
+        if not c or c.get("is_temp"):
+            continue
+        c["sales_count"] = row["sales_count"]
+        out.append(c)
+        if len(out) >= limit:
+            break
+    return out
 
 # ---------- Fichas temporárias · Cartão "Não Cliente" (máx. 3 ativas) ----------
 OCCASIONAL_MAX_ACTIVE = 3
@@ -1310,6 +1367,9 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
             "house_value": subtotal_full if is_house else 0.0,
         })
 
+    # Oferta da casa é exclusiva da direção/tesouraria (funcionários não selecionam)
+    if house_total > 0 and role not in ("admin", "tesoureiro", "presidente"):
+        raise HTTPException(status_code=403, detail="Oferta da casa é exclusiva da direção/tesouraria")
     # Limite mensal de oferta da casa: funcionário 20 € · admin/tesoureiro/presidente 50 €
     if house_total > 0:
         allowance = await _house_offer_allowance(user)
@@ -1469,8 +1529,8 @@ async def cancel_sale(sale_id: str, user: dict = Depends(get_current_user)):
             raise HTTPException(status_code=403, detail="Funcionários só podem cancelar vendas que registaram pessoalmente")
         try:
             created = datetime.fromisoformat(sale["created_at"].replace("Z", "+00:00"))
-            if datetime.now(timezone.utc) - created > timedelta(hours=12):
-                raise HTTPException(status_code=403, detail="Funcionários só podem cancelar vendas até 12h após o registo")
+            if datetime.now(timezone.utc) - created > timedelta(hours=24):
+                raise HTTPException(status_code=403, detail="Funcionários só podem cancelar vendas até 24h após o registo")
         except (ValueError, KeyError):
             raise HTTPException(status_code=403, detail="Sem permissão para cancelar esta venda")
     # restock products
@@ -1506,21 +1566,101 @@ async def cancel_sale(sale_id: str, user: dict = Depends(get_current_user)):
     await _sync_quota_paid_status(sale["client_id"])
     return {"ok": True, "restored_total": total, "restored_points": pts}
 
+async def _sale_paid_state(sale: dict) -> str:
+    """Estado de pagamento de uma venda (imputação FIFO dos pagamentos do cliente)."""
+    payments = await db.payments.find(
+        {"client_id": sale["client_id"]}, {"_id": 0, "sale_ids": 1, "total_credited": 1, "amount": 1}
+    ).to_list(5000)
+    targeted = set()
+    pool = 0.0
+    for p in payments:
+        if p.get("sale_ids"):
+            targeted.update(p["sale_ids"])
+        else:
+            pool += float(p.get("total_credited") or p.get("amount") or 0)
+    sales = await db.sales.find(
+        {"client_id": sale["client_id"]}, {"_id": 0, "id": 1, "total": 1, "created_at": 1}
+    ).sort("created_at", 1).to_list(5000)
+    for s in sales:
+        total_s = float(s.get("total", 0) or 0)
+        if s["id"] == sale["id"]:
+            if s["id"] in targeted:
+                return "paid"
+            if pool >= total_s - 1e-9:
+                return "paid"
+            return "partial" if pool > 1e-9 else "open"
+        if s["id"] in targeted:
+            continue
+        if pool >= total_s - 1e-9:
+            pool -= total_s
+        elif pool > 1e-9:
+            pool = 0.0
+    return "open"
+
+
+@api_router.post("/sales/{sale_id}/removals/{removal_id}/validate")
+async def validate_sale_removal(sale_id: str, removal_id: str, user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
+    """Direção valida uma exclusão de itens registada por um funcionário (fica registada na transação)."""
+    sale = await db.sales.find_one({"id": sale_id}, {"_id": 0})
+    if not sale:
+        raise HTTPException(status_code=404, detail="Venda não encontrada")
+    removals = sale.get("pending_removals") or []
+    found = next((r for r in removals if r.get("id") == removal_id), None)
+    if not found:
+        raise HTTPException(status_code=404, detail="Exclusão não encontrada")
+    if found.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Esta exclusão já foi validada")
+    for r in removals:
+        if r.get("id") == removal_id:
+            r["status"] = "validated"
+            r["validated_by"] = user["email"]
+            r["validated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.sales.update_one({"id": sale_id}, {"$set": {"pending_removals": removals}})
+    await _audit(
+        "sale_removal_validated", user["email"], entity="sale", entity_id=sale_id,
+        tx_number=sale.get("tx_number"),
+        summary=f"Exclusão de itens validada na venda #{sale.get('tx_number', '—')} (pedida por {found.get('by')})",
+    )
+    return {"ok": True, "pending_removals": removals}
+
+
 @api_router.put("/sales/{sale_id}")
 async def update_sale(sale_id: str, body: SaleEditIn, user: dict = Depends(get_current_user)):
     sale = await db.sales.find_one({"id": sale_id}, {"_id": 0})
     if not sale:
         raise HTTPException(status_code=404, detail="Venda não encontrada")
-    # Funcionário só pode editar até 12h após o registo E só vendas registadas por si
-    if user.get("role") == "funcionario":
-        if sale.get("user_email") != user["email"]:
-            raise HTTPException(status_code=403, detail="Funcionários só podem editar vendas que registaram pessoalmente")
+    role = user.get("role")
+    # Itens que o pedido está a retirar (quantidades reduzidas ou linhas removidas)
+    removing_qty: list = []
+    if body.items is not None:
+        old_by_pid: dict = {}
+        for it in sale["items"]:
+            old_by_pid[it["product_id"]] = old_by_pid.get(it["product_id"], 0) + int(it["quantity"])
+        new_by_pid: dict = {}
+        for it in body.items:
+            new_by_pid[it.product_id] = new_by_pid.get(it.product_id, 0) + int(it.quantity)
+        for pid, qty in old_by_pid.items():
+            if new_by_pid.get(pid, 0) < qty:
+                removing_qty.append((pid, qty - new_by_pid.get(pid, 0)))
+    # Funcionário: até 24h se serviu a venda; se não foi ele, só em vendas por pagar
+    # (e, passados 5 minutos, só pode acrescentar itens / transferir para outro sócio).
+    if role == "funcionario":
         try:
             created = datetime.fromisoformat(sale["created_at"].replace("Z", "+00:00"))
-            if datetime.now(timezone.utc) - created > timedelta(hours=12):
-                raise HTTPException(status_code=403, detail="Funcionários só podem editar vendas até 12h após o registo")
+            age = datetime.now(timezone.utc) - created
         except (ValueError, KeyError):
             raise HTTPException(status_code=403, detail="Sem permissão para editar esta venda")
+        served_by_self = sale.get("user_email") == user["email"]
+        if served_by_self:
+            if age > timedelta(hours=24):
+                raise HTTPException(status_code=403, detail="Funcionários só podem editar vendas até 24 horas após o registo")
+        else:
+            if await _sale_paid_state(sale) != "open":
+                raise HTTPException(status_code=403, detail="Esta venda já foi paga — só o funcionário que a serviu pode editá-la")
+            if removing_qty and age > timedelta(minutes=5):
+                raise HTTPException(status_code=403, detail="Passaram mais de 5 minutos desde que foi servida: só pode acrescentar itens ou transferir para outro sócio")
+        if removing_qty and not (body.removal_reason or "").strip():
+            raise HTTPException(status_code=400, detail="Indica o motivo da exclusão dos itens")
     new_client_id = body.client_id or sale["client_id"]
     new_client = await db.clients.find_one({"id": new_client_id})
     if not new_client:
@@ -1609,10 +1749,16 @@ async def update_sale(sale_id: str, body: SaleEditIn, user: dict = Depends(get_c
             changes["items"] = {"before": before_items, "after": after_items}
     if abs(new_total - old_total) > 1e-9:
         changes["total"] = {"before": old_total, "after": new_total}
+    if removing_qty:
+        names = {it["product_id"]: it["product_name"] for it in sale["items"]}
+        changes["removed"] = [f"{q}× {names.get(pid, pid)}" for pid, q in removing_qty]
+        if body.removal_reason:
+            changes["removal_reason"] = body.removal_reason.strip()
     await db.audit_log.insert_one({
         "id": str(uuid.uuid4()),
         "type": "sale_edit",
         "sale_id": sale_id,
+        "tx_number": sale.get("tx_number"),
         "client_id": new_client_id,
         "client_name": new_client["name"],
         "changes": changes,
@@ -1620,6 +1766,17 @@ async def update_sale(sale_id: str, body: SaleEditIn, user: dict = Depends(get_c
         "by": user["email"],
         "at": datetime.now(timezone.utc).isoformat(),
     })
+    # Exclusões feitas por funcionários ficam pendentes de validação da direção
+    if role == "funcionario" and removing_qty:
+        names = {it["product_id"]: it["product_name"] for it in sale["items"]}
+        await db.sales.update_one({"id": sale_id}, {"$push": {"pending_removals": {
+            "id": str(uuid.uuid4()),
+            "items": [{"product_id": pid, "product_name": names.get(pid, pid), "quantity": q} for pid, q in removing_qty],
+            "reason": body.removal_reason.strip(),
+            "by": user["email"],
+            "at": datetime.now(timezone.utc).isoformat(),
+            "status": "pending",
+        }}})
     await db.sales.update_one(
         {"id": sale_id},
         {"$set": {
@@ -2079,6 +2236,8 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
         target_amount = round(target_amount, 2)
         offer_amount = round(offer_amount, 2)
         if offer_amount > 0:
+            if user.get("role") not in ("admin", "tesoureiro", "presidente"):
+                raise HTTPException(status_code=403, detail="Oferta da casa é exclusiva da direção/tesouraria")
             allowance = await _house_offer_allowance(user)
             if round(allowance["used"] + offer_amount, 2) > allowance["limit"]:
                 raise HTTPException(
@@ -2361,6 +2520,16 @@ async def dashboard(user: dict = Depends(get_current_user)):
     # Cotas não contam para valor de stock nem para alertas de stock baixo
     stockable_products = [p for p in products if not p.get("is_quota")]
     total_stock_value = sum(p.get("price", 0) * p.get("quantity", 0) for p in stockable_products)
+    # Valor de stock ao preço de custo (só direção/tesouraria vê este cartão)
+    total_stock_cost = sum(
+        float(p.get("cost_price") if p.get("cost_price") is not None else round(float(p.get("price", 0) or 0) * 0.88, 2))
+        * p.get("quantity", 0)
+        for p in stockable_products
+    )
+    stock_margin_pct = (
+        round((total_stock_value - total_stock_cost) / total_stock_value * 100, 1)
+        if total_stock_value > 0 else 0.0
+    )
     low_stock = [p for p in stockable_products if p.get("quantity", 0) <= p.get("low_stock_threshold", 0)]
 
     # today sales
@@ -2439,6 +2608,8 @@ async def dashboard(user: dict = Depends(get_current_user)):
         "walkin_count": len(walkin),
         "walkin_balance": round(sum(max(float(c.get("balance", 0) or 0), 0) for c in walkin), 2),
         "total_stock_value": total_stock_value,
+        "total_stock_cost": round(total_stock_cost, 2),
+        "stock_margin_pct": stock_margin_pct,
         "today_sales_total": today_total,
         "today_sales_count": len(today_sales),
         "week_sales_total": week_total,
@@ -3180,6 +3351,11 @@ async def get_transaction(tx_number: int, user: dict = Depends(get_current_user)
         doc = await db[coll].find_one({"tx_number": int(tx_number)}, {"_id": 0})
         if doc:
             doc["_kind"] = kind
+            if kind == "sale":
+                # Histórico completo de edições (antes / depois) desta transação
+                doc["edits"] = await db.audit_log.find(
+                    {"type": "sale_edit", "sale_id": doc["id"]}, {"_id": 0}
+                ).sort("at", 1).to_list(200)
             return doc
     raise HTTPException(status_code=404, detail="Transação não encontrada")
 
@@ -3306,7 +3482,7 @@ async def socio_list_products(exclude_request_id: Optional[str] = None, socio: d
     ]}
     if not _food_window_open():
         q = {"$and": [q, {"$or": [{"is_food": {"$exists": False}}, {"is_food": False}]}]}
-    items = await db.products.find(q, {"_id": 0}).sort("name", 1).to_list(1000)
+    items = await db.products.find(q, {"_id": 0, "cost_price": 0}).sort("name", 1).to_list(1000)
     # Reservado em pedidos ainda pendentes (qualquer sócio)
     reserved: dict = {}
     async for req in db.consumption_requests.find({"status": "pending"}, {"items": 1}):
@@ -4195,18 +4371,25 @@ async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> 
         e["description"] = _no_member_names(desc)
         e["supplier_member_number"] = member_names.get((e.get("supplier_name") or "").strip().lower(), "")
 
+    # Donativos/gratificações superiores a 10 € entregues em conta corrente
+    payments = await db.payments.find(exp_q, {"_id": 0}).sort("created_at", -1).to_list(10000)
+    donations = [p for p in payments if float(p.get("tip") or 0) > 10.0]
+    rev_donations = round(sum(float(p.get("tip") or 0) for p in donations), 2)
+
     # Nº de sócio de cada cliente (para o PDF usar o nº em vez do nome)
-    cids = list({s["client_id"] for s in sales if s.get("client_id")})
+    cids = list({s["client_id"] for s in sales if s.get("client_id")} | {p["client_id"] for p in donations if p.get("client_id")})
     members = await db.clients.find({"id": {"$in": cids}}, {"id": 1, "member_number": 1}).to_list(len(cids)) if cids else []
     member_map = {c["id"]: c.get("member_number") or "" for c in members}
     for s in sales:
         s["client_member_number"] = member_map.get(s.get("client_id"), "")
+    for p in donations:
+        p["client_member_number"] = member_map.get(p.get("client_id"), "")
 
     sales_consumo = [s for s in sales if s.get("source") != "quota"]
     sales_cotas = [s for s in sales if s.get("source") == "quota"]
     rev_consumo = sum(s.get("total", 0) for s in sales_consumo)
     rev_cotas = sum(s.get("total", 0) for s in sales_cotas)
-    rev_total = rev_consumo + rev_cotas
+    rev_total = rev_consumo + rev_cotas + rev_donations
 
     # Depósitos bancários vão para o banco; devoluções de crédito só reduzem a
     # caixa; pagamentos de despesas (expense_cash/expense_bank) já contam nas
@@ -4218,13 +4401,15 @@ async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> 
     exp_expenses = sum(e.get("amount", 0) for e in expenses)
     exp_withdrawals = sum(w.get("amount", 0) for w in bank_deposits)
     exp_refunds = sum(w.get("amount", 0) for w in credit_refunds)
-    exp_total = exp_orders + exp_expenses + exp_withdrawals
+    # Transferências caixa ↔ banco são movimentação de saldo, NUNCA despesa
+    exp_total = exp_orders + exp_expenses
 
     return {
         "period": {"from": date_from, "to": date_to},
         "income": {
             "consumption": rev_consumo,
             "quotas": rev_cotas,
+            "donations": rev_donations,
             "total": rev_total,
         },
         "expenses": {
@@ -4238,6 +4423,7 @@ async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> 
         "counts": {
             "sales": len(sales_consumo),
             "quotas": len(sales_cotas),
+            "donations": len(donations),
             "orders": len(orders),
             "expenses": len(expenses),
             "withdrawals": len(bank_deposits),
@@ -4247,6 +4433,7 @@ async def _finance_summary(date_from: Optional[str], date_to: Optional[str]) -> 
         "details": {
             "sales": sales_consumo,
             "quotas": sales_cotas,
+            "donations": donations,
             "orders": orders,
             "expenses": expenses,
             "withdrawals": withdrawals,
@@ -5067,6 +5254,14 @@ async def on_startup():
         wd_fix += 1
     if wd_fix:
         logging.getLogger(__name__).info(f"Backfill cash_withdrawals: {wd_fix} retiradas antigas classificadas como depósito bancário")
+
+    # Backfill preço de custo — por omissão 12% abaixo do preço de venda (editável)
+    cost_fix = 0
+    async for p in db.products.find({"$or": [{"cost_price": {"$exists": False}}, {"cost_price": None}]}, {"_id": 0, "id": 1, "price": 1}):
+        await db.products.update_one({"id": p["id"]}, {"$set": {"cost_price": round(float(p.get("price", 0) or 0) * 0.88, 2)}})
+        cost_fix += 1
+    if cost_fix:
+        logging.getLogger(__name__).info(f"Backfill preço de custo: {cost_fix} produtos (12% abaixo do preço de venda)")
 
 @app.on_event("shutdown")
 async def on_shutdown():
@@ -5937,7 +6132,8 @@ async def unhide_community_message(msg_id: str, user: dict = Depends(require_rol
     return {"ok": True}
 
 @api_router.delete("/community/messages/{msg_id}")
-async def delete_community_message(msg_id: str, user: dict = Depends(require_role("admin", "tesoureiro", "presidente", "funcionario"))):
+async def delete_community_message(msg_id: str, user: dict = Depends(require_role("admin"))):
+    """Eliminar definitivamente só é permitido à administração — funcionários apenas ocultam."""
     msg = await db.community_messages.find_one({"id": msg_id}, {"_id": 0})
     if not msg:
         raise HTTPException(status_code=404, detail="Mensagem não encontrada")
@@ -5950,7 +6146,7 @@ async def delete_community_message(msg_id: str, user: dict = Depends(require_rol
 async def socio_top_products(scope: str = "mine", socio: dict = Depends(get_current_socio)):
     """Venda rápida: top 10 produtos mais vendidos (global) ou do sócio (scope=mine, top 5)."""
     if scope == "global":
-        return await _top_products_global(10)
+        return [{k: v for k, v in p.items() if k != "cost_price"} for p in await _top_products_global(10)]
     sales = await db.sales.find({"client_id": socio["id"], "source": {"$ne": "quota"}}, {"_id": 0, "items": 1}).to_list(5000)
     agg: dict = {}
     for s in sales:
@@ -5973,16 +6169,13 @@ async def socio_top_products(scope: str = "mine", socio: dict = Depends(get_curr
 async def socio_quota_status(socio: dict = Depends(get_current_socio)):
     return await _quota_overall_status(socio["id"]) or {"status": "none", "label": "—", "detail": None}
 
-@api_router.get("/socio/balance-quarterly")
-async def socio_balance_quarterly(socio: dict = Depends(get_current_socio)):
-    """Balanço trimestral da associação — apenas para sócios com cotas regularizadas
-    nos últimos 6 meses anteriores ao mês corrente."""
+async def _require_socio_finance_gate(socio: dict):
+    """Contas do clube: só para sócios com as cotas dos últimos 6 meses regularizadas."""
     try:
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo("Europe/Lisbon"))
     except Exception:
         now = datetime.now(timezone.utc)
-    year = now.year
     all_docs = await db.quotas.find({"client_id": socio["id"]}, {"_id": 0}).to_list(100)
     by_year: dict = {}
     for q in all_docs:
@@ -5996,9 +6189,65 @@ async def socio_balance_quarterly(socio: dict = Depends(get_current_socio)):
             m = 12
             y -= 1
         months_to_check.append((y, m))
-    not_paid = [(y, m) for (y, m) in months_to_check if by_year.get(y, {}).get(m, {}).get("status") != "paid"]
+    not_paid = [(yy, mm) for (yy, mm) in months_to_check if by_year.get(yy, {}).get(mm, {}).get("status") != "paid"]
     if not_paid:
         raise HTTPException(status_code=403, detail="Cotas por regularizar — consulta as contas junto à ARDN.")
+    return now
+
+
+@api_router.get("/socio/balance-monthly")
+async def socio_balance_monthly(socio: dict = Depends(get_current_socio)):
+    """Balanço mensal do clube (visão do sócio): receitas, despesas detalhadas
+    (fornecedor e valor) e saldos. Transferências caixa ↔ banco não são despesas."""
+    now = await _require_socio_finance_gate(socio)
+    date_from = now.strftime("%Y-%m-01")
+    date_to = now.strftime("%Y-%m-%d")
+    data = await _finance_summary(date_from, date_to)
+    expenses = [
+        {
+            "kind": "order",
+            "supplier": o.get("supplier_name") or "—",
+            "amount": float(o.get("total", 0) or 0),
+            "created_at": o.get("created_at"),
+        }
+        for o in data["details"].get("orders", [])
+    ] + [
+        {
+            "kind": "expense",
+            "supplier": e.get("supplier_name") or "—",
+            "description": e.get("description"),
+            "amount": float(e.get("amount", 0) or 0),
+            "created_at": e.get("created_at"),
+        }
+        for e in data["details"].get("expenses", [])
+    ]
+    expenses.sort(key=lambda x: x.get("created_at") or "")
+    balances = await _account_balances()
+    return {
+        "month": now.strftime("%m/%Y"),
+        "period": data["period"],
+        "income": data["income"],
+        "expense_lines": expenses,
+        "expenses": {
+            "supplier_orders": data["expenses"]["supplier_orders"],
+            "supplier_expenses": data["expenses"]["supplier_expenses"],
+            "total": data["expenses"]["total"],
+        },
+        "balance": data["balance"],
+        "generated_at": data["generated_at"],
+        "club_name": data["club_name"],
+        "bank_balance": balances["bank_balance"],
+        "cash_balance": balances["cash_balance"],
+        "total_balance": round(balances["bank_balance"] + balances["cash_balance"], 2),
+    }
+
+
+@api_router.get("/socio/balance-quarterly")
+async def socio_balance_quarterly(socio: dict = Depends(get_current_socio)):
+    """Balanço trimestral da associação — apenas para sócios com cotas regularizadas
+    nos últimos 6 meses anteriores ao mês corrente."""
+    now = await _require_socio_finance_gate(socio)
+    year = now.year
     # Balanço do trimestre corrente (T1/T2/T3/T4) — resumo Deve/Haver sem detalhes nominais
     quarter = (now.month - 1) // 3 + 1
     quarter_start_month = 3 * (quarter - 1) + 1
@@ -6031,7 +6280,11 @@ async def socio_balance_quarterly(socio: dict = Depends(get_current_socio)):
 async def products_top(limit: int = 10, user: dict = Depends(get_current_user)):
     """Top N de produtos mais vendidos (global) para venda rápida no POS."""
     limit = min(max(limit, 1), 20)
-    return await _top_products_global(limit)
+    items = await _top_products_global(limit)
+    if not _can_see_cost(user):
+        for p in items:
+            p.pop("cost_price", None)
+    return items
 
 
 async def _top_products_global(limit: int) -> list:

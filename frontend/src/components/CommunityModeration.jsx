@@ -2,11 +2,15 @@ import React, { useEffect, useState } from "react";
 import api, { formatApiErrorDetail } from "../lib/api";
 import { EyeSlash, Eye, Trash, Flag, ChatCircleDots, PaperPlaneTilt } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import { useAuth } from "../context/AuthContext";
 
 /**
- * Moderação do chat da comunidade (staff): filtrar, ocultar, reexibir e eliminar mensagens.
+ * Moderação do chat da comunidade (staff): filtrar, ocultar e reexibir.
+ * Eliminar definitivamente é exclusivo da administração — funcionários só ocultam.
  */
 export default function CommunityModeration() {
+  const { user } = useAuth();
+  const canDelete = user?.role === "admin";
   const [data, setData] = useState({ messages: [], pending_reports_count: 0 });
   const [filter, setFilter] = useState("all"); // all | visible | hidden | reported
   const [loading, setLoading] = useState(true);
@@ -201,13 +205,15 @@ export default function CommunityModeration() {
                     <Eye size={12} /> Reexibir
                   </button>
                 )}
-                <button
-                  data-testid={`community-mod-delete-${m.id}`}
-                  onClick={() => remove(m)}
-                  className="px-3 py-1.5 rounded-md text-xs font-bold bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25 flex items-center gap-1.5"
-                >
-                  <Trash size={12} /> Eliminar
-                </button>
+                {canDelete && (
+                  <button
+                    data-testid={`community-mod-delete-${m.id}`}
+                    onClick={() => remove(m)}
+                    className="px-3 py-1.5 rounded-md text-xs font-bold bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25 flex items-center gap-1.5"
+                  >
+                    <Trash size={12} /> Eliminar
+                  </button>
+                )}
               </div>
             </div>
           ))}

@@ -13,17 +13,24 @@ export function openFinanceDoc(d, fromLabel, toLabel, subtitle) {
   };
   const w = window.open("", "_blank");
   if (!w) return false;
+  const donations = Number(d.income.donations || 0);
   const linesIncome = `
     <tr><td>Consumo no bar</td><td class="right">${d.counts.sales} vendas</td><td class="right pos"><strong>${euro(d.income.consumption)}</strong></td></tr>
     <tr><td>Cotas de sócios</td><td class="right">${d.counts.quotas}</td><td class="right pos"><strong>${euro(d.income.quotas)}</strong></td></tr>
+    ${donations > 0 ? `<tr><td>Donativos / gratificações (superiores a 10 €)</td><td class="right">${d.counts.donations || 0}</td><td class="right pos"><strong>${euro(donations)}</strong></td></tr>` : ""}
     <tr class="total-row"><td><strong>TOTAL RECEITAS</strong></td><td></td><td class="right pos"><strong>${euro(d.income.total)}</strong></td></tr>`;
   const linesExp = `
     <tr><td>Encomendas a fornecedores</td><td class="right">${d.counts.orders}</td><td class="right neg"><strong>${euro(d.expenses.supplier_orders)}</strong></td></tr>
     <tr><td>Despesas mensais</td><td class="right">${d.counts.expenses}</td><td class="right neg"><strong>${euro(d.expenses.supplier_expenses)}</strong></td></tr>
     <tr class="total-row"><td><strong>TOTAL DESPESAS</strong></td><td></td><td class="right neg"><strong>${euro(d.expenses.total)}</strong></td></tr>`;
-  const incDetail = [...(d.details?.sales || []), ...(d.details?.quotas || [])]
+  const transfersNote = `<p style="font-size:10px;color:#666;margin-top:6px">Transferências entre caixa e banco são movimentação de saldo e não são contabilizadas como despesa.</p>`;
+  const incDetail = [
+    ...(d.details?.sales || []).map((s) => ({ ...s, _tipo: "Consumo", _desc: (s.items || []).map((it) => `${it.quantity}× ${it.product_name}`).join(", ") })),
+    ...(d.details?.quotas || []).map((s) => ({ ...s, _tipo: "Cota", _desc: (s.items || []).map((it) => `${it.quantity}× ${it.product_name}`).join(", ") })),
+    ...(d.details?.donations || []).map((p) => ({ ...p, _tipo: "Donativo", _desc: `Gratificação ${euro(p.tip)}${p.note ? ` · ${p.note}` : ""}` })),
+  ]
     .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
-    .map((s) => `<tr><td>${new Date(s.created_at).toLocaleDateString("pt-PT")}</td><td>${s.source === "quota" ? "Cota" : "Consumo"}</td><td>${memberLabel(s)}</td><td>${(s.items || []).map((it) => `${it.quantity}× ${it.product_name}`).join(", ")}</td><td class="right pos"><strong>${euro(s.total)}</strong></td></tr>`)
+    .map((s) => `<tr><td>${new Date(s.created_at).toLocaleDateString("pt-PT")}</td><td>${s._tipo}</td><td>${memberLabel(s)}</td><td>${s._desc}</td><td class="right pos"><strong>${euro(s._tipo === "Donativo" ? s.tip : s.total)}</strong></td></tr>`)
     .join("");
   const supplierLabel = (r) => (r.supplier_member_number ? `Sócio nº ${r.supplier_member_number}` : (r.supplier_name || "—"));
   const expDetail = [
@@ -73,6 +80,7 @@ export function openFinanceDoc(d, fromLabel, toLabel, subtitle) {
   <table><thead><tr><th>Origem</th><th class="right">Qtd</th><th class="right">Valor</th></tr></thead><tbody>${linesIncome}</tbody></table>
   <h2>DEVE (Despesas)</h2>
   <table><thead><tr><th>Origem</th><th class="right">Qtd</th><th class="right">Valor</th></tr></thead><tbody>${linesExp}</tbody></table>
+  ${transfersNote}
 
   <div class="totals">
     <div class="box in"><div class="lbl">TOTAL RECEITAS</div><div class="val">${euro(d.income.total)}</div></div>

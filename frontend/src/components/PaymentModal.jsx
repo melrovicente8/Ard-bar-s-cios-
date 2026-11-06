@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { toast } from "sonner";
 import { PencilSimple, Trash, Gift } from "@phosphor-icons/react";
+import { useAuth } from "../context/AuthContext";
 
 const rowKey = (saleId, productName) => `${saleId}||${productName}`;
 
@@ -58,6 +60,9 @@ export default function PaymentModal({
   );
   const [allowance, setAllowance] = useState(null); // {limit, used, remaining}
   const [submitting, setSubmitting] = useState(false);
+  const { user } = useAuth();
+  // Oferta da casa é exclusiva da direção/tesouraria — funcionários não podem selecionar
+  const canOffer = ["admin", "tesoureiro", "presidente"].includes(user?.role);
 
   useEffect(() => {
     api.get("/house-offers/allowance").then(({ data }) => setAllowance(data)).catch(() => setAllowance(null));
@@ -148,9 +153,10 @@ export default function PaymentModal({
   // Oferta da casa abate à dívida sem entrada de caixa (despesa do bar)
   const debtReduction = totalApplied + offerAmount;
 
-  return (
+  // Renderizado no body: evita ficar preso/atrás dos cartões com backdrop-blur (ex.: ficha ocasional)
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
       onClick={onClose}
     >
       <div
@@ -176,7 +182,7 @@ export default function PaymentModal({
             <div className="px-3 pb-1 flex items-center gap-2 text-[10px] flex-wrap">
               <button type="button" data-testid="pay-select-all" onClick={selectAll} className="px-2 py-1 rounded bg-amber-500/15 text-amber-300 hover:bg-amber-500/25">Pagar tudo</button>
               <button type="button" data-testid="pay-select-none" onClick={() => { setItemSel({}); }} className="px-2 py-1 rounded bg-slate-800 text-slate-300 hover:bg-slate-700">Limpar</button>
-              {allowance && (
+              {allowance && canOffer && (
                 <span className="ml-auto text-fuchsia-300/90 flex items-center gap-1" title="Oferta da casa: limite mensal por utilizador">
                   <Gift size={11} weight="duotone" /> Ofertas este mês: {euro(allowance.used)} / {euro(allowance.limit)}
                 </span>
@@ -235,13 +241,15 @@ export default function PaymentModal({
                               max={it.quantity - sel.offer}
                               onChange={(v) => changeItem(key, it.quantity, "pay", v - sel.pay)}
                             />
-                            <QtyStepper
-                              label="Ofertar"
-                              accent="fuchsia"
-                              value={sel.offer}
-                              max={it.quantity - sel.pay}
-                              onChange={(v) => changeItem(key, it.quantity, "offer", v - sel.offer)}
-                            />
+                            {canOffer && (
+                              <QtyStepper
+                                label="Ofertar"
+                                accent="fuchsia"
+                                value={sel.offer}
+                                max={it.quantity - sel.pay}
+                                onChange={(v) => changeItem(key, it.quantity, "offer", v - sel.offer)}
+                              />
+                            )}
                             <span className="w-10 text-right text-[10px] text-slate-500" title="Fica em dívida">
                               {remaining > 0 ? `${remaining}× fica` : "—"}
                             </span>
@@ -427,6 +435,7 @@ export default function PaymentModal({
           </div>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
