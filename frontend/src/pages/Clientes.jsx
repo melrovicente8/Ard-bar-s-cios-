@@ -22,7 +22,25 @@ export default function Clientes() {
   const [filterType, setFilterType] = useState("all"); // all | socios | clientes | uptodate | notuptodate | debt
   const [sortKey, setSortKey] = useState("name"); // name | number | activity | total_points
   const [viewMode, setViewMode] = useState("grid"); // grid | list
+  const [honoraryEnabled, setHonoraryEnabled] = useState(false);
   const [form, setForm] = useState({ name: "", contact: "", email: "", note: "", member_number: "", is_member: true, morada: "", pin: "" });
+
+  // Ativação do estatuto de Sócio Honorário na app — desativada por defeito (só admin liga)
+  useEffect(() => {
+    if (user?.role !== "admin") return;
+    api.get("/club/honorary-settings").then(({ data }) => setHonoraryEnabled(!!data.enabled)).catch(() => {});
+  }, [user?.role]);
+
+  const toggleHonorary = async () => {
+    try {
+      const next = !honoraryEnabled;
+      const { data } = await api.put("/club/honorary-settings", { enabled: next });
+      setHonoraryEnabled(!!data.enabled);
+      toast.success(next ? "Ativação de Sócio Honorário permitida na app" : "Ativação de Sócio Honorário desativada na app");
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -158,7 +176,21 @@ export default function Clientes() {
             <EditableText k="page.clientes.title">Clientes e Sócios</EditableText>
           </h1>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {user?.role === "admin" && (
+            <button
+              data-testid="honorary-app-toggle"
+              onClick={toggleHonorary}
+              title="Permitir que os sócios ativem o estatuto de Sócio Honorário na app (desativado por defeito)"
+              className={`px-4 py-2.5 rounded-lg font-bold flex items-center gap-2 border transition-colors ${
+                honoraryEnabled
+                  ? "bg-amber-500/15 text-amber-300 border-amber-500/40 hover:bg-amber-500/25"
+                  : "bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700"
+              }`}
+            >
+              👔 Honorário na app: {honoraryEnabled ? "ativo" : "inativo"}
+            </button>
+          )}
           {canManageQuotas && (
             <button
               data-testid="quota-launch-btn"

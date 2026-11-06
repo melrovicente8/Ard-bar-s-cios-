@@ -77,7 +77,7 @@ export default function SocioPortal() {
   const [form, setForm] = useState({ contact: "", email: "", morada: "" });
   const [club, setClub] = useState({});
   const [showMb, setShowMb] = useState(false);
-  const [mbForm, setMbForm] = useState({ amount: "", mbway_phone: "", note: "", use_points: false, points_to_use: 0 });
+  const [mbForm, setMbForm] = useState({ amount: "", mbway_phone: "", note: "", use_points: false, points_to_use: 0, pay_at_counter: false });
   const [showPoints, setShowPoints] = useState(false);
   const [pointsToUse, setPointsToUse] = useState(5);
   const [historyFilter, setHistoryFilter] = useState("today"); // default Hoje
@@ -448,12 +448,13 @@ export default function SocioPortal() {
     try {
       await api.post("/socio/mbway-request", {
         amount: parseFloat(mbForm.amount),
-        mbway_phone: mbForm.mbway_phone,
+        mbway_phone: mbForm.pay_at_counter ? "" : mbForm.mbway_phone,
         note: mbForm.note || null,
         use_points: !!mbForm.use_points,
         points_to_use: mbForm.use_points ? Number(mbForm.points_to_use) || 0 : 0,
+        pay_at_counter: !!mbForm.pay_at_counter,
       });
-      toast.success("Pedido enviado — aguarda confirmação do clube.");
+      toast.success(mbForm.pay_at_counter ? "Pedido enviado — paga ao balcão quando passares na ARD." : "Pedido enviado — aguarda confirmação do clube.");
       setShowMb(false);
       await refresh();
     } catch (e) {
@@ -949,13 +950,22 @@ export default function SocioPortal() {
                 {euro(debt)}
               </div>
               {debt > 0 && (
-                <button
-                  data-testid="socio-pay-mbway-btn"
-                  onClick={() => { setMbForm((f) => ({ ...f, use_points: false, points_to_use: 0 })); setShowMb(true); }}
-                  className="mt-4 w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-2.5 rounded-lg flex items-center justify-center gap-2"
-                >
-                  <DeviceMobile size={18} weight="bold" /> Pagar por MBWay
-                </button>
+                <>
+                  <button
+                    data-testid="socio-pay-mbway-btn"
+                    onClick={() => { setMbForm((f) => ({ ...f, pay_at_counter: false, use_points: false, points_to_use: 0 })); setShowMb(true); }}
+                    className="mt-4 w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-2.5 rounded-lg flex items-center justify-center gap-2"
+                  >
+                    <DeviceMobile size={18} weight="bold" /> Pagar por MBWay
+                  </button>
+                  <button
+                    data-testid="socio-pay-counter-btn"
+                    onClick={() => { setMbForm((f) => ({ ...f, pay_at_counter: true, use_points: false, points_to_use: 0 })); setShowMb(true); }}
+                    className="mt-2 w-full bg-slate-800 hover:bg-slate-700 text-slate-100 font-bold py-2 rounded-lg flex items-center justify-center gap-2 text-sm"
+                  >
+                    <Storefront size={16} weight="bold" /> Pagar ao balcão
+                  </button>
+                </>
               )}
             </div>
             <div
@@ -2197,7 +2207,7 @@ export default function SocioPortal() {
                 <p className="text-[11px] text-slate-400 mt-1">
                   Quota única anual (mínimo 20 €) que liquida automaticamente os 12 meses de {quotas.year}. Inclui convite automático para todos os eventos.
                 </p>
-                {!c.is_honorary && (
+                {!c.is_honorary && (quotaSettings?.honorary_self_activation ? (
                   <div className="mt-2 flex gap-2">
                     <input
                       data-testid="socio-honorary-value"
@@ -2216,7 +2226,11 @@ export default function SocioPortal() {
                       className="px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold disabled:opacity-40"
                     >Ativar e liquidar</button>
                   </div>
-                )}
+                ) : (
+                  <p data-testid="socio-honorary-disabled" className="mt-2 text-[11px] text-amber-200/80 bg-slate-950/60 border border-amber-500/20 rounded-lg px-3 py-2">
+                    A ativação na app está desativada por defeito — pede à direção para te atribuir o estatuto.
+                  </p>
+                ))}
               </div>
             </div>
 
@@ -2384,22 +2398,51 @@ export default function SocioPortal() {
         >
           <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-2 mb-4">
-              <DeviceMobile size={22} weight="duotone" className="text-amber-400" />
-              <h3 className="font-outfit text-xl font-semibold">Pagar por MBWay</h3>
+              {mbForm.pay_at_counter ? <Storefront size={22} weight="duotone" className="text-amber-400" /> : <DeviceMobile size={22} weight="duotone" className="text-amber-400" />}
+              <h3 className="font-outfit text-xl font-semibold">{mbForm.pay_at_counter ? "Pagar ao balcão" : "Pagar por MBWay"}</h3>
             </div>
-            <div className="bg-slate-950 border border-amber-500/20 rounded-lg p-4 mb-5">
-              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80 mb-1">
-                Envia para
+            {mbForm.pay_at_counter ? (
+              <div className="bg-slate-950 border border-amber-500/20 rounded-lg p-4 mb-5">
+                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80 mb-1">
+                  Pagamento no balcão
+                </div>
+                <div className="text-xs text-slate-300 mt-1">
+                  Passa no balcão da {club.name || "ARD Nespereira"} para pagar o teu consumo. O pedido fica pendente até a direção confirmar a receção do valor.
+                </div>
               </div>
-              <div className="font-outfit text-2xl font-bold text-amber-300" data-testid="club-mbway-phone">
-                {club.mbway_phone || "Pede o nº na receção"}
+            ) : (
+              <div className="bg-slate-950 border border-amber-500/20 rounded-lg p-4 mb-5">
+                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80 mb-1">
+                  Envia para
+                </div>
+                <div className="font-outfit text-2xl font-bold text-amber-300" data-testid="club-mbway-phone">
+                  {club.mbway_phone || "Pede o nº na receção"}
+                </div>
+                <div className="text-xs text-slate-500 mt-2">
+                  {club.name || "ARD Nespereira"} · usa este número no teu MBWay e depois preenche o formulário em baixo.
+                </div>
               </div>
-              <div className="text-xs text-slate-500 mt-2">
-                {club.name || "ARD Nespereira"} · usa este número no teu MBWay e depois preenche o formulário em baixo.
-              </div>
-            </div>
+            )}
             <form onSubmit={submitMb} className="space-y-4">
-              <Field label="Valor enviado €" required>
+              <div className="flex gap-2" data-testid="mbway-method-toggle">
+                <button
+                  type="button"
+                  data-testid="mbway-method-mbway"
+                  onClick={() => setMbForm((f) => ({ ...f, pay_at_counter: false }))}
+                  className={`flex-1 px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 ${!mbForm.pay_at_counter ? "bg-amber-500 text-slate-950" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}
+                >
+                  <DeviceMobile size={14} weight="bold" /> MBWay
+                </button>
+                <button
+                  type="button"
+                  data-testid="mbway-method-counter"
+                  onClick={() => setMbForm((f) => ({ ...f, pay_at_counter: true }))}
+                  className={`flex-1 px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 ${mbForm.pay_at_counter ? "bg-amber-500 text-slate-950" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}
+                >
+                  <Storefront size={14} weight="bold" /> Balcão
+                </button>
+              </div>
+              <Field label={mbForm.pay_at_counter ? "Valor a pagar €" : "Valor enviado €"} required>
                 <input
                   data-testid="mbway-amount-input"
                   type="number"
@@ -2411,15 +2454,17 @@ export default function SocioPortal() {
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white text-lg font-bold focus:outline-none focus:ring-2 focus:ring-amber-500/50"
                 />
               </Field>
-              <Field label="Nº MBWay usado para pagar" required>
-                <input
-                  data-testid="mbway-phone-input"
-                  required
-                  value={mbForm.mbway_phone}
-                  onChange={(e) => setMbForm({ ...mbForm, mbway_phone: e.target.value })}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-                />
-              </Field>
+              {!mbForm.pay_at_counter && (
+                <Field label="Nº MBWay usado para pagar" required>
+                  <input
+                    data-testid="mbway-phone-input"
+                    required
+                    value={mbForm.mbway_phone}
+                    onChange={(e) => setMbForm({ ...mbForm, mbway_phone: e.target.value })}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+                  />
+                </Field>
+              )}
 
               {(c.points || 0) > 0 && (
                 <div className="bg-green-500/5 border border-green-500/20 rounded-lg p-4 space-y-3">
@@ -2489,7 +2534,7 @@ export default function SocioPortal() {
                   type="submit"
                   className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold"
                 >
-                  Enviar pedido
+                  {mbForm.pay_at_counter ? "Enviar pedido ao balcão" : "Enviar pedido"}
                 </button>
               </div>
             </form>

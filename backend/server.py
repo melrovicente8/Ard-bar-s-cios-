@@ -199,10 +199,11 @@ class SocioUpdateIn(BaseModel):
 
 class MBWayRequestIn(BaseModel):
     amount: float
-    mbway_phone: str  # phone used to pay
+    mbway_phone: Optional[str] = None  # phone used to pay (vazio quando o sócio paga ao balcão)
     note: Optional[str] = None
     use_points: bool = False
     points_to_use: int = 0
+    pay_at_counter: bool = False  # consumo a pagar ao balcão
 
 class SocioPayPointsIn(BaseModel):
     points: int
@@ -3118,6 +3119,7 @@ async def club_info():
         "name": CLUB_NAME,
         "mbway_phone": os.environ.get("CLUB_MBWAY_PHONE", ""),
         "quota_monthly_value": QUOTA_MONTHLY_VALUE,
+        "honorary_self_activation": await _honorary_self_activation_enabled(),
     }
 
 # ---------- Quotas (cotas mensais) ----------
@@ -3683,6 +3685,9 @@ async def socio_update_me(body: SocioUpdateIn, socio: dict = Depends(get_current
 async def socio_mbway_request(body: MBWayRequestIn, socio: dict = Depends(get_current_socio)):
     if body.amount <= 0:
         raise HTTPException(status_code=400, detail="Valor inválido")
+    phone = (body.mbway_phone or "").strip()
+    if not body.pay_at_counter and not phone:
+        raise HTTPException(status_code=400, detail="Indica o nº MBWay usado para pagar")
     points_to_use = 0
     if body.use_points:
         if body.points_to_use <= 0:
@@ -3699,9 +3704,11 @@ async def socio_mbway_request(body: MBWayRequestIn, socio: dict = Depends(get_cu
         "client_id": socio["id"],
         "client_name": socio["name"],
         "amount": float(body.amount),
-        "mbway_phone": body.mbway_phone.strip(),
+        "mbway_phone": phone,
         "note": body.note,
         "points_used": points_to_use,
+        "kind": "consumption",
+        "pay_at_counter": bool(body.pay_at_counter),
         "status": "pending",  # pending | confirmed | rejected
         "created_at": datetime.now(timezone.utc).isoformat(),
         "confirmed_at": None,
@@ -5072,6 +5079,7 @@ async def socio_quota_settings(socio: dict = Depends(get_current_socio)):
         "honorary_since": socio.get("honorary_since"),
         "honorary_annual_value": float(socio.get("honorary_annual_value") or 0),
         "honorary_min_annual": 20.0,
+        "honorary_self_activation": await _honorary_self_activation_enabled(),
         "quota_status": status,
     }
 
@@ -5100,6 +5108,8 @@ async def socio_update_quota_settings(body: SocioQuotaSettingsIn, socio: dict = 
 @api_router.post("/socio/honorary/activate")
 async def socio_activate_honorary(body: SocioHonoraryIn, socio: dict = Depends(get_current_socio)):
     """Ativa o estatuto de Sócio Honorário 👔 e liquida automaticamente os 12 meses do ano corrente."""
+    if not await _honorary_self_activation_enabled():
+        raise HTTPException(status_code=403, detail="A ativação de Sócio Honorário na app está desativada. Pede à direção para atribuir o estatuto.")
     if not socio.get("is_member"):
         raise HTTPException(status_code=400, detail="Apenas sócios podem ser honorários")
     annual = round(float(body.annual_value), 2)
@@ -5331,6 +5341,7 @@ async def _apply_mbway_confirm(mb: dict, user: dict) -> dict:
         pts = int(mb.get("points_used") or 0)
         pts_value = round(pts / POINTS_PER_EURO, 2)
         credited = round(float(mb["amount"]) + pts_value, 2)
+        pay_label = "Balcão" if mb.get("pay_at_counter") else f"MBWay {mb.get('mbway_phone') or ''}".strip()
         pay = {
             "id": pid,
             "tx_number": tx_no,
@@ -5342,10 +5353,10 @@ async def _apply_mbway_confirm(mb: dict, user: dict) -> dict:
             "change_returned": 0.0,
             "points_used": pts,
             "points_value": pts_value,
-            "note": f"MBWay {mb['mbway_phone']}" + (f" · {mb['note']}" if mb.get("note") else "") + (f" · {pts} pts" if pts else ""),
+            "note": pay_label + (f" · {mb['note']}" if mb.get("note") else "") + (f" · {pts} pts" if pts else ""),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "user_email": user["email"],
-            "source": "mbway",
+            "source": "counter" if mb.get("pay_at_counter") else "mbway",
             "mbway_id": mb["id"],
         }
         await db.payments.insert_one(pay)
@@ -8325,6 +8336,13 @@ async def _rankings_enabled() -> bool:
     return True if not doc else bool(doc.get("value", True))
 
 
+async def _honorary_self_activation_enabled() -> bool:
+    """Ativação do estatuto de Sócio Honorário na app: DESATIVADA por omissão.
+    Só a direção a pode ligar (`PUT /api/club/honorary-settings`)."""
+    doc = await db.club_settings.find_one({"id": "honorary_self_activation"}, {"_id": 0})
+    return False if not doc else bool(doc.get("value", False))
+
+
 def _rank_display(c: dict) -> str:
     if c.get("show_in_rankings") is False:
         return f"Anónimo (Sócio #{c.get('member_number') or '—'})"
@@ -8470,6 +8488,28 @@ async def set_rankings_settings(body: RankingsSettingsIn, user: dict = Depends(r
     )
     await _audit("rankings_settings", user["email"], entity="club_settings", entity_id="rankings_enabled",
                  summary=f"Rankings {'ativados' if body.enabled else 'desativados'}")
+    return {"enabled": bool(body.enabled)}
+
+
+class HonorarySettingsIn(BaseModel):
+    enabled: bool
+
+
+@api_router.get("/club/honorary-settings")
+async def get_honorary_settings(user: dict = Depends(get_current_user)):
+    return {"enabled": await _honorary_self_activation_enabled()}
+
+
+@api_router.put("/club/honorary-settings")
+async def set_honorary_settings(body: HonorarySettingsIn, user: dict = Depends(require_role("admin"))):
+    await db.club_settings.update_one(
+        {"id": "honorary_self_activation"},
+        {"$set": {"id": "honorary_self_activation", "value": bool(body.enabled),
+                  "updated_at": datetime.now(timezone.utc).isoformat(), "updated_by": user["email"]}},
+        upsert=True,
+    )
+    await _audit("honorary_settings", user["email"], entity="club_settings", entity_id="honorary_self_activation",
+                 summary=f"Ativação de Sócio Honorário na app {'permitida' if body.enabled else 'desativada'}")
     return {"enabled": bool(body.enabled)}
 
 

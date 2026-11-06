@@ -53,6 +53,11 @@ docker compose -f docker-compose.base44.yml up -d
 - "Movimento do clube · Despesas trimestre ›" abre o modal com as despesas do trimestre (`GET /api/socio/expenses-quarterly`, descrições já anonimizadas com nº de sócio).
 - "Insistir" num pedido pendente só ativa após 5 min (`POST /api/socio/consumption-requests/{id}/insist`); o staff recebe um pop-up em `HeaderAlerts` (`insist-popup`) alimentado por `insisted_at` dos pedidos pendentes.
 
+## Pagamentos na app do sócio (MBWay · balcão)
+- **Cotas**: `POST /api/socio/quotas/pay` com `pay_at_counter: true` cria o pedido (`db.mbway_payments`, `kind: "quota"`); a confirmação do staff lança a venda na conta corrente. Sem a flag é pedido MBWay.
+- **Consumo**: `POST /api/socio/mbway-request` aceita `pay_at_counter` (`kind: "consumption"`, `mbway_phone` opcional). A confirmação regista o pagamento com `source: "counter"` e nota "Balcão". Em `/mbway` a coluna MBWay mostra "Balcão" quando não há telefone.
+- **Sócio Honorário na app**: ativação **desativada por defeito** — `db.club_settings {id: "honorary_self_activation"}` (default `false`), exposta em `/api/club/info` e `/api/socio/quota-settings` e ligada pelo admin em `/clientes` (`honorary-app-toggle` → `PUT /api/club/honorary-settings`). Desligada, `POST /api/socio/honorary/activate` responde **403** e o portal mostra `socio-honorary-disabled` em vez do botão.
+
 ## Bola de quotas junto ao nome
 - `src/components/QuotaBall.jsx` (🟢 paid / 🟡 pending / 🔴 debt; não-sócios sem bola). Usada na lista de clientes, na ficha (`ficha-client-name`) e no POS (`Vender`).
 

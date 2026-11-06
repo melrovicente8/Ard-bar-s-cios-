@@ -106,7 +106,9 @@ export default function MBWay() {
                         {m.client_name} <ArrowRight size={12} className="opacity-60" />
                       </Link>
                     </td>
-                    <td className="px-5 py-3 text-slate-300 font-mono text-xs">{m.mbway_phone}</td>
+                    <td className="px-5 py-3 text-slate-300 font-mono text-xs">
+                      {m.mbway_phone || (m.pay_at_counter ? "Balcão" : "—")}
+                    </td>
                     <td className="px-5 py-3 text-slate-500 text-xs">{m.note || "—"}</td>
                     <td className="px-5 py-3 text-right">
                       <span className="font-outfit font-bold text-amber-300">{euro(m.amount)}</span>
