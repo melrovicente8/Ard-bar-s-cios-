@@ -51,6 +51,11 @@ docker compose -f docker-compose.base44.yml up -d
 - **Clientes e Sócios** (`nav-clients`, `also: ["/rankings"]`) → `src/pages/Clientes.jsx` com os separadores Clientes e sócios · Tabela de Feitos · Adesão de sócios (`clientes-tabs`, estado no `?tab=`). A antiga página/rota `/rankings` (`nav-rankings`) foi absorvida: `/rankings` redireciona para `/clientes?tab=rankings` e a página `Rankings.jsx` é renderizada em modo `embedded` (sem padding próprio).
 
 
+## Página Direção (`/equipa`)
+- `src/pages/Equipa.jsx` (item de menu `nav-equipa`, etiqueta editável — o clube renomeou-a para "Direcção") gere os utilizadores de staff e, por baixo, renderiza `src/components/DirectionMembers.jsx`.
+- `DirectionMembers` lê `GET /api/clients` e mostra "Direção em funções" (`clients.direction_role`, inclui Assembleia Geral e Conselho Fiscal) e "Direções anteriores" (`clients.direction_history`, mandato mais recente primeiro). Cada sócio tem hiperligação para a ficha (`/clientes/{id}`).
+- Só de leitura: cargos e mandatos editam-se na ficha do sócio (`ClienteFicha`, campos `direction_role`/`direction_history`, só admin/tesoureiro/presidente).
+
 ## Secrets
 - `RESEND_API_KEY` (opcional) via dashboard Base44 → `/run/base44/app.env`, ligado ao serviço backend como último `env_file`. Sem ela, `send_email` falha graciosamente.
 - `GEMINI_API_KEY` (necessária ao Lagarto Amarelo e à leitura de talões) no mesmo `env_file`. Modelo por omissão: `gemini-3.5-flash-lite` (`GEMINI_MODEL` sobrescreve), usado por `_gemini_generate` e pela visão dos talões. O `gemini-3.5-flash` esgota a quota free-tier (`429 generate_content_free_tier_requests` → widget com 502 "Algo correu mal"), por isso o lite é o default. A Gemini descontinua modelos antigos: `gemini-2.5-flash`/`gemini-2.0-flash` já devolvem 404 "no longer available to new users", e `gemini-3.8-flash`/`gemini-flash-latest` dão timeout no `generateContent`. Se o widget responder 502, ler o log (`Lagarto Amarelo (Gemini) falhou`) e testar `GET https://generativelanguage.googleapis.com/v1beta/models`.

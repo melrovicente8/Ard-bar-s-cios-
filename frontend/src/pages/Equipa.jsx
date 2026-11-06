@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import api, { formatApiErrorDetail } from "../lib/api";
 import EditableText from "../components/EditableText";
+import DirectionMembers from "../components/DirectionMembers";
 import { toast } from "sonner";
 import { UsersThree, PencilSimple, Check, X as XIcon, Plus, Trash } from "@phosphor-icons/react";
 
@@ -175,6 +176,8 @@ export default function Equipa() {
           </table>
         )}
       </div>
+
+      <DirectionMembers />
 
       {showAdd && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setShowAdd(false)} data-testid="create-user-modal">
