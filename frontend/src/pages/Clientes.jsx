@@ -58,16 +58,12 @@ export default function Clientes() {
     }
   };
 
-  // "Não cliente": cartão sem nome (editável), sem quotas/pontos/app sócio
+  // "Não cliente": ficha temporária (máx. 3 ativas), sem quotas/pontos/app sócio.
+  // Fecha sozinha quando o saldo fica a 0,00 €.
   const createWalkin = async () => {
-    const count = clients.filter((c) => c.is_walkin).length + 1;
     try {
-      const { data } = await api.post("/clients", {
-        name: `Não cliente ${count}`,
-        is_member: false,
-        is_walkin: true,
-      });
-      toast.success(`Cartão "${data.name}" criado — podes editar o nome na ficha`);
+      const { data } = await api.post("/occasional-clients", {});
+      toast.success(`Ficha "${data.name}" criada — podes editar o nome na ficha`);
       await load();
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
@@ -171,7 +167,7 @@ export default function Clientes() {
             data-testid="add-walkin-btn"
             onClick={createWalkin}
             className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold px-4 py-2.5 rounded-lg flex items-center gap-2 transition-colors"
-            title="Cria um cartão sem nome, editável, sem quotas, pontos ou app sócio"
+            title="Abre uma ficha temporária (máx. 3 ativas), sem quotas, pontos ou app sócio — fecha sozinha quando fica a 0,00 €"
           >
             <User size={18} weight="bold" /> Não cliente
           </button>

@@ -68,6 +68,7 @@ export default function Transacoes() {
     if (r._kind === "expense") return r.description || "";
     if (r._kind === "order") return `Encomenda a ${r.supplier_name || "—"}`;
     if (r.source === "quota") return "Cotas";
+    if (r.source === "temp_client") return "Venda Não Cliente";
     return r.client_name || r.supplier_name || "";
   };
 

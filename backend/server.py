@@ -127,6 +127,10 @@ class ClientUpdate(BaseModel):
     direction_history: Optional[List[dict]] = None
     is_walkin: Optional[bool] = None
 
+class OccasionalClientIn(BaseModel):
+    label: Optional[str] = None  # nome/alcunha rápida (ex.: "Mesa 2 - casaco preto"); vazio = "Não Cliente #N"
+
+
 class SaleItemIn(BaseModel):
     product_id: str
     quantity: int
@@ -571,7 +575,8 @@ async def list_stock_writeoffs(user: dict = Depends(get_current_user)):
 # ---------- Clients ----------
 @api_router.get("/clients")
 async def list_clients(user: dict = Depends(get_current_user)):
-    items = await db.clients.find({}, {"_id": 0, "pin_hash": 0}).sort("name", 1).to_list(2000)
+    # Fichas temporárias liquidadas ficam arquivadas (só no histórico, não na lista)
+    items = await db.clients.find({"archived": {"$ne": True}}, {"_id": 0, "pin_hash": 0}).sort("name", 1).to_list(2000)
     # Enriquecer com resumo de cotas do ano corrente (X/12 pagas) — página Clientes unificada
     year = datetime.now(timezone.utc).year
     ids = [c["id"] for c in items]
@@ -818,6 +823,151 @@ async def list_debtors(user: dict = Depends(get_current_user)):
     for c in debtors:
         c["today_sales_total"] = round(today_by_client.get(c["id"], 0.0), 2)
     return debtors
+
+# ---------- Fichas temporárias · Cartão "Não Cliente" (máx. 3 ativas) ----------
+OCCASIONAL_MAX_ACTIVE = 3
+
+
+def _lisbon_today_start_iso() -> str:
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Europe/Lisbon"))
+    except Exception:
+        now = datetime.now(timezone.utc)
+    return now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+
+async def _next_temp_slot() -> Optional[int]:
+    """Primeira vaga livre (1..3) entre as fichas temporárias ativas."""
+    cards = await db.clients.find({"is_temp": True, "archived": {"$ne": True}}, {"_id": 0, "temp_slot": 1}).to_list(10)
+    used = {int(c.get("temp_slot") or 0) for c in cards}
+    for slot in range(1, OCCASIONAL_MAX_ACTIVE + 1):
+        if slot not in used:
+            return slot
+    return None
+
+
+async def _sync_temp_client_state(client_id: str, by: str = "sistema") -> Optional[dict]:
+    """Liquidação automática da ficha temporária: a 0,00 € é arquivada (liberta a vaga);
+    se voltar a ter dívida (estorno/edição), é reaberta."""
+    c = await db.clients.find_one({"id": client_id}, {"_id": 0})
+    if not c or not c.get("is_temp"):
+        return c
+    balance = round(float(c.get("balance", 0) or 0), 2)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if balance > 0.004:
+        if c.get("archived"):
+            await db.clients.update_one(
+                {"id": client_id},
+                {"$set": {"archived": False, "archived_at": None, "reopened_at": now_iso}},
+            )
+            await _audit(
+                "temp_client_reopen", by, entity="client", entity_id=client_id,
+                summary=f"Ficha temporária reaberta · {c.get('name')} · {balance:.2f} € em dívida",
+            )
+    elif not c.get("archived"):
+        # Só arquiva fichas que já tiveram consumos (uma ficha nova vazia continua aberta)
+        has_sales = await db.sales.count_documents({"client_id": client_id}) > 0
+        if has_sales:
+            await db.clients.update_one(
+                {"id": client_id}, {"$set": {"archived": True, "archived_at": now_iso}},
+            )
+            await _audit(
+                "temp_client_archive", by, entity="client", entity_id=client_id,
+                summary=f"Venda Não Cliente liquidada · {c.get('name')} · 0,00 € em dívida · ficha temporária arquivada (vaga libertada)",
+            )
+    return await db.clients.find_one({"id": client_id}, {"_id": 0})
+
+
+@api_router.get("/occasional-clients")
+async def list_occasional_clients(user: dict = Depends(get_current_user)):
+    """Fichas temporárias ativas (até 3) — cartões de cliente ocasional do bar."""
+    cards = await db.clients.find(
+        {"is_temp": True, "archived": {"$ne": True}}, {"_id": 0, "pin_hash": 0}
+    ).sort("created_at", 1).to_list(OCCASIONAL_MAX_ACTIVE)
+    today_start = _lisbon_today_start_iso()
+    out = []
+    for c in cards:
+        sales = await db.sales.find({"client_id": c["id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
+        out.append({
+            **c,
+            "items_count": sum(int(it.get("quantity") or 0) for s in sales for it in (s.get("items") or [])),
+            "sales_count": len(sales),
+            "sales_total": round(sum(float(s.get("total") or 0) for s in sales), 2),
+            "today_total": round(sum(float(s.get("total") or 0) for s in sales if (s.get("created_at") or "") >= today_start), 2),
+            "last_sale_at": sales[0].get("created_at") if sales else None,
+        })
+    return {
+        "cards": out,
+        "limit": OCCASIONAL_MAX_ACTIVE,
+        "slots_free": max(OCCASIONAL_MAX_ACTIVE - len(out), 0),
+    }
+
+
+@api_router.post("/occasional-clients")
+async def create_occasional_client(body: OccasionalClientIn, user: dict = Depends(get_current_user)):
+    slot = await _next_temp_slot()
+    if slot is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Já existem {OCCASIONAL_MAX_ACTIVE} fichas temporárias ativas — liquida uma para libertar a vaga",
+        )
+    label = (body.label or "").strip()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "name": label[:60] if label else f"Não Cliente #{slot}",
+        "contact": None,
+        "email": None,
+        "note": "Ficha temporária — cliente ocasional (sem cotas, pontos ou app de sócio)",
+        "member_number": None,
+        "is_member": False,
+        "morada": None,
+        "pin_hash": None,
+        "pin_visible": None,
+        "points": 0,
+        "balance": 0.0,
+        "total_spent": 0.0,
+        "credit_limit": 0.0,
+        "family_head_client_id": None,
+        "is_minor": False,
+        "consumption_limit": None,
+        "direction_role": None,
+        "direction_history": None,
+        "is_walkin": True,
+        "is_temp": True,
+        "temp_slot": slot,
+        "archived": False,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": user["email"],
+    }
+    await db.clients.insert_one(doc)
+    await _audit(
+        "temp_client_create", user["email"], entity="client", entity_id=doc["id"],
+        summary=f"Ficha temporária aberta: {doc['name']} (vaga {slot}/{OCCASIONAL_MAX_ACTIVE})",
+    )
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.delete("/occasional-clients/{client_id}")
+async def discard_occasional_client(client_id: str, user: dict = Depends(get_current_user)):
+    """Fecha o cartão temporário. Sem consumos é eliminado; com consumos liquidados fica arquivado
+    (o histórico financeiro mantém-se)."""
+    c = await db.clients.find_one({"id": client_id, "is_temp": True}, {"_id": 0})
+    if not c:
+        raise HTTPException(status_code=404, detail="Ficha temporária não encontrada")
+    if round(float(c.get("balance", 0) or 0), 2) > 0.004:
+        raise HTTPException(status_code=400, detail="A ficha tem consumos por liquidar — regista o pagamento primeiro")
+    has_sales = await db.sales.count_documents({"client_id": client_id}) > 0
+    if has_sales:
+        await _sync_temp_client_state(client_id, user["email"])
+    else:
+        await db.clients.delete_one({"id": client_id})
+    await _audit(
+        "temp_client_discard", user["email"], entity="client", entity_id=client_id,
+        summary=f"Ficha temporária fechada: {c.get('name')}",
+    )
+    return {"ok": True}
 
 async def _audit(action_type: str, by: str, *, entity: Optional[str] = None, entity_id: Optional[str] = None, before: Optional[dict] = None, after: Optional[dict] = None, summary: Optional[str] = None, changes: Optional[dict] = None, tx_number: Optional[int] = None):
     """Regista uma entrada genérica no audit log (sempre com descrição e, quando aplicável, nº de transação)."""
@@ -1073,7 +1223,7 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
     is_member = bool(client_doc.get("is_member"))
     old_pending = float(client_doc.get("points_pending_value", 0)) if is_member else 0.0
     points_earned, new_pending = _compute_points_with_rollover(client_doc, total)
-    if client_doc.get("is_walkin"):
+    if client_doc.get("is_walkin") or client_doc.get("is_temp"):
         points_earned, new_pending = 0, old_pending
     tx_no = await _next_tx_number()
     is_tutelado = _is_minor_client(client_doc)
@@ -1099,10 +1249,17 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
         "created_at": datetime.now(timezone.utc).isoformat(),
         "user_email": user["email"],
     }
+    is_temp_sale = bool(client_doc.get("is_temp"))
+    if is_temp_sale:
+        # Receita de cliente ocasional — categoria própria no histórico/contabilidade
+        sale_doc["source"] = "temp_client"
+        sale_doc["is_temp_sale"] = True
     await db.sales.insert_one(sale_doc)
     await _audit(
         "sale_create", user["email"], entity="sale", entity_id=sale_id, tx_number=tx_no,
-        summary=f"Venda #{tx_no} · {client_doc['name']} · {total:.2f} € · " + ", ".join(f"{li['quantity']}× {li['product_name']}" for li in line_items),
+        summary=("Venda Não Cliente" if is_temp_sale else "Venda")
+        + f" #{tx_no} · {client_doc['name']} · {total:.2f} € · "
+        + ", ".join(f"{li['quantity']}× {li['product_name']}" for li in line_items),
     )
     if sale_doc["minor_alcohol_alert"]:
         tutor_id = client_doc.get("family_head_client_id")
@@ -1230,6 +1387,7 @@ async def cancel_sale(sale_id: str, user: dict = Depends(get_current_user)):
     await db.clients.update_one({"id": sale["client_id"]}, op)
     if pts:
         await _log_points(sale["client_id"], -pts, "sale_cancel", sale["id"], "Venda cancelada", user["email"])
+    await _sync_temp_client_state(sale["client_id"], user["email"])
     # audit log
     await db.audit_log.insert_one({
         "id": str(uuid.uuid4()),
@@ -1329,6 +1487,11 @@ async def update_sale(sale_id: str, body: SaleEditIn, user: dict = Depends(get_c
             inc["points"] = diff_points
         if inc:
             await db.clients.update_one({"id": new_client_id}, {"$inc": inc})
+
+    # Fichas temporárias envolvidas na edição (pagamento/transferência)
+    await _sync_temp_client_state(new_client_id, user["email"])
+    if new_client_id != sale["client_id"]:
+        await _sync_temp_client_state(sale["client_id"], user["email"])
 
     # audit
     changes = {}
@@ -1881,6 +2044,8 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
     await db.clients.update_one({"id": body.client_id}, {"$inc": inc})
     if body.points_used:
         await _log_points(body.client_id, -int(body.points_used), "payment", pid, f"Pagamento (descontou {points_euros:.2f} €)", user["email"])
+    # Ficha temporária liquidada a 0,00 € → arquivada e vaga libertada
+    await _sync_temp_client_state(body.client_id, user["email"])
     if offer_amount > 0:
         entries = [
             {"sale_id": t.sale_id, "product_name": t.product_name, "unit_price": float(t.unit_price), "qty": int(t.qty_offer), "amount": round(float(t.unit_price) * t.qty_offer, 2), "client_id": body.client_id, "source": "payment"}
@@ -1961,6 +2126,7 @@ async def reverse_payment(payment_id: str, user: dict = Depends(get_current_user
     await db.clients.update_one({"id": pay["client_id"]}, {"$inc": inc})
     if points_used:
         await _log_points(pay["client_id"], points_used, "payment_reverse", payment_id, "Estorno de pagamento", user["email"])
+    await _sync_temp_client_state(pay["client_id"], user["email"])
     await db.payments.delete_one({"id": payment_id})
     await _audit("payment_reverse", user["email"], entity="payment", entity_id=payment_id, before=pay, summary=f"Estorno de pagamento (#{pay.get('tx_number', '—')}) · cliente {pay.get('client_name', '—')}")
     await _sync_quota_paid_status(pay["client_id"])
@@ -2007,6 +2173,7 @@ async def delete_payment(payment_id: str, user: dict = Depends(require_role("adm
     if points_used:
         inc["points"] = points_used
     await db.clients.update_one({"id": pay["client_id"]}, {"$inc": inc})
+    await _sync_temp_client_state(pay["client_id"], user["email"])
     await db.payments.delete_one({"id": payment_id})
     await _audit("payment_delete", user["email"], entity="payment", entity_id=payment_id, before=pay, summary=f"Pagamento eliminado (#{pay.get('tx_number', '—')}) · {pay.get('client_name', '—')} · dívida reposta")
     await _sync_quota_paid_status(pay["client_id"])
@@ -2085,7 +2252,7 @@ async def report_supplier(supplier_id: str, date_from: Optional[str] = None, dat
 @api_router.get("/dashboard")
 async def dashboard(user: dict = Depends(get_current_user)):
     products = await db.products.find({}, {"_id": 0}).to_list(1000)
-    clients_total = await db.clients.count_documents({})
+    clients_total = await db.clients.count_documents({"archived": {"$ne": True}})
     # Cotas não contam para valor de stock nem para alertas de stock baixo
     stockable_products = [p for p in products if not p.get("is_quota")]
     total_stock_value = sum(p.get("price", 0) * p.get("quantity", 0) for p in stockable_products)
@@ -2107,7 +2274,7 @@ async def dashboard(user: dict = Depends(get_current_user)):
     month_total = sum(s.get("total", 0) for s in month_sales)
 
     # outstanding debts (clients)
-    clients = await db.clients.find({}, {"_id": 0, "pin_hash": 0}).to_list(2000)
+    clients = await db.clients.find({"archived": {"$ne": True}}, {"_id": 0, "pin_hash": 0}).to_list(2000)
     outstanding = sum(max(c.get("balance", 0), 0) for c in clients)
     today_debtors = [c for c in clients if (c.get("balance", 0) > 0)]
 

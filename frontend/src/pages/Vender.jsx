@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
+import OccasionalCards from "../components/OccasionalCards";
 import {
   Plus,
   Minus,
@@ -15,6 +17,8 @@ import { toast } from "sonner";
 
 export default function Vender() {
   const { user } = useAuth();
+  const [searchParams] = useSearchParams();
+  const presetClientId = searchParams.get("cliente");
   const canHouseOffer = user?.role === "admin" || user?.role === "tesoureiro";
   const [products, setProducts] = useState([]);
   const [viewMode, setViewMode] = useState(() => localStorage.getItem("vender_view") || "grid");
@@ -28,6 +32,7 @@ export default function Vender() {
   const [submitting, setSubmitting] = useState(false);
   const [houseOffer, setHouseOffer] = useState(false);
   const [topProducts, setTopProducts] = useState([]);
+  const [cardsVersion, setCardsVersion] = useState(0); // força atualização dos cartões temporários
 
   const load = async () => {
     setLoading(true);
@@ -40,7 +45,8 @@ export default function Vender() {
       setProducts(p.data);
       setClients(c.data);
       setTopProducts(top.data || []);
-      if (!clientId && c.data.length) setClientId(c.data[0].id);
+      if (presetClientId && c.data.some((x) => x.id === presetClientId)) setClientId(presetClientId);
+      else if (!clientId && c.data.length) setClientId(c.data[0].id);
     } finally {
       setLoading(false);
     }
@@ -126,6 +132,7 @@ export default function Vender() {
       setCart({});
       setHouseItems({});
       setHouseOffer(false);
+      setCardsVersion((v) => v + 1);
       await load();
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
@@ -158,6 +165,11 @@ export default function Vender() {
         <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1">
           Vender
         </h1>
+      </div>
+
+      {/* Fichas temporárias · Cliente Ocasional / Não Cliente (máx. 3 ativas) */}
+      <div className="mb-6">
+        <OccasionalCards onSell={(card) => setClientId(card.id)} onChanged={load} refreshKey={cardsVersion} />
       </div>
 
       {/* Selector de Cliente/Sócio — sempre por CIMA dos produtos */}

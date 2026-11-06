@@ -26,5 +26,11 @@ docker compose -f docker-compose.base44.yml up -d
 3. No preview: login `admin@ard.pt` / `admin123` → Dashboard com KPIs.
 4. Sócio: `/socio/login` nº `88` PIN `00088` (se os dados existirem).
 
+## Fichas temporárias · Cartão "Não Cliente"
+- Doc em `db.clients` com `is_temp: true` + `temp_slot` (1..3) e `archived`. Máximo **3 ativas** (`OCCASIONAL_MAX_ACTIVE`).
+- Endpoints: `GET/POST /api/occasional-clients`, `DELETE /api/occasional-clients/{id}`. O `POST /api/clients` antigo com `is_walkin` continua a existir, mas o botão "Não cliente" usa o endpoint novo (limite + arquivo automático).
+- `_sync_temp_client_state()` corre após pagamentos, estornos, cancelamento e edição de vendas: a 0,00 € a ficha é arquivada (vaga libertada) e reaberta se voltar a ter dívida. Fichas arquivadas saem de `/api/clients` e das contagens do dashboard.
+- Vendas destas fichas ficam com `source: "temp_client"` (mostrado como **Venda Não Cliente** em Transações) e não acumulam pontos.
+
 ## Secrets
 - `RESEND_API_KEY` (opcional) via dashboard Base44 → `/run/base44/app.env`, ligado ao serviço backend como último `env_file`. Sem ela, `send_email` falha graciosamente.
