@@ -61,6 +61,20 @@ export default function Banco() {
     load();
   }, []);
 
+  const resetBalances = async () => {
+    if (!window.confirm(`Zerar o valor em caixa (${euro(cashBank?.cash_balance || 0)}) e em banco (${euro(cashBank?.bank_balance || 0)})? Fica registado um acerto de abertura — não altera receitas nem despesas.`)) return;
+    setSaving(true);
+    try {
+      await api.post("/bank/reset", { reason: "Acerto de abertura (zerar caixa e banco)" });
+      toast.success("Caixa e banco zerados");
+      await load();
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const submitDeposit = async (e) => {
     e.preventDefault();
     const amount = parseFloat(String(depForm.amount).replace(",", "."));
@@ -148,6 +162,17 @@ export default function Banco() {
               </div>
               <div className="p-3 rounded-lg bg-emerald-500/10 text-emerald-400"><Bank size={22} weight="duotone" /></div>
             </div>
+          </button>
+        </div>
+      )}
+
+      {canManage && cashBank && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/40 border border-slate-800 rounded-xl px-5 py-4" data-testid="banco-reset-box">
+          <p className="text-xs text-slate-500">
+            Acerto de abertura: regista um movimento que zera o valor em caixa (numerário) e em banco (MBWay), sem alterar receitas nem despesas.
+          </p>
+          <button onClick={resetBalances} disabled={saving} data-testid="banco-reset-balances" className="shrink-0 px-4 py-2 rounded-lg border border-rose-500/40 text-rose-300 text-xs font-bold hover:bg-rose-500/10 disabled:opacity-50">
+            Zerar caixa e banco
           </button>
         </div>
       )}

@@ -69,7 +69,8 @@ docker compose -f docker-compose.base44.yml up -d
 ## Cartão "Valor em caixa" (Dashboard)
 - **Caixa = só numerário da gaveta.** `_account_balances()` calcula `cash_balance` apenas com entradas em numerário (`_payment_cash_value`) ± depósitos/transferências/despesas em caixa − `cash_reset`. O MBWay **não** passa pela gaveta: entra no `bank_balance` (`mbway_in`), tal como os depósitos bancários. Ex.: venda de 30 € (20 numerário + 10 MBWay) → caixa +20 €, banco +10 €.
 - O cartão `kpi-cash` mostra o saldo e, por baixo, "Recebido em numerário" (`kpi-cash-numerario`, bruto de sempre) e "MBWay (direto para o banco)" (`kpi-cash-mbway`). Os detalhes só aparecem depois de revelar com o olho (o valor continua mascarado à direção por omissão).
-- **Acerto de abertura (`cash_reset`)**: movimento em `db.cash_withdrawals` com `kind: "cash_reset"` que reduz o saldo de caixa sem mexer no banco (não é receita nem despesa). Foi usado para recontar a gaveta a zero; aparece em `/banco` como "Acerto de abertura de caixa".
+- **Acerto de abertura (`cash_reset` / `bank_reset`)**: movimentos em `db.cash_withdrawals` que reduzem o saldo de caixa (`cash_reset`) ou de banco (`bank_reset`) sem tocar na outra conta — não são receita nem despesa. `POST /api/bank/reset` (admin/tesoureiro) zera as **duas** contas de uma vez e grava o instante em `db.club_settings {_id: "opening_balances"}`; o botão "Zerar caixa e banco" (`banco-reset-balances`) em `/banco` chama-o.
+- **"Recebido em numerário" / "MBWay" no cartão são desde o último acerto**: `_account_balances()` soma só os pagamentos posteriores a `opening_balances`/aos acertos (`cash_reset`/`bank_reset`), por isso depois de zerar as duas contas o cartão fica a 0,00 em tudo.
 
 ## Bola de quotas junto ao nome
 - `src/components/QuotaBall.jsx` (🟢 paid / 🟡 pending / 🔴 debt; não-sócios sem bola). Usada na lista de clientes, na ficha (`ficha-client-name`) e no POS (`Vender`).

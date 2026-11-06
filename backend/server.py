@@ -6087,7 +6087,6 @@ async def _account_balances() -> dict:
     por banco. Transferências entre caixa e banco NÃO são receita nem despesa."""
     cash_payments = await db.payments.find({"source": {"$ne": "refund"}}, {"_id": 0}).to_list(50000)
     cash_in = round(sum(_payment_cash_value(p) for p in cash_payments), 2)
-    # Para o cartão "Valor em caixa": quanto entrou em numerário e quanto foi pago por MBWay
     mbway_in = round(sum(_payment_mbway_value(p) for p in cash_payments), 2)
     wd_all = await db.cash_withdrawals.find({}, {"_id": 0}).to_list(50000)
     deposits = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "bank_deposit"), 2)
@@ -6098,16 +6097,26 @@ async def _account_balances() -> dict:
     dep_in_bank = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "deposit_in" and w.get("target") == "banco"), 2)
     bank_to_cash = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "transfer_bank_cash"), 2)
     # Acerto de abertura: zera/ajusta o saldo físico da gaveta (não é receita nem despesa)
-    cash_reset = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "cash_reset"), 2)
+    cash_reset_docs = [w for w in wd_all if w.get("kind") == "cash_reset"]
+    cash_reset = round(sum(float(w.get("amount", 0)) for w in cash_reset_docs), 2)
+    # Acerto de abertura do banco (MBWay e depósitos) — também não é receita nem despesa
+    bank_reset_docs = [w for w in wd_all if w.get("kind") == "bank_reset"]
+    bank_reset = round(sum(float(w.get("amount", 0)) for w in bank_reset_docs), 2)
     # O MBWay não passa pela gaveta: entra diretamente no banco
-    bank_balance = round(mbway_in + deposits + dep_in_bank - bank_to_cash - exp_bank, 2)
+    bank_balance = round(mbway_in + deposits + dep_in_bank - bank_to_cash - exp_bank - bank_reset, 2)
     cash_balance = round(cash_in + dep_in_cash + bank_to_cash - deposits - refunds - exp_cash - cash_reset, 2)
+    # Cartão "Valor em caixa": numerário e MBWay recebidos desde o último acerto de abertura
+    opening = await db.club_settings.find_one({"_id": "opening_balances"}) or {}
+    cash_since = max([opening.get("cash_at") or ""] + [w.get("created_at") or "" for w in cash_reset_docs])
+    bank_since = max([opening.get("bank_at") or ""] + [w.get("created_at") or "" for w in bank_reset_docs])
+    numerario_since = round(sum(_payment_cash_value(p) for p in cash_payments if (p.get("created_at") or "") > cash_since), 2)
+    mbway_since = round(sum(_payment_mbway_value(p) for p in cash_payments if (p.get("created_at") or "") > bank_since), 2)
     return {
         "cash_balance": cash_balance,
         "bank_balance": bank_balance,
         "total_balance": round(bank_balance + cash_balance, 2),
-        "cash_numerario": cash_in,
-        "cash_mbway": mbway_in,
+        "cash_numerario": numerario_since,
+        "cash_mbway": mbway_since,
     }
 
 
@@ -6217,6 +6226,45 @@ async def list_bank_transfers(user: dict = Depends(get_current_user)):
     return items
 
 
+class BankResetIn(BaseModel):
+    reason: str = ""
+
+
+@api_router.post("/bank/reset")
+async def reset_bank_balances(body: BankResetIn, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    """Acerto de abertura: zera o valor contabilístico em caixa (numerário) e em banco
+    (MBWay e depósitos), registando um movimento de acerto por conta. Não é receita nem despesa."""
+    balances = await _account_balances()
+    reason = (body.reason or "").strip() or "Acerto de abertura"
+    created = []
+    for kind, label, value in (("cash_reset", "Caixa (numerário)", balances["cash_balance"]),
+                               ("bank_reset", "Banco (MBWay)", balances["bank_balance"])):
+        amount = round(float(value or 0), 2)
+        if abs(amount) < 0.005:
+            continue
+        tx_no = await _next_tx_number()
+        doc = {
+            "id": str(uuid.uuid4()),
+            "tx_number": tx_no,
+            "kind": kind,
+            "amount": amount,
+            "note": reason[:500],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "user_email": user["email"],
+            "user_role": user.get("role"),
+        }
+        await db.cash_withdrawals.insert_one(doc)
+        await _audit("bank_reset", user["email"], entity="cash_withdrawal", entity_id=doc["id"], tx_number=tx_no,
+                     summary=f"Acerto #{tx_no} · {label} zerado ({euro_fmt(amount)}) · {reason}")
+        doc.pop("_id", None)
+        created.append(doc)
+    now = datetime.now(timezone.utc).isoformat()
+    await db.club_settings.update_one({"_id": "opening_balances"},
+                                      {"$set": {"cash_at": now, "bank_at": now, "reason": reason}},
+                                      upsert=True)
+    return {"balances": await _account_balances(), "created": created}
+
+
 @api_router.get("/treasury/movements")
 async def treasury_movements(account: str = "cash", date_from: Optional[str] = None, date_to: Optional[str] = None,
                              user: dict = Depends(get_current_user)):
@@ -6265,7 +6313,7 @@ async def treasury_movements(account: str = "cash", date_from: Optional[str] = N
         async for w in db.cash_withdrawals.find(q, {"_id": 0}):
             kind = w.get("kind")
             amt = float(w.get("amount", 0))
-            if kind in ("bank_deposit", "deposit_in", "transfer_bank_cash", "expense_bank"):
+            if kind in ("bank_deposit", "deposit_in", "transfer_bank_cash", "expense_bank", "bank_reset"):
                 if kind == "bank_deposit":
                     direction, desc = "in", "Depósito de caixa"
                 elif kind == "deposit_in":
@@ -6274,6 +6322,8 @@ async def treasury_movements(account: str = "cash", date_from: Optional[str] = N
                     direction, desc = "in", f"Depósito · {w.get('category', '')}"
                 elif kind == "transfer_bank_cash":
                     direction, desc = "out", "Transferência Banco → Caixa"
+                elif kind == "bank_reset":
+                    direction, desc = "out", "Acerto de abertura de banco"
                 else:
                     direction, desc = "out", "Despesa paga por banco"
                 movements.append({
