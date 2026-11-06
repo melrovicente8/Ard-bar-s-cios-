@@ -49,6 +49,8 @@ import SocioGifts from "../components/SocioGifts";
 import SocioBadges from "../components/SocioBadges";
 import SocioRodadaMista from "../components/SocioRodadaMista";
 import SocioParceiros from "../components/SocioParceiros";
+import ClubArchive from "../components/ClubArchive";
+import LagartoAmarelo from "../components/LagartoAmarelo";
 import { openQuarterlyDoc } from "../lib/quarterlyDoc";
 import { openMonthlyDoc } from "../lib/monthlyDoc";
 import { printReceipt as printReceiptA6 } from "../lib/receipt";
@@ -141,6 +143,8 @@ export default function SocioPortal() {
   // Presenças na sede (calendário + streak) e Tabela de Feitos
   const [presences, setPresences] = useState(null);
   const [showPresences, setShowPresences] = useState(false);
+  // 🏆 Historial, Palmarés e Arquivo Documental
+  const [showArchive, setShowArchive] = useState(false);
   const [presencePopup, setPresencePopup] = useState(null);
   const [rankings, setRankings] = useState(null);
   const [showRankings, setShowRankings] = useState(false);
@@ -701,11 +705,7 @@ export default function SocioPortal() {
         mbway_phone: c.contact || "",
         pay_at_counter: payAtCounter,
       });
-      if (data?.pay_at_counter) {
-        toast.success("Cotas lançadas na conta corrente · paga ao balcão");
-      } else {
-        toast.success("Pedido de pagamento enviado · aguarda confirmação do clube");
-      }
+      toast.success("Pedido de cotas enviado · aguarda a aprovação da direção");
       setShowQuotas(false);
       await refresh();
     } catch (e) {
@@ -1084,6 +1084,19 @@ export default function SocioPortal() {
               ) : (
                 <div className="text-[10px] text-slate-500 mt-1">{c.quota_status?.status === "paid" ? "Consulta disponível" : "🔒 Exclusivo para cotas em dia"}</div>
               )}
+            </div>
+            <div
+              onClick={() => setShowArchive(true)}
+              data-testid="socio-archive-card"
+              title="Consultar o historial, o palmarés e o arquivo documental da ARDN"
+              className="bg-slate-950/60 border border-amber-500/30 hover:border-amber-500/60 rounded-xl p-5 transition-colors cursor-pointer"
+            >
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80 flex items-center gap-1.5">
+                🏆 Historial e Palmarés
+                <span className="text-amber-300/70 normal-case ml-auto">Abrir ›</span>
+              </div>
+              <div className="mt-2 font-outfit text-2xl font-bold text-amber-200">Memória da ARDN</div>
+              <div className="text-[10px] text-slate-500 mt-1">História · palmarés das equipas · arquivo documental</div>
             </div>
             <SocioBadges />
             <SocioRodadaMista />
@@ -2101,7 +2114,7 @@ export default function SocioPortal() {
               </select>
             </div>
             <p className="text-xs text-slate-400 mb-4">
-              Seleciona os meses em aberto que pretendes pagar. Podes pagar por MBWay ou ao balcão (o valor fica na conta corrente).
+              Seleciona os meses em aberto que pretendes pagar. O pedido só é lançado depois de aprovado pela direção.
             </p>
             <div className={`bg-slate-950 border border-amber-500/20 rounded-lg p-3 mb-2 text-center ${payAtCounter ? "opacity-40" : ""}`}>
               <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80">Envia MBWay para</div>
@@ -2116,7 +2129,7 @@ export default function SocioPortal() {
                 className="mt-0.5 w-4 h-4 accent-amber-500"
               />
               <span className="text-xs text-slate-200">
-                <strong>Pagar ao balcão</strong> — o valor é lançado na conta corrente e pagas quando passares na ARD.
+                <strong>Pagar ao balcão</strong> — pedes para pagar quando passares na ARD. O pedido fica pendente até a direção confirmar.
               </span>
             </label>
             <div className="grid grid-cols-3 gap-2 mb-4">
@@ -2632,6 +2645,26 @@ export default function SocioPortal() {
           </div>
         </div>
       )}
+
+      {/* 🏆 ARD NESPEREIRA — Historial, Palmarés e Arquivo Documental */}
+      {showArchive && (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/85 backdrop-blur-sm p-4 overflow-y-auto"
+          onClick={() => setShowArchive(false)}
+          data-testid="socio-archive-modal"
+        >
+          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-3xl my-6">
+            <div className="flex items-center justify-end mb-2">
+              <button onClick={() => setShowArchive(false)} className="p-2 rounded bg-slate-800 text-slate-300">
+                <X size={14} weight="bold" />
+              </button>
+            </div>
+            <ClubArchive scope="socio" />
+          </div>
+        </div>
+      )}
+
+      <LagartoAmarelo scope="socio" />
     </div>
   );
 }

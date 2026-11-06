@@ -66,8 +66,8 @@ export default function Vender() {
       const [p, c, top, freq] = await Promise.all([
         api.get("/products"),
         api.get("/clients"),
-        api.get("/products/top", { params: { limit: 10 } }).catch(() => ({ data: [] })),
-        api.get("/clients-frequent", { params: { limit: 7 } }).catch(() => ({ data: [] })),
+        api.get("/products/top", { params: { limit: 15 } }).catch(() => ({ data: [] })),
+        api.get("/clients-frequent", { params: { limit: 10 } }).catch(() => ({ data: [] })),
       ]);
       setProducts(p.data);
       setClients(c.data);
@@ -217,7 +217,7 @@ export default function Vender() {
         {frequent.length > 0 && (
           <div className="flex flex-wrap gap-2 mb-3" data-testid="client-picker-frequent">
             <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 self-center mr-1">
-              Mais frequentes
+              Os 10 mais frequentes
             </span>
             {frequent.map((c) => (
               <button
@@ -300,12 +300,12 @@ export default function Vender() {
         </div>
       )}
 
-      {/* Venda rápida — os 10 itens mais vendidos */}
+      {/* Venda rápida — os 15 itens mais vendidos */}
       {topProducts.length > 0 && (
         <div className="mb-6" data-testid="quick-sell-strip">
           <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
             <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-amber-400/80 flex items-center gap-1.5">
-              <Lightning size={12} weight="fill" /> Venda rápida · os 10 mais vendidos
+              <Lightning size={12} weight="fill" /> Venda rápida · os 15 mais vendidos
             </div>
             <button
               type="button"

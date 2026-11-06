@@ -5190,52 +5190,19 @@ async def socio_pay_quotas(body: SocioQuotaPayIn, socio: dict = Depends(get_curr
         raise HTTPException(status_code=400, detail=f"Já lançadas na conta corrente: {', '.join(MONTHS_PT[a['month']-1] for a in already)}")
     unit = _quota_amount(socio)
     total = round(unit * len(body.months), 2)
-    if body.pay_at_counter:
-        sale_id = str(uuid.uuid4())
-        tx_no = await _next_tx_number()
-        items = [{
-            "product_id": f"quota-{body.year}-{m:02d}",
-            "product_name": f"Cota {MONTHS_PT[m-1]}/{body.year}",
-            "unit_price": unit,
-            "quantity": 1,
-            "subtotal": unit,
-        } for m in body.months]
-        sale = {
-            "id": sale_id, "tx_number": tx_no, "client_id": socio["id"], "client_name": socio["name"],
-            "items": items, "total": total, "points_earned": 0, "is_member_at_sale": True,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "user_email": socio.get("email") or "socio-self", "source": "quota_counter",
-        }
-        await db.sales.insert_one(sale)
-        await db.clients.update_one({"id": socio["id"]}, {"$inc": {"balance": total, "total_spent": total}})
-        for m in body.months:
-            await db.quotas.update_one(
-                {"client_id": socio["id"], "year": body.year, "month": m},
-                {"$set": {
-                    "client_id": socio["id"], "year": body.year, "month": m,
-                    "status": "billed", "amount": unit,
-                    "billed_at": datetime.now(timezone.utc).isoformat(),
-                    "sale_id": sale_id, "user_email": socio.get("email") or "socio-self",
-                }, "$unset": {"reversed": ""}},
-                upsert=True,
-            )
-        await _sync_quota_paid_status(socio["id"])
-        await _audit(
-            "quota_counter_request", socio.get("email") or "socio-self",
-            entity="client", entity_id=socio["id"], tx_number=tx_no,
-            summary=f"Cotas {body.year} ({', '.join(MONTHS_PT[m-1] for m in body.months)}) para pagar ao balcão · {total:.2f} € · tx #{tx_no}",
-        )
-        sale.pop("_id", None)
-        return {"sale": sale, "pay_at_counter": True}
+    # O pedido do sócio NUNCA lança cotas diretamente: fica pendente até a direção
+    # confirmar (MBWay ou pagamento ao balcão).
     rec = {
         "id": str(uuid.uuid4()),
         "client_id": socio["id"],
         "client_name": socio["name"],
         "amount": total,
         "mbway_phone": (body.mbway_phone or "").strip(),
-        "note": f"Cotas {body.year}: {', '.join(MONTHS_PT[m-1] for m in body.months)}",
+        "note": f"Cotas {body.year}: {', '.join(MONTHS_PT[m-1] for m in body.months)}"
+                + (" · a pagar ao balcão" if body.pay_at_counter else ""),
         "status": "pending",
         "kind": "quota",
+        "pay_at_counter": bool(body.pay_at_counter),
         "quota_year": body.year,
         "quota_months": body.months,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -5243,6 +5210,12 @@ async def socio_pay_quotas(body: SocioQuotaPayIn, socio: dict = Depends(get_curr
         "confirmed_by": None,
     }
     await db.mbway_payments.insert_one(rec)
+    await _audit(
+        "quota_payment_request", f"socio:{socio.get('member_number') or socio['id']}",
+        entity="mbway", entity_id=rec["id"],
+        summary=f"Pedido de cotas {body.year} ({', '.join(MONTHS_PT[m-1] for m in body.months)}) · "
+                f"{total:.2f} € · {'ao balcão' if body.pay_at_counter else 'MBWay'} · aguarda aprovação",
+    )
     rec.pop("_id", None)
     return rec
 
@@ -7934,10 +7907,37 @@ async def socio_group_tables(socio: dict = Depends(get_current_socio)):
 
 @api_router.post("/socio/group-tables")
 async def socio_create_group_table(body: SocioGroupTableIn, socio: dict = Depends(get_current_socio)):
-    """O sócio inicia uma Rodada Mista a partir da app (ele é sempre um dos elementos da mesa)."""
+    """O sócio inicia uma Rodada Mista a partir da app (ele é sempre um dos elementos da mesa).
+    Cada sócio só pode ter UMA rodada mista aberta na app."""
+    current = await db.group_tables.find_one(
+        {"members.client_id": socio["id"], "status": "open"}, {"_id": 0, "label": 1})
+    if current:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Já tens a Rodada Mista «{current.get('label')}» aberta. "
+                   "Faz o pedido de consumo dentro dessa mesa antes de abrir outra.",
+        )
     ids = [socio["id"]] + [i for i in (body.member_ids or []) if i != socio["id"]]
     table = await _open_group_table(ids, body.label, f"socio:{socio.get('member_number') or socio['id']}")
     return _group_table_for_socio(table, socio["id"])
+
+
+@api_router.post("/socio/group-tables/{table_id}/rounds")
+async def socio_add_group_round(table_id: str, body: GroupRoundIn, socio: dict = Depends(get_current_socio)):
+    """O sócio pede consumo dentro de uma Rodada Mista em que está sentado."""
+    table = await db.group_tables.find_one({"id": table_id}, {"_id": 0, "members": 1, "status": 1})
+    if not table:
+        raise HTTPException(status_code=404, detail="Rodada não encontrada")
+    if not any(m.get("client_id") == socio["id"] for m in (table.get("members") or [])):
+        raise HTTPException(status_code=403, detail="Não estás nesta Rodada Mista")
+    if table.get("status") != "open":
+        raise HTTPException(status_code=400, detail="Esta Rodada Mista já está fechada")
+    items = [it for it in body.items if it.quantity > 0]
+    if not items:
+        raise HTTPException(status_code=400, detail="Escolhe pelo menos um produto")
+    updated = await _append_group_round(
+        table_id, items, f"socio:{socio.get('member_number') or socio['id']}", False)
+    return _group_table_for_socio(updated, socio["id"])
 
 
 @api_router.get("/group-tables")
@@ -7957,18 +7957,21 @@ async def get_group_table(table_id: str, user: dict = Depends(get_current_user))
 
 @api_router.post("/group-tables/{table_id}/rounds")
 async def add_group_round(table_id: str, body: GroupRoundIn, user: dict = Depends(get_current_user)):
+    return await _append_group_round(table_id, body.items, user["email"], user.get("role") in ("admin", "tesoureiro"))
+
+
+async def _append_group_round(table_id: str, items: list, actor_email: str, is_staff: bool) -> dict:
+    """Lança uma nova rodada de consumos na mesa (staff no POS ou o próprio sócio na app)."""
     table = await db.group_tables.find_one({"id": table_id}, {"_id": 0})
     if not table:
         raise HTTPException(status_code=404, detail="Rodada não encontrada")
     if table.get("status") != "open":
         raise HTTPException(status_code=400, detail="Esta Rodada Mista já está fechada")
-    if not body.items:
+    if not items:
         raise HTTPException(status_code=400, detail="Sem itens")
-    pids = [it.product_id for it in body.items]
+    pids = [it.product_id for it in items]
     products = await db.products.find({"id": {"$in": pids}}, {"_id": 0}).to_list(len(pids))
     pmap = {p["id"]: p for p in products}
-    role = user.get("role")
-    is_staff = role in ("admin", "tesoureiro")
     try:
         from zoneinfo import ZoneInfo
         now_hour = datetime.now(ZoneInfo("Europe/Lisbon")).hour
@@ -7976,7 +7979,7 @@ async def add_group_round(table_id: str, body: GroupRoundIn, user: dict = Depend
         now_hour = datetime.now(timezone.utc).hour
     line_items = []
     total = 0.0
-    for it in body.items:
+    for it in items:
         prod = pmap.get(it.product_id)
         if not prod:
             raise HTTPException(status_code=404, detail="Produto não encontrado")
@@ -7999,7 +8002,7 @@ async def add_group_round(table_id: str, body: GroupRoundIn, user: dict = Depend
             "quantity": qty,
             "subtotal": subtotal,
         })
-    for it in body.items:
+    for it in items:
         await db.products.update_one({"id": it.product_id}, {"$inc": {"quantity": -int(it.quantity)}})
     round_no = len(table.get("rounds") or []) + 1
     round_doc = {
@@ -8008,17 +8011,16 @@ async def add_group_round(table_id: str, body: GroupRoundIn, user: dict = Depend
         "total": round(total, 2),
         "status": "open",
         "added_at": datetime.now(timezone.utc).isoformat(),
-        "added_by": user["email"],
+        "added_by": actor_email,
         "payer_client_id": None,
         "sale_id": None,
         # Quem estava à mesa nesta rodada (permite mostrar quem se juntou depois)
         "members": [m["client_id"] for m in (table.get("members") or [])],
     }
     await db.group_tables.update_one({"id": table_id}, {"$push": {"rounds": round_doc}})
-    await _audit("group_round_add", user["email"], entity="group_table", entity_id=table_id,
+    await _audit("group_round_add", actor_email, entity="group_table", entity_id=table_id,
                  summary=f"Rodada Mista {table.get('label')} · rodada {round_no} · {total:.2f} € · "
                          + ", ".join(f"{li['quantity']}× {li['product_name']}" for li in line_items))
-    table.pop("_id", None)
     return await db.group_tables.find_one({"id": table_id}, {"_id": 0})
 
 
@@ -8995,6 +8997,173 @@ async def reject_partner_ticket(ticket_id: str, body: PartnerTicketReject,
                  summary=f"Talão de {ticket.get('client_name')} ({ticket.get('partner_name')}) rejeitado"
                          + (f" · {body.reason.strip()}" if (body.reason or "").strip() else ""))
     return await db.partner_tickets.find_one({"id": ticket_id}, {"_id": 0})
+
+
+# ---------- Lagarto Amarelo · assistente de IA da ARDN (Gemini) ----------
+ARDN_SYSTEM_PROMPT = (
+    "És o Lagarto Amarelo, o assistente oficial de IA da ARDN (Associação Recreativa e Desportiva de "
+    "Nespereira, NIF 503018112). Falas sempre em português de Portugal, de forma curta, simpática e "
+    "rigorosa. "
+    "Responde EXCLUSIVAMENTE a questões sobre a ARDN: estatutos e órgãos sociais, quotas, bar, "
+    "vendas/POS, app do sócio, pontos, rodadas mistas, presenças na sede, parceiros locais, "
+    "merchandising e histórico do clube. "
+    "Se a pergunta for sobre qualquer outro tema (notícias, política, saúde, programação, outros "
+    "clubes, etc.), recusa educadamente dizendo que apenas respondes sobre a ARDN. "
+    "Nunca inventes factos, valores, nomes ou datas: se não tiveres a informação, diz que não a tens "
+    "e sugere confirmar com a direção da ARDN. "
+    "Contexto do clube: as quotas são mensais; o sócio com quotas em dia (🟢) ou por regularizar (🟡) "
+    "acumula pontos, o sócio em dívida (🔴) não pontua; 5 pontos valem 1 €; um pedido de pagamento de "
+    "quotas feito na app fica pendente até a direção o confirmar; a Rodada Mista junta sócios na mesma "
+    "mesa e cada sócio só pode ter uma rodada mista aberta; as presenças na sede dão pontos por streak. "
+    "Nunca dás conselhos médicos, jurídicos ou fiscais."
+)
+
+ASSISTANT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+
+
+class AssistantChatIn(BaseModel):
+    message: str
+    history: Optional[List[dict]] = None
+
+
+def _gemini_generate(api_key: str, model: str, contents: list) -> dict:
+    import json as _json
+    import urllib.request
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    payload = _json.dumps({
+        "systemInstruction": {"parts": [{"text": ARDN_SYSTEM_PROMPT}]},
+        "contents": contents,
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 800},
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=payload, method="POST",
+        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+    )
+    with urllib.request.urlopen(req, timeout=45) as resp:
+        return _json.loads(resp.read().decode("utf-8", "replace"))
+
+
+async def _lagarto_answer(message: str, history: Optional[List[dict]]) -> str:
+    """Pergunta à IA com o prompt restritivo da ARDN injetado."""
+    msg = (message or "").strip()
+    if not msg:
+        raise HTTPException(status_code=400, detail="Escreve a tua pergunta")
+    if len(msg) > 1500:
+        raise HTTPException(status_code=400, detail="Pergunta demasiado longa (máximo 1500 caracteres)")
+    api_key = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="O Lagarto Amarelo ainda não está configurado (falta a chave da IA). "
+                   "Pede à direção para a ativar.",
+        )
+    contents = []
+    for turn in (history or [])[-10:]:
+        text = str((turn or {}).get("content") or "").strip()
+        if not text:
+            continue
+        contents.append({
+            "role": "model" if (turn or {}).get("role") in ("assistant", "model") else "user",
+            "parts": [{"text": text[:2000]}],
+        })
+    contents.append({"role": "user", "parts": [{"text": msg}]})
+    try:
+        data = await asyncio.to_thread(_gemini_generate, api_key, ASSISTANT_MODEL, contents)
+    except Exception as exc:
+        logger.warning("Lagarto Amarelo (Gemini) falhou: %s", exc)
+        raise HTTPException(status_code=502, detail="O Lagarto Amarelo não conseguiu responder agora. Tenta novamente.")
+    parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts")) or []
+    reply = "".join(p.get("text", "") for p in parts).strip()
+    if not reply:
+        raise HTTPException(status_code=502, detail="O Lagarto Amarelo não deu resposta. Tenta reformular a pergunta.")
+    return reply
+
+
+@api_router.post("/socio/ai-assistant")
+async def socio_ai_assistant(body: AssistantChatIn, socio: dict = Depends(get_current_socio)):
+    reply = await _lagarto_answer(body.message, body.history)
+    await _audit("ai_assistant_socio", f"socio:{socio.get('member_number') or socio['id']}",
+                 entity="client", entity_id=socio["id"],
+                 summary=f"Lagarto Amarelo · pergunta de {socio.get('name')} · «{body.message.strip()[:90]}»")
+    return {"status": "success", "response": reply}
+
+
+@api_router.post("/ai-assistant")
+async def staff_ai_assistant(body: AssistantChatIn, user: dict = Depends(get_current_user)):
+    reply = await _lagarto_answer(body.message, body.history)
+    await _audit("ai_assistant_staff", user["email"], entity="user", entity_id=user.get("id"),
+                 summary=f"Lagarto Amarelo · pergunta de {user.get('name') or user['email']} · «{body.message.strip()[:90]}»")
+    return {"status": "success", "response": reply}
+
+
+# ---------- ARDN · Historial, Palmarés e Arquivo Documental ----------
+CLUB_ARCHIVE_DEFAULT = {
+    "history": (
+        "A Associação Recreativa e Desportiva de Nespereira (ARDN), NIF 503018112, é o clube da "
+        "freguesia de Nespereira: desporto, convívio e uma sede aberta a todas as gerações.\n\n"
+        "Este arquivo reúne a memória do clube — a história, o palmarés das equipas e os documentos "
+        "que contam o percurso da associação. É mantido pela direção e pode ser consultado pelos "
+        "sócios e pelo staff."
+    ),
+    "palmares": [],
+    "documents": [],
+    "updated_at": None,
+    "updated_by": None,
+}
+
+
+async def _club_archive_doc() -> dict:
+    doc = await db.club_archive.find_one({"_id": "ardn"})
+    if not doc:
+        return {**CLUB_ARCHIVE_DEFAULT}
+    doc.pop("_id", None)
+    return {**CLUB_ARCHIVE_DEFAULT, **doc}
+
+
+class ClubArchiveIn(BaseModel):
+    history: Optional[str] = None
+    palmares: Optional[List[dict]] = None
+    documents: Optional[List[dict]] = None
+
+
+def _archive_rows(rows: Optional[List[dict]], fields: List[str]) -> list:
+    out = []
+    for row in rows or []:
+        row = row if isinstance(row, dict) else {}
+        item = {f: (str(row.get(f) or "").strip()[:400] or None) for f in fields}
+        if not item.get(fields[0]):
+            continue
+        item["id"] = str(row.get("id") or uuid.uuid4())
+        out.append(item)
+    return out
+
+
+@api_router.get("/club-archive")
+async def get_club_archive(user: dict = Depends(get_current_user)):
+    return await _club_archive_doc()
+
+
+@api_router.get("/socio/club-archive")
+async def get_socio_club_archive(socio: dict = Depends(get_current_socio)):
+    return await _club_archive_doc()
+
+
+@api_router.put("/club-archive")
+async def save_club_archive(body: ClubArchiveIn,
+                            user: dict = Depends(require_role("admin", "presidente", "tesoureiro"))):
+    """A direção mantém o historial, o palmarés e o arquivo documental."""
+    doc = {
+        "history": (body.history if body.history is not None else (await _club_archive_doc())["history"]),
+        "palmares": _archive_rows(body.palmares, ["season", "competition", "result"]),
+        "documents": _archive_rows(body.documents, ["title", "year", "url", "note"]),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": user["email"],
+    }
+    await db.club_archive.find_one_and_replace({"_id": "ardn"}, {"_id": "ardn", **doc}, upsert=True)
+    await _audit("club_archive_update", user["email"], entity="club_archive", entity_id="ardn",
+                 summary=f"Arquivo do clube atualizado · {len(doc['palmares'])} entradas de palmarés · "
+                         f"{len(doc['documents'])} documentos")
+    return doc
 
 
 # ---------- Mount ----------

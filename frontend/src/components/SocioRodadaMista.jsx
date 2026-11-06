@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
-import { BeerStein, Users, X, Plus, MagnifyingGlass, ArrowCounterClockwise } from "@phosphor-icons/react";
+import { BeerStein, Users, X, Plus, MagnifyingGlass, ArrowCounterClockwise, ShoppingCart } from "@phosphor-icons/react";
+import SocioRodadaConsumo from "./SocioRodadaConsumo";
 import { toast } from "sonner";
 
 /**
@@ -18,6 +19,7 @@ export default function SocioRodadaMista() {
   const [picked, setPicked] = useState([]);
   const [label, setLabel] = useState("");
   const [busy, setBusy] = useState(false);
+  const [orderTable, setOrderTable] = useState(null); // mesa onde está a pedir consumo
 
   const load = () => {
     api.get("/socio/group-tables")
@@ -146,6 +148,15 @@ export default function SocioRodadaMista() {
                           ))}
                         </ul>
                       )}
+                      {t.status === "open" && (
+                        <button
+                          data-testid={`socio-rodada-order-${t.id}`}
+                          onClick={() => setOrderTable(t)}
+                          className="mt-2 w-full py-2 rounded-lg bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/40 text-sky-200 text-xs font-bold flex items-center justify-center gap-2"
+                        >
+                          <ShoppingCart size={13} weight="fill" /> Pedir consumo nesta mesa
+                        </button>
+                      )}
                       <div className="mt-2 pt-2 border-t border-sky-500/20 flex items-center justify-between text-[11px]">
                         <span className="text-slate-500">
                           A tua parte se dividirem: <strong className="text-slate-300">{euro(t.share_if_split)}</strong>
@@ -156,13 +167,20 @@ export default function SocioRodadaMista() {
                   ))}
                 </div>
 
-                <button
-                  data-testid="socio-rodada-new"
-                  onClick={() => setCreating(true)}
-                  className="mt-4 w-full py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold flex items-center justify-center gap-2"
-                >
-                  <Plus size={15} weight="bold" /> Iniciar nova rodada mista
-                </button>
+                {openTables.length > 0 ? (
+                  <div className="mt-4 rounded-lg border border-sky-500/25 bg-sky-500/5 px-3 py-2.5 text-[11px] text-sky-200">
+                    Já tens uma Rodada Mista aberta — pede o consumo dentro dessa mesa.
+                    Só depois de ela ser fechada no balcão é que podes abrir outra.
+                  </div>
+                ) : (
+                  <button
+                    data-testid="socio-rodada-new"
+                    onClick={() => setCreating(true)}
+                    className="mt-4 w-full py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold flex items-center justify-center gap-2"
+                  >
+                    <Plus size={15} weight="bold" /> Iniciar nova rodada mista
+                  </button>
+                )}
               </>
             ) : (
               <div data-testid="socio-rodada-create">
@@ -249,6 +267,14 @@ export default function SocioRodadaMista() {
             )}
           </div>
         </div>
+      )}
+
+      {orderTable && (
+        <SocioRodadaConsumo
+          table={orderTable}
+          onClose={() => setOrderTable(null)}
+          onSent={() => { setOrderTable(null); load(); }}
+        />
       )}
     </>
   );
