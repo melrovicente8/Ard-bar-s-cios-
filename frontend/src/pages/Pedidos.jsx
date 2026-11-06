@@ -4,6 +4,7 @@ import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { ShoppingCart, Check, X as XIcon, PencilSimple, Package, PaperPlaneTilt } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import GiftsStaff from "../components/GiftsStaff";
+import ApprovalsPanel from "../components/ApprovalsPanel";
 
 const STATUS_CLASS = {
   pending: "bg-amber-500/15 text-amber-300 border-amber-500/30",
@@ -248,6 +249,11 @@ export default function Pedidos() {
           ))}
         </div>
       )}
+
+      {/* Aprovação de adesões e agregado familiar */}
+      <div className="mt-8">
+        <ApprovalsPanel />
+      </div>
 
       {/* Consumos entre sócios: deixar pago / delegar pagamento */}
       <GiftsStaff />

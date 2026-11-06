@@ -190,6 +190,7 @@ export default function Historico() {
         const sale = e.sale || e.before;
         const changes = e.changes || {};
         const detail = [
+          e.tx_number ? `#${e.tx_number}` : "",
           e.summary,
           sale ? `${sale.client_name || ""} · ${euro(sale.total || 0)} · ${(sale.items || []).map((it) => `${it.quantity}× ${it.product_name}`).join(", ")}` : "",
           changes.total !== undefined ? `Total: ${euro(changes.total.before)} → ${euro(changes.total.after)}` : "",
@@ -520,6 +521,16 @@ export default function Historico() {
                       </td>
                       <td className="px-5 py-2.5 text-slate-300 text-xs font-mono align-top">{e.by}</td>
                       <td className="px-5 py-2.5 text-slate-400 text-xs align-top">
+                        {e.tx_number ? (
+                          <div className="mb-1">
+                            <Link to={`/transacoes/${e.tx_number}`} data-testid={`audit-tx-${e.id}`} className="font-mono font-bold text-amber-400 hover:underline">
+                              #{e.tx_number}
+                            </Link>
+                            <span className="text-slate-400"> · {e.summary || "—"}</span>
+                          </div>
+                        ) : (
+                          <div className="mb-1 text-slate-400">{e.summary || "—"}</div>
+                        )}
                         {sale && (
                           <div className="mb-1">
                             <Link to={`/clientes/${sale.client_id}`} className="text-slate-200 hover:text-amber-400 font-medium">

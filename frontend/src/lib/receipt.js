@@ -79,6 +79,8 @@ ${secondCopy ? `<div class="muted">2ª via impressa em: ${printDate}</div>` : ""
 <hr/>
 <div class="row"><span>Cliente</span><strong>${tx.client_name || client.name || "—"}</strong></div>
 ${client.member_number ? `<div class="row"><span>Sócio</span><strong>nº ${client.member_number}</strong></div>` : ""}
+${tx.tutelado ? '<div class="row"><span>Estatuto</span><strong>Sócio Tutelado</strong></div>' : ""}
+${tx.minor_alcohol_alert ? '<div style="text-align:center;background:#b91c1c;color:#fff;padding:4px;border-radius:3px;margin:6px 0;font-weight:bold">⚠ BEBIDA ALCOÓLICA · SÓCIO TUTELADO</div>' : ""}
 ${quota ? `<div class="row"><span>Cotas</span><strong style="color:${quotaColor[quota.status] || "#000"}">${quota.label}</strong></div>` : ""}
 ${isSale ? `<hr/>${itemsHtml}<hr/>
 <div class="row big"><span>TOTAL</span><span>${euro(tx.total)}</span></div>

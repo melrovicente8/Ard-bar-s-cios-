@@ -88,6 +88,7 @@ function BarStatusButton() {
   const [bar, setBar] = useState(null); // {open, cash_in_drawer}
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [cashInput, setCashInput] = useState("");
+  const [closeWarn, setCloseWarn] = useState(false);
 
   const load = () => {
     api.get("/bar-status").then(({ data }) => {
@@ -101,6 +102,17 @@ function BarStatusButton() {
     return () => clearInterval(t);
     /* eslint-disable-next-line */
   }, []);
+
+  // Aviso pop-up 10 minutos antes do fecho automático (02:00)
+  useEffect(() => {
+    if (bar?.open && bar?.closing_soon) {
+      const key = `bar-close-warn-${new Date().toISOString().slice(0, 10)}`;
+      if (!sessionStorage.getItem(key)) {
+        sessionStorage.setItem(key, "1");
+        setCloseWarn(true);
+      }
+    }
+  }, [bar]);
 
   const toggle = async (cash_declared) => {
     const next = !bar?.open;
@@ -159,6 +171,25 @@ function BarStatusButton() {
           />
         </span>
       </button>
+      {closeWarn && createPortal(
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" data-testid="bar-closing-warning">
+          <div className="bg-slate-900 border border-amber-500/40 rounded-xl w-full max-w-sm p-6 text-center">
+            <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-amber-400/80">Fecho do bar</div>
+            <h3 className="font-outfit text-xl font-semibold mt-1 mb-2">Faltam {bar?.minutes_to_close ?? 10} minutos</h3>
+            <p className="text-sm text-slate-400 mb-4">
+              O bar fecha automaticamente às 02:00. A partir dessa hora, os consumos registados mostram aviso de fecho.
+            </p>
+            <button
+              data-testid="bar-closing-warning-ok"
+              onClick={() => setCloseWarn(false)}
+              className="w-full px-4 py-2.5 rounded-lg font-bold bg-amber-500 hover:bg-amber-400 text-slate-950"
+            >
+              Entendido
+            </button>
+          </div>
+        </div>,
+        document.body
+      )}
       {confirmOpen && createPortal(
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4 overflow-y-auto" onClick={() => setConfirmOpen(false)} data-testid="bar-status-modal">
           <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-sm p-6 my-auto" onClick={(e) => e.stopPropagation()}>

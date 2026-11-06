@@ -16,6 +16,7 @@ export default function SocioFamily({ titular, onClose }) {
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ name: "", contact: "", birthday: "" });
   const [sel, setSel] = useState({}); // { depId: [months] }
+  const [requests, setRequests] = useState([]);
 
   const load = async () => {
     try {
@@ -23,6 +24,12 @@ export default function SocioFamily({ titular, onClose }) {
       setDeps(data);
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+    try {
+      const { data } = await api.get("/socio/family/requests");
+      setRequests((data || []).filter((r) => r.status === "pending"));
+    } catch {
+      setRequests([]);
     }
   };
 
@@ -37,7 +44,7 @@ export default function SocioFamily({ titular, onClose }) {
         contact: form.contact || null,
         birthday: form.birthday || null,
       });
-      toast.success("Dependente inscrito no agregado familiar");
+      toast.success("Pedido enviado — aguarda aprovação da direção");
       setForm({ name: "", contact: "", birthday: "" });
       setAdding(false);
       await load();
@@ -144,6 +151,16 @@ export default function SocioFamily({ titular, onClose }) {
         )}
 
         <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+          {requests.length > 0 && (
+            <div className="bg-amber-500/5 border border-amber-500/30 rounded-lg p-3" data-testid="socio-family-pending">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-amber-300 mb-1">Pedidos a aguardar aprovação</div>
+              {requests.map((r) => (
+                <div key={r.id} className="text-xs text-slate-300">
+                  {r.name} · {new Date(r.created_at).toLocaleString("pt-PT")}
+                </div>
+              ))}
+            </div>
+          )}
           {deps === null && <div className="text-center text-slate-500 py-8 text-sm">A carregar...</div>}
           {deps && deps.length === 0 && (
             <div className="text-center text-slate-500 py-8 text-sm">Ainda sem dependentes inscritos.</div>

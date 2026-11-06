@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
-import { Plus, Package, ArrowsClockwise, PencilSimple, Trash } from "@phosphor-icons/react";
+import { Plus, Package, ArrowsClockwise, PencilSimple, Trash, WarningCircle, ClockCounterClockwise } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
 
@@ -49,6 +49,11 @@ export default function Stock() {
     supplier_id: "",
   });
   const [replForm, setReplForm] = useState({ quantity: "", cost_price: "", note: "" });
+  const [showWriteoff, setShowWriteoff] = useState(null);
+  const [woForm, setWoForm] = useState({ quantity: "1", reason: "danificado", note: "", client_id: "" });
+  const [writeoffs, setWriteoffs] = useState([]);
+  const [showWoHistory, setShowWoHistory] = useState(false);
+  const [clients, setClients] = useState([]);
 
   const load = async () => {
     setLoading(true);
@@ -63,7 +68,29 @@ export default function Stock() {
   useEffect(() => {
     load();
     api.get("/suppliers").then((r) => setSuppliers(r.data || [])).catch(() => {});
+    api.get("/clients").then((r) => setClients(r.data || [])).catch(() => {});
+    api.get("/stock/writeoffs").then((r) => setWriteoffs(r.data || [])).catch(() => {});
   }, []);
+
+  const submitWriteoff = async (e) => {
+    e.preventDefault();
+    try {
+      const { data } = await api.post("/stock/writeoffs", {
+        product_id: showWriteoff.id,
+        quantity: parseInt(woForm.quantity, 10),
+        reason: woForm.reason,
+        note: woForm.note,
+        client_id: woForm.client_id || null,
+      });
+      toast.success(`Baixa registada · transação #${data.writeoff.tx_number}`);
+      setWriteoffs((prev) => [data.writeoff, ...prev]);
+      setShowWriteoff(null);
+      setWoForm({ quantity: "1", reason: "danificado", note: "", client_id: "" });
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
 
   const autoOrder = async () => {
     if (!window.confirm("Criar encomendas automáticas para os fornecedores de todos os produtos com stock baixo?")) return;
@@ -213,14 +240,23 @@ export default function Stock() {
             Stock
           </h1>
         </div>
-        <button
-          data-testid="add-product-btn"
-          onClick={openAdd}
-          disabled={!canManage}
-          className="bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold px-5 py-2.5 rounded-lg flex items-center gap-2 transition-colors"
-        >
-          <Plus size={18} weight="bold" /> Novo produto
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            data-testid="writeoffs-history-btn"
+            onClick={() => setShowWoHistory(true)}
+            className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold px-4 py-2.5 rounded-lg flex items-center gap-2 transition-colors text-sm"
+          >
+            <ClockCounterClockwise size={17} weight="bold" /> Baixas ({writeoffs.length})
+          </button>
+          <button
+            data-testid="add-product-btn"
+            onClick={openAdd}
+            disabled={!canManage}
+            className="bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold px-5 py-2.5 rounded-lg flex items-center gap-2 transition-colors"
+          >
+            <Plus size={18} weight="bold" /> Novo produto
+          </button>
+        </div>
       </div>
 
       <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl overflow-hidden">
@@ -320,6 +356,15 @@ export default function Stock() {
                       </td>
                       <td className="px-5 py-4">
                         <div className="flex items-center justify-end gap-2">
+                          {!p.is_quota && (
+                            <button
+                              data-testid={`writeoff-btn-${p.id}`}
+                              onClick={() => setShowWriteoff(p)}
+                              className="px-3 py-1.5 rounded-md text-xs font-medium bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 flex items-center gap-1.5"
+                            >
+                              <WarningCircle size={14} weight="bold" /> Baixa
+                            </button>
+                          )}
                           {canManage && (
                             <button
                               data-testid={`replenish-btn-${p.id}`}
@@ -372,6 +417,86 @@ export default function Stock() {
           </div>
         )}
       </div>
+
+      <Modal open={showWoHistory} onClose={() => setShowWoHistory(false)} title="Baixas de stock registadas">
+        <div className="max-h-[55vh] overflow-y-auto space-y-2" data-testid="writeoffs-history">
+          {writeoffs.length === 0 && <div className="text-sm text-slate-500 py-4 text-center">Sem baixas registadas.</div>}
+          {writeoffs.map((w) => (
+            <div key={w.id} className="bg-slate-950/60 border border-slate-800 rounded-lg p-3 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-slate-200">{w.quantity}× {w.product_name}</span>
+                <span className="font-mono text-amber-400">#{w.tx_number}</span>
+              </div>
+              <div className="text-slate-400 mt-1">{w.reason} · {w.note}</div>
+              <div className="text-slate-500 mt-1">
+                {new Date(w.created_at).toLocaleString("pt-PT")}
+                {w.client_name ? ` · cliente: ${w.client_name}` : ""}
+                {w.user_email ? ` · ${w.user_email}` : ""}
+              </div>
+            </div>
+          ))}
+        </div>
+      </Modal>
+
+      <Modal open={!!showWriteoff} onClose={() => setShowWriteoff(null)} title={`Baixa de stock · ${showWriteoff?.name || ""}`}>
+        <form onSubmit={submitWriteoff} className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Quantidade" required>
+              <input
+                data-testid="writeoff-quantity"
+                type="number"
+                min="1"
+                max={showWriteoff?.quantity || undefined}
+                required
+                value={woForm.quantity}
+                onChange={(e) => setWoForm({ ...woForm, quantity: e.target.value })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+              />
+            </Field>
+            <Field label="Motivo" required>
+              <select
+                data-testid="writeoff-reason"
+                value={woForm.reason}
+                onChange={(e) => setWoForm({ ...woForm, reason: e.target.value })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white"
+              >
+                <option value="danificado">Danificado</option>
+                <option value="perda">Perda</option>
+                <option value="validade">Validade</option>
+                <option value="outro">Outro</option>
+              </select>
+            </Field>
+          </div>
+          <Field label="Descrição do sucedido" required>
+            <textarea
+              data-testid="writeoff-note"
+              required
+              rows={2}
+              value={woForm.note}
+              onChange={(e) => setWoForm({ ...woForm, note: e.target.value })}
+              placeholder="Ex.: caiu no chão e partiu / verteu"
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+            />
+          </Field>
+          <Field label="Cliente afetado (opcional)">
+            <select
+              data-testid="writeoff-client"
+              value={woForm.client_id}
+              onChange={(e) => setWoForm({ ...woForm, client_id: e.target.value })}
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white"
+            >
+              <option value="">—</option>
+              {clients.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}{c.member_number ? ` (nº ${c.member_number})` : ""}</option>
+              ))}
+            </select>
+          </Field>
+          <div className="flex gap-2 pt-2">
+            <button type="button" onClick={() => setShowWriteoff(null)} className="flex-1 px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-medium">Cancelar</button>
+            <button data-testid="writeoff-submit" type="submit" className="flex-1 px-4 py-2.5 rounded-lg bg-rose-500 hover:bg-rose-400 text-slate-950 font-bold">Registar baixa</button>
+          </div>
+        </form>
+      </Modal>
 
       <Modal open={showAdd} onClose={() => setShowAdd(false)} title="Novo produto">
         <ProductForm form={form} setForm={setForm} onSubmit={submitAdd} cta="Adicionar" testidPrefix="add" />

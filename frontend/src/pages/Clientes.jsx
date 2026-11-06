@@ -20,7 +20,7 @@ export default function Clientes() {
   const [filterType, setFilterType] = useState("all"); // all | socios | clientes | uptodate | notuptodate | debt
   const [sortKey, setSortKey] = useState("name"); // name | number | activity | total_points
   const [viewMode, setViewMode] = useState("grid"); // grid | list
-  const [form, setForm] = useState({ name: "", contact: "", email: "", note: "", member_number: "", is_member: false, morada: "", pin: "" });
+  const [form, setForm] = useState({ name: "", contact: "", email: "", note: "", member_number: "", is_member: true, morada: "", pin: "" });
 
   const load = async () => {
     setLoading(true);
@@ -50,8 +50,24 @@ export default function Clientes() {
         pin: form.pin || null,
       });
       toast.success("Cliente adicionado");
-      setForm({ name: "", contact: "", email: "", note: "", member_number: "", is_member: false, morada: "", pin: "" });
+      setForm({ name: "", contact: "", email: "", note: "", member_number: "", is_member: true, morada: "", pin: "" });
       setShowAdd(false);
+      await load();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  // "Não cliente": cartão sem nome (editável), sem quotas/pontos/app sócio
+  const createWalkin = async () => {
+    const count = clients.filter((c) => c.is_walkin).length + 1;
+    try {
+      const { data } = await api.post("/clients", {
+        name: `Não cliente ${count}`,
+        is_member: false,
+        is_walkin: true,
+      });
+      toast.success(`Cartão "${data.name}" criado — podes editar o nome na ficha`);
       await load();
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
@@ -151,6 +167,14 @@ export default function Clientes() {
               <SealCheck size={18} weight="fill" /> Lançar cotas {year}
             </button>
           )}
+          <button
+            data-testid="add-walkin-btn"
+            onClick={createWalkin}
+            className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold px-4 py-2.5 rounded-lg flex items-center gap-2 transition-colors"
+            title="Cria um cartão sem nome, editável, sem quotas, pontos ou app sócio"
+          >
+            <User size={18} weight="bold" /> Não cliente
+          </button>
           <button
             data-testid="add-client-btn"
             onClick={() => setShowAdd(true)}
@@ -505,7 +529,7 @@ export default function Clientes() {
                       className="w-4 h-4 accent-green-500"
                     />
                     <span className="text-xs font-medium text-slate-200">
-                      Sócio com cotas pagas
+                      Pagamento de Quotas
                     </span>
                   </label>
                 </div>

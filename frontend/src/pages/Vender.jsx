@@ -116,9 +116,13 @@ export default function Vender() {
     }
     setSubmitting(true);
     try {
-      await api.post("/sales", { client_id: clientId, items, house_offer: houseOffer });
+      const { data: sale } = await api.post("/sales", { client_id: clientId, items, house_offer: houseOffer });
       const anyHouse = houseOffer || Object.values(houseItems).some(Boolean);
       toast.success(anyHouse ? `Venda registada · ${euro(total)} (Oferta: ${euro(houseTotal)})` : `Venda registada · ${euro(total)}`);
+      if (sale?.bar_warning) toast.warning(sale.bar_warning, { duration: 8000 });
+      if (sale?.minor_alcohol_alert) {
+        toast.error("⚠️ Bebida alcoólica servida a sócio tutelado — o tutor foi notificado.", { duration: 10000 });
+      }
       setCart({});
       setHouseItems({});
       setHouseOffer(false);

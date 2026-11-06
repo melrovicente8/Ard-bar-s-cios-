@@ -108,6 +108,7 @@ class ClientIn(BaseModel):
     consumption_limit: Optional[float] = None  # limite de consumo mensal definido pelo titular (€/mês)
     direction_role: Optional[str] = None  # cargo na direção (ex.: "Presidente da Direção")
     direction_history: Optional[List[dict]] = None  # [{role, start_year, end_year}]
+    is_walkin: bool = False  # "Não cliente" — vendas sem nome, editável, sem pontos/cotas/app
 
 class ClientUpdate(BaseModel):
     name: Optional[str] = None
@@ -124,6 +125,7 @@ class ClientUpdate(BaseModel):
     consumption_limit: Optional[float] = None
     direction_role: Optional[str] = None
     direction_history: Optional[List[dict]] = None
+    is_walkin: Optional[bool] = None
 
 class SaleItemIn(BaseModel):
     product_id: str
@@ -508,6 +510,64 @@ async def list_replenishments(user: dict = Depends(get_current_user)):
     items = await db.stock_replenishments.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return items
 
+
+class StockWriteOffIn(BaseModel):
+    product_id: str
+    quantity: int
+    reason: str  # danificado | perda | validade | outro
+    note: str  # descrição do sucedido — obrigatória
+    client_id: Optional[str] = None  # cliente afetado (opcional)
+
+
+@api_router.post("/stock/writeoffs")
+async def create_stock_writeoff(body: StockWriteOffIn, user: dict = Depends(get_current_user)):
+    """Baixa de stock por danificado, perda, validade ou outros — com nota obrigatória."""
+    prod = await db.products.find_one({"id": body.product_id}, {"_id": 0})
+    if not prod:
+        raise HTTPException(status_code=404, detail="Produto não encontrado")
+    if body.quantity <= 0:
+        raise HTTPException(status_code=400, detail="Quantidade inválida")
+    reason = (body.reason or "").strip().lower()
+    if reason not in ("danificado", "perda", "validade", "outro"):
+        raise HTTPException(status_code=400, detail="Motivo inválido")
+    note = (body.note or "").strip()
+    if not note:
+        raise HTTPException(status_code=400, detail="Descreve o sucedido")
+    client = None
+    if body.client_id:
+        client = await db.clients.find_one({"id": body.client_id}, {"_id": 0, "name": 1, "member_number": 1})
+    tx_no = await _next_tx_number()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "tx_number": tx_no,
+        "product_id": prod["id"],
+        "product_name": prod["name"],
+        "quantity": int(body.quantity),
+        "unit_price": float(prod.get("price", 0)),
+        "value": round(float(prod.get("price", 0)) * int(body.quantity), 2),
+        "reason": reason,
+        "note": note[:500],
+        "client_id": body.client_id,
+        "client_name": client.get("name") if client else None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "user_email": user["email"],
+    }
+    await db.products.update_one({"id": body.product_id}, {"$inc": {"quantity": -int(body.quantity)}})
+    await db.stock_writeoffs.insert_one(doc)
+    await _audit(
+        "stock_writeoff", user["email"], entity="product", entity_id=prod["id"], tx_number=tx_no,
+        summary=f"Baixa de stock #{tx_no} · {body.quantity}× {prod['name']} · {reason} · {note}"
+                + (f" · cliente afetado: {client.get('name')}" if client else ""),
+    )
+    updated = await db.products.find_one({"id": body.product_id}, {"_id": 0})
+    doc.pop("_id", None)
+    return {"writeoff": doc, "product": updated}
+
+
+@api_router.get("/stock/writeoffs")
+async def list_stock_writeoffs(user: dict = Depends(get_current_user)):
+    return await db.stock_writeoffs.find({}, {"_id": 0}).sort("created_at", -1).to_list(300)
+
 # ---------- Clients ----------
 @api_router.get("/clients")
 async def list_clients(user: dict = Depends(get_current_user)):
@@ -569,6 +629,7 @@ async def create_client(body: ClientIn, user: dict = Depends(get_current_user)):
         "consumption_limit": body.consumption_limit if role in ("admin", "tesoureiro") else None,
         "direction_role": body.direction_role if role in ("admin", "tesoureiro", "presidente") else None,
         "direction_history": body.direction_history if role in ("admin", "tesoureiro", "presidente") else None,
+        "is_walkin": bool(body.is_walkin),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.clients.insert_one(doc)
@@ -689,6 +750,7 @@ async def client_detail(client_id: str, user: dict = Depends(get_current_user)):
     c = await db.clients.find_one({"id": client_id}, {"_id": 0, "pin_hash": 0})
     if not c:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    c = await _maybe_end_tutela(c)
     # PIN visível só para admin/tesoureiro/presidente
     if user.get("role") == "funcionario":
         c.pop("pin_visible", None)
@@ -710,10 +772,30 @@ async def client_detail(client_id: str, user: dict = Depends(get_current_user)):
     by_week = sum(s.get("total", 0) for s in sales if s.get("created_at", "") >= week_start)
     by_month = sum(s.get("total", 0) for s in sales if s.get("created_at", "") >= month_start)
     by_year = sum(s.get("total", 0) for s in sales if s.get("created_at", "") >= year_start)
+    # Detalhe do "A pagar": vendas ainda não cobertas por pagamentos (FIFO)
+    alloc = sum(float(p.get("total_credited", 0) or 0) for p in payments)
+    debts = []
+    for s in sorted(sales, key=lambda x: x.get("created_at") or ""):
+        total_s = float(s.get("total", 0) or 0)
+        if total_s <= 0:
+            continue
+        applied = min(alloc, total_s)
+        alloc -= applied
+        remaining = round(total_s - applied, 2)
+        if remaining > 0.004:
+            debts.append({
+                "sale_id": s.get("id"),
+                "tx_number": s.get("tx_number"),
+                "created_at": s.get("created_at"),
+                "total": total_s,
+                "outstanding": remaining,
+                "items": s.get("items") or [],
+            })
     return {
         "client": c,
         "sales": sales,
         "payments": payments,
+        "debts": debts,
         "consumption": {"day": by_day, "week": by_week, "month": by_month, "year": by_year},
     }
 
@@ -737,8 +819,8 @@ async def list_debtors(user: dict = Depends(get_current_user)):
         c["today_sales_total"] = round(today_by_client.get(c["id"], 0.0), 2)
     return debtors
 
-async def _audit(action_type: str, by: str, *, entity: Optional[str] = None, entity_id: Optional[str] = None, before: Optional[dict] = None, after: Optional[dict] = None, summary: Optional[str] = None, changes: Optional[dict] = None):
-    """Regista uma entrada genérica no audit log."""
+async def _audit(action_type: str, by: str, *, entity: Optional[str] = None, entity_id: Optional[str] = None, before: Optional[dict] = None, after: Optional[dict] = None, summary: Optional[str] = None, changes: Optional[dict] = None, tx_number: Optional[int] = None):
+    """Regista uma entrada genérica no audit log (sempre com descrição e, quando aplicável, nº de transação)."""
     rec = {
         "id": str(uuid.uuid4()),
         "type": action_type,
@@ -746,12 +828,49 @@ async def _audit(action_type: str, by: str, *, entity: Optional[str] = None, ent
         "entity_id": entity_id,
         "before": before,
         "after": after,
-        "summary": summary,
+        "summary": summary or action_type.replace("_", " ").capitalize(),
         "changes": changes or {},
+        "tx_number": tx_number,
         "by": by,
         "at": datetime.now(timezone.utc).isoformat(),
     }
     await db.audit_log.insert_one(rec)
+
+
+def _lisbon_now() -> datetime:
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Europe/Lisbon"))
+    except Exception:
+        return datetime.now(timezone.utc)
+
+
+BAR_CLOSE_HOUR = 2  # fecho automático às 02:00 (hora de Lisboa)
+
+
+async def _bar_state() -> dict:
+    """Estado efetivo do bar. A abertura é manual; o fecho é automático às 02:00.
+    Devolve também o aviso de fecho iminente (10 min antes) e se o bar está fechado."""
+    doc = await db.club_state.find_one({"_id": "bar"}, {"_id": 0})
+    now = _lisbon_now()
+    is_open = bool(doc and doc.get("open"))
+    minutes_to_close = None
+    # Janela de fecho: 01:50–02:00 avisa; a partir das 02:00 fecha automaticamente
+    if is_open:
+        close_dt = now.replace(hour=BAR_CLOSE_HOUR, minute=0, second=0, microsecond=0)
+        if now.hour >= BAR_CLOSE_HOUR and now.hour < 5:
+            is_open = False
+        else:
+            if now.hour >= 20:  # madrugada do dia seguinte
+                close_dt = close_dt + timedelta(days=1)
+            minutes_to_close = max(int((close_dt - now).total_seconds() // 60), 0)
+    return {
+        "open": is_open,
+        "closing_soon": bool(is_open and minutes_to_close is not None and 0 < minutes_to_close <= 10),
+        "minutes_to_close": minutes_to_close,
+        "closes_at": "02:00",
+        "now": now.isoformat(),
+    }
 
 
 async def _next_tx_number() -> int:
@@ -950,11 +1069,18 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
         await db.products.update_one({"id": it.product_id}, {"$inc": {"quantity": -int(it.quantity)}})
 
     sale_id = str(uuid.uuid4())
-    # Points com rollover (sócios apenas)
+    # Points com rollover (sócios apenas; "não cliente" não acumula pontos)
     is_member = bool(client_doc.get("is_member"))
     old_pending = float(client_doc.get("points_pending_value", 0)) if is_member else 0.0
     points_earned, new_pending = _compute_points_with_rollover(client_doc, total)
+    if client_doc.get("is_walkin"):
+        points_earned, new_pending = 0, old_pending
     tx_no = await _next_tx_number()
+    is_tutelado = _is_minor_client(client_doc)
+    alcohol_items = [
+        li for li in line_items
+        if (products_map.get(li["product_id"], {}).get("category") or "") in ALCOHOL_CATEGORIES
+    ]
     sale_doc = {
         "id": sale_id,
         "tx_number": tx_no,
@@ -968,10 +1094,47 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
         "points_pending_before": old_pending,
         "points_pending_after": new_pending,
         "is_member_at_sale": is_member,
+        "tutelado": is_tutelado,
+        "minor_alcohol_alert": bool(is_tutelado and alcohol_items),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "user_email": user["email"],
     }
     await db.sales.insert_one(sale_doc)
+    await _audit(
+        "sale_create", user["email"], entity="sale", entity_id=sale_id, tx_number=tx_no,
+        summary=f"Venda #{tx_no} · {client_doc['name']} · {total:.2f} € · " + ", ".join(f"{li['quantity']}× {li['product_name']}" for li in line_items),
+    )
+    if sale_doc["minor_alcohol_alert"]:
+        tutor_id = client_doc.get("family_head_client_id")
+        if tutor_id:
+            tutor = await db.clients.find_one({"id": tutor_id}, {"_id": 0, "name": 1})
+            await db.socio_messages.insert_one({
+                "id": str(uuid.uuid4()),
+                "client_id": tutor_id,
+                "client_name": (tutor or {}).get("name") or "",
+                "subject": "⚠️ Bebida alcoólica servida a tutelado",
+                "message": f"Foi registada uma bebida alcoólica na conta do teu tutelado {client_doc['name']} (venda #{tx_no}): "
+                           + ", ".join(f"{li['quantity']}× {li['product_name']}" for li in alcohol_items),
+                "from_staff": True,
+                "reply": None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+        await _audit(
+            "minor_alcohol_served", user["email"], entity="sale", entity_id=sale_id, tx_number=tx_no,
+            summary=f"Alerta: bebida alcoólica servida a sócio tutelado {client_doc['name']} (venda #{tx_no})",
+        )
+    if is_tutelado and total > 0 and client_doc.get("family_head_client_id"):
+        await db.socio_messages.insert_one({
+            "id": str(uuid.uuid4()),
+            "client_id": client_doc["family_head_client_id"],
+            "client_name": (client_doc.get("family_head_client_id") and client_doc["name"]) or "",
+            "subject": "💶 Valor a pagar pelo teu tutelado",
+            "message": f"O teu tutelado {client_doc['name']} tem um novo consumo de {total:.2f} € (venda #{tx_no}). "
+                       f"Podes regularizar o pagamento na tua App Sócio ou ao balcão.",
+            "from_staff": True,
+            "reply": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
 
     # Se houve "conta da casa", regista como despesa de fornecedor (internal)
     if house_total > 0:
@@ -1022,6 +1185,9 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
     await db.clients.update_one({"id": body.client_id}, op)
     if points_earned:
         await _log_points(body.client_id, points_earned, "sale", sale_id, f"Venda de {total:.2f} €", user["email"])
+    bar = await _bar_state()
+    if not bar["open"]:
+        sale_doc["bar_warning"] = "O bar está fechado (fecho automático às 02:00) — a venda foi registada. Considera o fecho do bar."
     sale_doc.pop("_id", None)
     return sale_doc
 
@@ -1611,8 +1777,7 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
     tip = round(float(body.tip), 2)
     cash_effective = round(float(body.amount) - tip, 2)  # parte do cash que abate à dívida
     total_paid_raw = cash_effective + points_euros
-    if total_paid_raw <= 0 and tip <= 0:
-        raise HTTPException(status_code=400, detail="O pagamento total tem de ser superior a 0")
+    # O valor a pagar pode ser ZERO (ex.: regularização sem numerário / oferta)
     # Seleção por item: quantidades a pagar / a oferecer (oferta da casa)
     offer_amount = 0.0
     if body.item_targets:
@@ -1724,7 +1889,7 @@ async def create_payment(body: PaymentIn, user: dict = Depends(get_current_user)
         await _record_house_offers(entries, user, c["name"], c.get("member_number"))
     if tip > 0:
         await _audit("payment_tip", user["email"], entity="payment", entity_id=pid, after={"tip": tip, "client": c["name"]}, summary=f"Gratificação {tip:.2f} € de {c['name']}")
-    await _audit("payment_create", user["email"], entity="payment", entity_id=pid, summary=f"Pagamento tx #{tx_no} · {c['name']} · abatido {credit_total:.2f} €" + (f" · oferta {offer_amount:.2f} €" if offer_amount else "") + (f" · vendas {sale_tx_numbers}" if sale_tx_numbers else ""))
+    await _audit("payment_create", user["email"], entity="payment", entity_id=pid, tx_number=tx_no, summary=f"Pagamento #{tx_no} · {c['name']} · entregue {float(body.amount):.2f} € · abatido {credit_total:.2f} €" + (f" · troco {change_returned:.2f} €" if change_returned else "") + (f" · oferta {offer_amount:.2f} €" if offer_amount else "") + (f" · vendas {sale_tx_numbers}" if sale_tx_numbers else ""))
     await _sync_quota_paid_status(body.client_id)
     pay.pop("_id", None)
     return pay
@@ -1995,9 +2160,12 @@ async def dashboard(user: dict = Depends(get_current_user)):
     # Aniversários dos próximos 7 dias
     birthdays = _upcoming_birthdays(clients, 7)
 
+    walkin = [c for c in clients if c.get("is_walkin")]
     return {
         "products_count": len(products),
         "clients_count": clients_total,
+        "walkin_count": len(walkin),
+        "walkin_balance": round(sum(max(float(c.get("balance", 0) or 0), 0) for c in walkin), 2),
         "total_stock_value": total_stock_value,
         "today_sales_total": today_total,
         "today_sales_count": len(today_sales),
@@ -2673,7 +2841,7 @@ async def socio_me(socio: dict = Depends(get_current_socio)):
     await _maybe_award_birthday(socio["id"])
     fresh = await db.clients.find_one({"id": socio["id"]}, {"_id": 0, "pin_hash": 0})
     if fresh:
-        socio = fresh
+        socio = await _maybe_end_tutela(fresh)
     sales = await db.sales.find({"client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
     payments = await db.payments.find({"client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
     mbway = await db.mbway_payments.find({"client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
@@ -2947,6 +3115,8 @@ MINOR_ALLOWED_CATEGORIES = {
     "Água", "Refrigerante", "Energética", "Café", "Chá", "Sumo", "Sumos",
     "Snacks", "Comida", "Gomas", "Gomas/Doces", "Doces", "Gelados", "Lacticínios",
 }
+
+ALCOHOL_CATEGORIES = {"Cerveja", "Vinho", "Licor", "Licores", "Espirituosa", "Espirituosas", "Bebida", "Bebidas Alcoólicas", "Aguardente"}
 
 
 def _is_minor_client(client: dict) -> bool:
@@ -3541,18 +3711,13 @@ async def socio_quotas(year: Optional[int] = None, socio: dict = Depends(get_cur
 @api_router.get("/socio/bar-status")
 async def socio_bar_status(socio: dict = Depends(get_current_socio)):
     """Estado do bar para a app do sócio (pedir consumo bloqueado quando fechado)."""
-    doc = await db.club_state.find_one({"_id": "bar"}, {"_id": 0})
-    is_open = bool(doc and doc.get("open"))
-    if is_open:
-        # coerente com o fecho automático (02:00–05:00 hora de Lisboa)
-        try:
-            from zoneinfo import ZoneInfo
-            now = datetime.now(ZoneInfo("Europe/Lisbon"))
-        except Exception:
-            now = datetime.now(timezone.utc)
-        if 2 <= now.hour < 5:
-            is_open = False
-    return {"open": is_open}
+    state = await _bar_state()
+    if not state["open"]:
+        doc = await db.club_state.find_one({"_id": "bar"}, {"_id": 0})
+        if doc and doc.get("open"):
+            # fecha de facto (fecho automático às 02:00)
+            await db.club_state.update_one({"_id": "bar"}, {"$set": {"open": False, "changed_at": state["now"], "changed_by": "auto"}})
+    return {"open": state["open"]}
 
 async def _socio_has_open_quotas(client_id: str, year: int) -> bool:
     """Cotas por regularizar = meses JÁ VENCIDOS (até ao mês corrente) sem pagamento.
@@ -3857,6 +4022,8 @@ class SocioQuotaPayIn(BaseModel):
 @api_router.post("/socio/quotas/pay")
 async def socio_pay_quotas(body: SocioQuotaPayIn, socio: dict = Depends(get_current_socio)):
     """Sócio pede para pagar cotas via MBWay — cria pedido pendente para staff confirmar."""
+    if _is_tutelado(socio):
+        raise HTTPException(status_code=403, detail="Sócio tutelado: as cotas são regularizadas pelo tutor na App Sócio ou ao balcão")
     if not body.months:
         raise HTTPException(status_code=400, detail="Sem meses selecionados")
     already = await db.quotas.find({"client_id": socio["id"], "year": body.year, "month": {"$in": body.months}, "status": {"$in": ["paid", "billed"]}, "reversed": {"$ne": True}}, {"_id": 0}).to_list(20)
@@ -4647,7 +4814,9 @@ def _payment_cash_value(p: dict) -> float:
     credited = float(p.get("total_credited", p.get("amount", 0)) or 0)
     pts = float(p.get("points_value", 0) or 0)
     tip = float(p.get("tip", 0) or 0)
-    return max(credited - pts + tip, 0.0)
+    # A oferta da casa é despesa do bar — nunca entra no saldo final em caixa
+    offer = float(p.get("offer_amount", 0) or 0)
+    return max(credited - pts - offer + tip, 0.0)
 
 async def _expected_cash_today() -> float:
     try:
@@ -4661,16 +4830,24 @@ async def _expected_cash_today() -> float:
     # Saídas de caixa do dia: depósitos bancários, devoluções de crédito e
     # despesas pagas em caixa. Despesas pagas por BANCO nunca saem da gaveta.
     movements = await db.cash_withdrawals.find({"created_at": {"$gte": day_start}}, {"_id": 0}).to_list(5000)
-    cash_out = sum(float(m.get("amount", 0)) for m in movements if m.get("kind") != "expense_bank")
-    return round(max(cash_in - cash_out, 0.0), 2)
+    cash_out = sum(
+        float(m.get("amount", 0)) for m in movements
+        if m.get("kind") in ("bank_deposit", "credit_refund", "expense_cash")
+    )
+    cash_extra_in = sum(
+        float(m.get("amount", 0)) for m in movements
+        if m.get("kind") == "transfer_bank_cash" or (m.get("kind") == "deposit_in" and m.get("target") == "caixa")
+    )
+    return round(max(cash_in + cash_extra_in - cash_out, 0.0), 2)
 
 
 async def _account_balances() -> dict:
     """Saldos contabilísticos de caixa e banco (todas as datas).
-    Caixa = entradas em numerário − depósitos bancários − devoluções de
-    crédito − despesas pagas em caixa. Banco = depósitos − despesas pagas por
-    banco. Pagamentos de despesas a fornecedores ficam em cash_withdrawals
-    com kind 'expense_cash' (sai da gaveta) ou 'expense_bank' (sai do banco)."""
+    Caixa = entradas em numerário + depósitos externos em caixa + transferências
+    banco→caixa − depósitos bancários − devoluções de crédito − despesas pagas em caixa.
+    Banco = depósitos + depósitos externos em banco − transferências banco→caixa
+    − despesas pagas por banco. Transferências entre caixa e banco NÃO são
+    receita nem despesa."""
     cash_payments = await db.payments.find({"source": {"$ne": "refund"}}, {"_id": 0}).to_list(50000)
     cash_in = round(sum(_payment_cash_value(p) for p in cash_payments), 2)
     wd_all = await db.cash_withdrawals.find({}, {"_id": 0}).to_list(50000)
@@ -4678,12 +4855,196 @@ async def _account_balances() -> dict:
     refunds = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "credit_refund"), 2)
     exp_cash = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "expense_cash"), 2)
     exp_bank = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "expense_bank"), 2)
-    bank_balance = round(deposits - exp_bank, 2)
-    cash_balance = round(cash_in - deposits - refunds - exp_cash, 2)
+    dep_in_cash = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "deposit_in" and w.get("target") == "caixa"), 2)
+    dep_in_bank = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "deposit_in" and w.get("target") == "banco"), 2)
+    bank_to_cash = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "transfer_bank_cash"), 2)
+    bank_balance = round(deposits + dep_in_bank - bank_to_cash - exp_bank, 2)
+    cash_balance = round(cash_in + dep_in_cash + bank_to_cash - deposits - refunds - exp_cash, 2)
     return {
         "cash_balance": cash_balance,
         "bank_balance": bank_balance,
         "total_balance": round(bank_balance + cash_balance, 2),
+    }
+
+
+# ---------- Depósitos de valores (donativos/subsídios/etc.) e transferências ----------
+DEPOSIT_CATEGORIES = ["donativos", "subsidios", "excedente", "outras_atividades", "outros"]
+
+
+class BankDepositIn(BaseModel):
+    category: str  # donativos | subsidios | excedente | outras_atividades | outros
+    amount: float
+    target: str  # caixa | banco
+    reason: str  # motivo detalhado — obrigatório
+
+
+class BankTransferIn(BaseModel):
+    direction: str  # bank_to_cash | cash_to_bank
+    amount: float
+    reason: str  # motivo detalhado — obrigatório
+
+
+@api_router.post("/bank/deposits")
+async def create_bank_deposit(body: BankDepositIn, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    """Depósito de valores externos: donativos, subsídios, excedente, outras atividades.
+    Define se credita em Caixa ou em Banco, com motivo obrigatório."""
+    cat = (body.category or "").strip().lower()
+    if cat not in DEPOSIT_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Categoria inválida")
+    target = (body.target or "").strip().lower()
+    if target not in ("caixa", "banco"):
+        raise HTTPException(status_code=400, detail="Indica se é para caixa ou banco")
+    if body.amount <= 0:
+        raise HTTPException(status_code=400, detail="Valor inválido")
+    reason = (body.reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="Descreve o motivo do depósito")
+    tx_no = await _next_tx_number()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "tx_number": tx_no,
+        "kind": "deposit_in",
+        "category": cat,
+        "target": target,
+        "amount": round(float(body.amount), 2),
+        "note": reason[:500],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "user_email": user["email"],
+        "user_role": user.get("role"),
+    }
+    await db.cash_withdrawals.insert_one(doc)
+    if target == "caixa":
+        await db.club_state.update_one({"_id": "bar"}, {"$inc": {"cash_in_drawer": float(body.amount)}})
+    cat_label = {"donativos": "Donativos", "subsidios": "Subsídios", "excedente": "Excedente",
+                 "outras_atividades": "Outras atividades", "outros": "Outros"}[cat]
+    await _audit("bank_deposit_in", user["email"], entity="cash_withdrawal", entity_id=doc["id"], tx_number=tx_no,
+                 summary=f"Depósito #{tx_no} · {cat_label} · {euro_fmt(body.amount)} creditado em {target} · {reason}")
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/bank/deposits")
+async def list_bank_deposits(user: dict = Depends(get_current_user)):
+    items = await db.cash_withdrawals.find({"kind": "deposit_in"}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return items
+
+
+@api_router.post("/bank/transfers")
+async def create_bank_transfer(body: BankTransferIn, user: dict = Depends(require_role("admin", "tesoureiro"))):
+    """Transferência de valores entre banco e caixa (ou vice-versa).
+    Não é despesa nem receita — apenas movimentação de valores."""
+    direction = (body.direction or "").strip().lower()
+    if direction not in ("bank_to_cash", "cash_to_bank"):
+        raise HTTPException(status_code=400, detail="Direção inválida")
+    if body.amount <= 0:
+        raise HTTPException(status_code=400, detail="Valor inválido")
+    reason = (body.reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="Descreve o motivo da transferência")
+    tx_no = await _next_tx_number()
+    kind = "transfer_bank_cash" if direction == "bank_to_cash" else "bank_deposit"
+    doc = {
+        "id": str(uuid.uuid4()),
+        "tx_number": tx_no,
+        "kind": kind,
+        "amount": round(float(body.amount), 2),
+        "note": reason[:500],
+        "deposit_note": reason[:300],
+        "deposit_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "user_email": user["email"],
+        "user_role": user.get("role"),
+    }
+    await db.cash_withdrawals.insert_one(doc)
+    if direction == "bank_to_cash":
+        await db.club_state.update_one({"_id": "bar"}, {"$inc": {"cash_in_drawer": float(body.amount)}})
+    else:
+        await db.club_state.update_one({"_id": "bar"}, {"$inc": {"cash_in_drawer": -float(body.amount)}})
+    label = "Banco → Caixa" if direction == "bank_to_cash" else "Caixa → Banco"
+    await _audit("bank_transfer", user["email"], entity="cash_withdrawal", entity_id=doc["id"], tx_number=tx_no,
+                 summary=f"Transferência #{tx_no} · {label} · {euro_fmt(body.amount)} · {reason} · não é receita nem despesa")
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/bank/transfers")
+async def list_bank_transfers(user: dict = Depends(get_current_user)):
+    items = await db.cash_withdrawals.find({"kind": {"$in": ["transfer_bank_cash", "bank_deposit"]}}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return items
+
+
+@api_router.get("/treasury/movements")
+async def treasury_movements(account: str = "cash", date_from: Optional[str] = None, date_to: Optional[str] = None,
+                             user: dict = Depends(get_current_user)):
+    """Movimentos detalhados de caixa ou banco (para consulta e impressão)."""
+    acc = (account or "cash").strip().lower()
+    if acc not in ("cash", "cash", "caixa", "bank", "banco"):
+        raise HTTPException(status_code=400, detail="Conta inválida")
+    is_cash = acc in ("cash", "caixa")
+    dfrom = date_from + "T00:00:00" if (date_from and "T" not in date_from) else date_from
+    dto = date_to + "T23:59:59" if (date_to and "T" not in date_to) else date_to
+    rng = {}
+    if dfrom:
+        rng["$gte"] = dfrom
+    if dto:
+        rng["$lte"] = dto
+    q = {"created_at": rng} if rng else {}
+    movements = []
+    if is_cash:
+        async for p in db.payments.find({**q, "source": {"$ne": "refund"}}, {"_id": 0}):
+            val = _payment_cash_value(p)
+            if val <= 0:
+                continue
+            movements.append({
+                "id": p["id"], "tx_number": p.get("tx_number"), "date": p.get("created_at"),
+                "description": f"Pagamento de {p.get('client_name', '')} (numerário)",
+                "detail": p.get("note"), "direction": "in", "amount": round(val, 2),
+            })
+        async for w in db.cash_withdrawals.find(q, {"_id": 0}):
+            kind = w.get("kind")
+            amt = float(w.get("amount", 0))
+            desc = {
+                "bank_deposit": "Depósito para o banco",
+                "credit_refund": "Devolução de crédito",
+                "expense_cash": "Despesa paga em caixa",
+                "deposit_in": f"Depósito · {w.get('category', '')}",
+                "transfer_bank_cash": "Transferência Banco → Caixa",
+            }.get(kind, "Movimento de caixa")
+            direction = "in" if kind in ("deposit_in", "transfer_bank_cash") else "out"
+            movements.append({
+                "id": w["id"], "tx_number": w.get("tx_number"), "date": w.get("created_at"),
+                "description": desc, "detail": w.get("note") or w.get("deposit_note"),
+                "direction": direction, "amount": round(amt, 2),
+            })
+    else:
+        async for w in db.cash_withdrawals.find(q, {"_id": 0}):
+            kind = w.get("kind")
+            amt = float(w.get("amount", 0))
+            if kind in ("bank_deposit", "deposit_in", "transfer_bank_cash", "expense_bank"):
+                if kind == "bank_deposit":
+                    direction, desc = "in", "Depósito de caixa"
+                elif kind == "deposit_in":
+                    if w.get("target") != "banco":
+                        continue
+                    direction, desc = "in", f"Depósito · {w.get('category', '')}"
+                elif kind == "transfer_bank_cash":
+                    direction, desc = "out", "Transferência Banco → Caixa"
+                else:
+                    direction, desc = "out", "Despesa paga por banco"
+                movements.append({
+                    "id": w["id"], "tx_number": w.get("tx_number"), "date": w.get("created_at"),
+                    "description": desc, "detail": w.get("note") or w.get("deposit_note"),
+                    "direction": direction, "amount": round(amt, 2),
+                })
+    movements.sort(key=lambda m: m.get("date") or "", reverse=True)
+    balances = await _account_balances()
+    return {
+        "account": "bank" if not is_cash else "cash",
+        "label": "Banco" if not is_cash else "Caixa",
+        "balance": balances["bank_balance"] if not is_cash else balances["cash_balance"],
+        "movements": movements,
+        "total_in": round(sum(m["amount"] for m in movements if m["direction"] == "in"), 2),
+        "total_out": round(sum(m["amount"] for m in movements if m["direction"] == "out"), 2),
     }
 
 
@@ -4791,7 +5152,8 @@ async def set_bar_status(body: BarStatusIn, user: dict = Depends(get_current_use
         "opening_cash_declared": round(float(body.cash_declared), 2) if (body.open and body.cash_declared is not None) else None,
     }
     await db.club_state.find_one_and_replace({"_id": "bar"}, {"_id": "bar", **doc}, upsert=True)
-    await _audit("bar_open" if body.open else "bar_close", user["email"], summary=f"Bar {'ABERTO' if body.open else 'FECHADO'} · valor em caixa: {cash:.2f} €")
+    await _audit("bar_open" if body.open else "bar_close", user["email"],
+                 summary=f"Bar {'ABERTO' if body.open else 'FECHADO'} manualmente · valor em caixa: {cash:.2f} € · fecho automático às 02:00")
     return doc
 
 @api_router.get("/bar-status")
@@ -4818,12 +5180,16 @@ async def get_bar_status(user: dict = Depends(get_current_user)):
     cash = await _expected_cash_today()
     # Nota do último fecho de caixa — mostra ao abrir o bar qual era o valor em caixa
     last_close = await db.cash_closes.find({}, {"_id": 0}).sort("created_at", -1).to_list(1)
+    state = await _bar_state()
     return {
-        "open": bool(doc and doc.get("open")),
+        "open": bool(doc and doc.get("open")) and state["open"],
         "changed_at": doc.get("changed_at") if doc else None,
         "changed_by": doc.get("changed_by") if doc else None,
         "cash_in_drawer": cash,
         "auto_closed": auto_closed,
+        "closing_soon": state["closing_soon"],
+        "minutes_to_close": state["minutes_to_close"],
+        "closes_at": "02:00",
         "last_close": last_close[0] if last_close else None,
     }
 
@@ -4958,7 +5324,8 @@ async def create_cash_withdrawal(body: CashWithdrawalIn, user: dict = Depends(re
     }
     await db.cash_withdrawals.insert_one(doc)
     await db.club_state.update_one({"_id": "bar"}, {"$inc": {"cash_in_drawer": -float(body.amount)}})
-    await _audit("cash_withdrawal", user["email"], entity="cash_withdrawal", entity_id=doc["id"], summary=f"Depósito bancário de {euro_fmt(body.amount)} · nota {deposit_note} · {deposit_date}")
+    await _audit("cash_withdrawal", user["email"], entity="cash_withdrawal", entity_id=doc["id"], tx_number=tx_no,
+                 summary=f"Depósito #{tx_no} · Caixa → Banco · {euro_fmt(body.amount)} · nota {deposit_note} · {deposit_date}")
     doc.pop("_id", None)
     return doc
 
@@ -5101,7 +5468,19 @@ async def accept_membership_application(app_id: str, user: dict = Depends(requir
     if auto:
         await db.clients.update_one({"id": app_doc["client_id"]}, {"$set": {"pin_hash": hash_password(auto)}})
     await db.membership_applications.update_one({"id": app_id}, {"$set": {"status": "accepted", "decided_at": datetime.now(timezone.utc).isoformat(), "decided_by": user["email"], "member_number": mn}})
-    await _audit("membership_accept", user["email"], entity="client", entity_id=app_doc["client_id"], summary=f"Proposta aceite: {app_doc['name']} passou a sócio nº {mn}")
+    # Menor de 16 anos fica marcado como menor/tutelado na ficha
+    age = _age_from_birthday(app_doc.get("birthday"))
+    if age is not None and age < 16:
+        await db.clients.update_one({"id": app_doc["client_id"]}, {"$set": {"is_minor": True}})
+    # Sócio padrinho: +1 ponto por proposta aprovada
+    if app_doc.get("sponsor_id"):
+        await db.clients.update_one({"id": app_doc["sponsor_id"]}, {"$inc": {"points": 1}})
+        await _log_points(app_doc["sponsor_id"], 1, "membership_sponsor", app_doc["client_id"],
+                          f"Sócio padrinho de {app_doc['name']}", user["email"])
+    await _audit("membership_accept", user["email"], entity="client", entity_id=app_doc["client_id"],
+                 summary=f"Proposta aceite: {app_doc['name']} passou a sócio nº {mn}"
+                         + (" · menor/tutelado" if (age is not None and age < 16) else "")
+                         + (f" · padrinho nº {app_doc.get('sponsor_member_number')} +1 ponto" if app_doc.get("sponsor_id") else ""))
     return {"ok": True, "member_number": mn}
 
 @api_router.post("/membership-applications/{app_id}/reject")
@@ -5114,6 +5493,76 @@ async def reject_membership_application(app_id: str, user: dict = Depends(requir
     await db.membership_applications.update_one({"id": app_id}, {"$set": {"status": "rejected", "decided_at": datetime.now(timezone.utc).isoformat(), "decided_by": user["email"]}})
     await _audit("membership_reject", user["email"], entity="client", entity_id=app_doc["client_id"], summary=f"Proposta de sócio rejeitada: {app_doc['name']}")
     return {"ok": True}
+
+
+class PublicMembershipIn(BaseModel):
+    name: str
+    birthday: str
+    morada: str
+    contact: str
+    email: Optional[str] = None
+    localidade: Optional[str] = None
+    sponsor_member_number: Optional[str] = None  # sócio padrinho (facultativo)
+    accept_regulations: bool = False
+
+
+@api_router.post("/public/membership-application")
+async def public_membership_application(body: PublicMembershipIn):
+    """Formulário de adesão (app sócio / ecrã inicial, sem login).
+    Fica pendente na fila de aprovação da direção."""
+    name = (body.name or "").strip()
+    morada = (body.morada or "").strip()
+    contact = (body.contact or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Nome e apelido são obrigatórios")
+    if not body.birthday:
+        raise HTTPException(status_code=400, detail="Data de nascimento é obrigatória")
+    if not morada:
+        raise HTTPException(status_code=400, detail="Morada é obrigatória")
+    if not contact:
+        raise HTTPException(status_code=400, detail="Telemóvel é obrigatório")
+    if not body.accept_regulations:
+        raise HTTPException(status_code=400, detail="É obrigatório aceitar o regulamento interno")
+    sponsor = None
+    if (body.sponsor_member_number or "").strip():
+        sponsor = await db.clients.find_one({"member_number": body.sponsor_member_number.strip(), "is_member": True},
+                                            {"_id": 0, "id": 1, "name": 1, "member_number": 1})
+        if not sponsor:
+            raise HTTPException(status_code=400, detail="Nº de sócio padrinho não encontrado")
+    signed_at = datetime.now(timezone.utc).isoformat()
+    cid = str(uuid.uuid4())
+    await db.clients.insert_one({
+        "id": cid, "name": name, "contact": contact, "email": body.email,
+        "note": "Candidato a sócio (formulário digital)", "member_number": None,
+        "is_member": False, "morada": morada, "pin_hash": None, "points": 0,
+        "balance": 0.0, "total_spent": 0.0, "credit_limit": None,
+        "birthday": body.birthday, "created_at": signed_at,
+    })
+    doc = {
+        "id": str(uuid.uuid4()),
+        "client_id": cid,
+        "client_name": name,
+        "name": name,
+        "morada": morada,
+        "localidade": (body.localidade or "").strip(),
+        "contact": contact,
+        "email": body.email,
+        "birthday": body.birthday,
+        "accepted_regulations": True,
+        "signed_at": signed_at,
+        "status": "pending",
+        "source": "digital_form",
+        "sponsor_id": sponsor["id"] if sponsor else None,
+        "sponsor_member_number": sponsor["member_number"] if sponsor else None,
+        "sponsor_name": sponsor["name"] if sponsor else None,
+        "created_at": signed_at,
+    }
+    await db.membership_applications.insert_one(doc)
+    await _audit("membership_application", "formulário digital", entity="client", entity_id=cid,
+                 summary=f"Nova adesão digital: {name} · assinatura {signed_at}"
+                         + (f" · padrinho nº {sponsor['member_number']}" if sponsor else ""))
+    doc.pop("_id", None)
+    return {"ok": True, "application_id": doc["id"]}
 
 # ---------- Chat da comunidade (sócios) ----------
 PROFANITY_PT = [
@@ -5442,9 +5891,25 @@ class DependentQuotaPayIn(BaseModel):
     mbway_phone: str
 
 
+def _is_tutelado(socio: dict) -> bool:
+    return bool(socio.get("family_head_client_id"))
+
+
+async def _maybe_end_tutela(client: dict) -> dict:
+    """Ao completar 16 anos o sócio deixa de ser tutelado (is_minor removido)."""
+    if client.get("is_minor") and client.get("birthday"):
+        age = _age_from_birthday(client.get("birthday"))
+        if age is not None and age >= 16:
+            await db.clients.update_one({"id": client["id"]}, {"$set": {"is_minor": False}})
+            client["is_minor"] = False
+    return client
+
+
 @api_router.get("/socio/family")
 async def socio_family(socio: dict = Depends(get_current_socio)):
     """Agregado familiar do titular: dependentes com quotas e estado de conta."""
+    if _is_tutelado(socio):
+        raise HTTPException(status_code=403, detail="Sócios tutelados não têm agregado familiar — é o tutor que gere a tua conta")
     deps = await db.clients.find({"family_head_client_id": socio["id"]}, {"_id": 0, "pin_hash": 0}).sort("name", 1).to_list(50)
     out = []
     for d in deps:
@@ -5479,38 +5944,141 @@ async def socio_family_set_limit(body: DependentLimitIn, socio: dict = Depends(g
     return {"ok": True, "dependent_id": dep["id"], "consumption_limit": lim, "used_this_month": await _monthly_consumption(dep["id"])}
 
 
+def _age_from_birthday(birthday: Optional[str]) -> Optional[int]:
+    if not birthday:
+        return None
+    try:
+        b = datetime.fromisoformat(str(birthday)[:10]).date()
+    except ValueError:
+        return None
+    today = _lisbon_now().date()
+    return today.year - b.year - ((today.month, today.day) < (b.month, b.day))
+
+
 @api_router.post("/socio/family")
 async def socio_add_dependent(body: DependentIn, socio: dict = Depends(get_current_socio)):
-    """Titular inscreve um filho/dependente no agregado familiar."""
+    """Titular pede a inscrição de um familiar no agregado.
+    O pedido fica PENDENTE de aprovação da administração — ao aprovar é criada
+    a ficha de sócio (nº automático) e, com menos de 16 anos, fica menor/tutelado."""
+    if _is_tutelado(socio):
+        raise HTTPException(status_code=403, detail="Sócios tutelados não podem inscrever agregado familiar")
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Nome do dependente obrigatório")
     count = await db.clients.count_documents({"family_head_client_id": socio["id"]})
-    if count >= 15:
+    pending = await db.family_requests.count_documents({"family_head_client_id": socio["id"], "status": "pending"})
+    if count + pending >= 15:
         raise HTTPException(status_code=400, detail="Agregado familiar completo (máx. 15 dependentes)")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "family_head_client_id": socio["id"],
+        "family_head_name": socio["name"],
+        "name": name,
+        "birthday": body.birthday,
+        "contact": body.contact,
+        "note": body.note or "Agregado familiar",
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.family_requests.insert_one(doc)
+    await _audit("family_request", socio.get("name") or socio["id"], entity="family_request", entity_id=doc["id"],
+                 summary=f"Pedido de inscrição no agregado de {socio['name']}: {name} — aguarda aprovação")
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/socio/family/requests")
+async def socio_family_requests(socio: dict = Depends(get_current_socio)):
+    if _is_tutelado(socio):
+        raise HTTPException(status_code=403, detail="Sócios tutelados não têm agregado familiar")
+    return await db.family_requests.find({"family_head_client_id": socio["id"]}, {"_id": 0}).sort("created_at", -1).to_list(50)
+
+
+@api_router.get("/family-requests")
+async def list_family_requests(status_filter: Optional[str] = None, user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
+    q = {"status": status_filter} if status_filter else {}
+    return await db.family_requests.find(q, {"_id": 0}).sort("created_at", -1).to_list(300)
+
+
+@api_router.post("/family-requests/{req_id}/approve")
+async def approve_family_request(req_id: str, user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
+    """Aprova a inscrição: cria a ficha de sócio com nº automático; <16 anos fica tutelado."""
+    req = await db.family_requests.find_one({"id": req_id}, {"_id": 0})
+    if not req:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if req.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Pedido já tratado")
+    members = await db.clients.find({"is_member": True, "member_number": {"$exists": True, "$ne": None}},
+                                    {"_id": 0, "member_number": 1}).to_list(5000)
+    nums = []
+    for m in members:
+        try:
+            nums.append(int(str(m["member_number"]).strip()))
+        except ValueError:
+            continue
+    mn = str((max(nums) + 1) if nums else 1)
+    age = _age_from_birthday(req.get("birthday"))
+    is_minor = age is not None and age < 16
     cid = str(uuid.uuid4())
     doc = {
         "id": cid,
-        "name": name,
-        "contact": body.contact,
+        "name": req["name"],
+        "contact": req.get("contact"),
         "email": None,
-        "note": body.note or "Agregado familiar",
-        "member_number": None,
-        "is_member": False,
-        "morada": socio.get("morada"),
+        "note": req.get("note") or "Agregado familiar",
+        "member_number": mn,
+        "is_member": True,
+        "morada": None,
         "pin_hash": None,
         "points": 0,
         "balance": 0.0,
         "total_spent": 0.0,
         "credit_limit": None,
-        "family_head_client_id": socio["id"],
-        "birthday": body.birthday,
+        "family_head_client_id": req["family_head_client_id"],
+        "birthday": req.get("birthday"),
+        "is_minor": is_minor,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+    auto = auto_pin_from_member_number(mn)
+    if auto:
+        doc["pin_hash"] = hash_password(auto)
     await db.clients.insert_one(doc)
-    await _audit("family_dependent_add", socio.get("name") or socio["id"], entity="client", entity_id=cid, summary=f"Dependente inscrito no agregado de {socio['name']}: {name}")
+    await db.family_requests.update_one({"id": req_id}, {"$set": {
+        "status": "approved", "client_id": cid, "member_number": mn,
+        "decided_at": datetime.now(timezone.utc).isoformat(), "decided_by": user["email"],
+    }})
+    await _audit("family_request_approve", user["email"], entity="client", entity_id=cid,
+                 summary=f"Agregado de {req.get('family_head_name')}: {req['name']} aprovado como sócio nº {mn}"
+                         + (" · menor/tutelado" if is_minor else ""))
+    await db.socio_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "client_id": req["family_head_client_id"],
+        "client_name": req.get("family_head_name") or "",
+        "subject": "✅ Inscrição no agregado aprovada",
+        "message": f"A inscrição de {req['name']} foi aprovada — é agora sócio nº {mn}"
+                   + (" (menor/tutelado)." if is_minor else "."),
+        "from_staff": True,
+        "reply": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
     doc.pop("_id", None)
+    doc.pop("pin_hash", None)
     return doc
+
+
+@api_router.post("/family-requests/{req_id}/reject")
+async def reject_family_request(req_id: str, user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
+    req = await db.family_requests.find_one({"id": req_id}, {"_id": 0})
+    if not req:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if req.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Pedido já tratado")
+    await db.family_requests.update_one({"id": req_id}, {"$set": {
+        "status": "rejected", "decided_at": datetime.now(timezone.utc).isoformat(), "decided_by": user["email"],
+    }})
+    await _audit("family_request_reject", user["email"], entity="family_request", entity_id=req_id,
+                 summary=f"Pedido de agregado rejeitado: {req['name']} (titular {req.get('family_head_name')})")
+    return {"ok": True}
 
 
 @api_router.post("/socio/family/quotas/pay")

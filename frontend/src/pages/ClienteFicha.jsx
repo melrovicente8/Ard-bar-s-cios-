@@ -180,6 +180,7 @@ export default function ClienteFicha() {
   // Extracto de pontos
   const [pointsHistory, setPointsHistory] = useState([]);
   const [showPointsHistory, setShowPointsHistory] = useState(false);
+  const [showDebtDetail, setShowDebtDetail] = useState(false);
 
   const loadPointsHistory = async () => {
     try {
@@ -858,6 +859,15 @@ export default function ClienteFicha() {
           >
             {euro(credit > 0 ? credit : debt)}
           </div>
+          {credit <= 0 && debt > 0 && (
+            <button
+              data-testid="ficha-debt-detail-btn"
+              onClick={() => setShowDebtDetail(true)}
+              className="mt-3 w-full bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 font-bold py-2 rounded-lg text-xs"
+            >
+              Ver detalhe do que está a pagar
+            </button>
+          )}
           {credit > 0 && (
             <>
               <div data-testid="ficha-credit-badge" className="mt-1 text-[10px] text-emerald-400/80">Cliente tem saldo positivo</div>
@@ -1425,7 +1435,7 @@ export default function ClienteFicha() {
                         onChange={(e) => setEditForm({ ...editForm, is_member: e.target.checked })}
                         className="w-4 h-4 accent-green-500"
                       />
-                      <span className="text-xs font-medium text-slate-200">Sócio com cotas pagas</span>
+                      <span className="text-xs font-medium text-slate-200">Pagamento de Quotas</span>
                     </label>
                   </div>
                   <div>
@@ -1940,6 +1950,39 @@ export default function ClienteFicha() {
               <button data-testid="ficha-profile-submit" type="submit" className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold">Guardar</button>
             </div>
           </form>
+        </div>
+      )}
+
+      {showDebtDetail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setShowDebtDetail(false)} data-testid="ficha-debt-detail-modal">
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-amber-500/30 rounded-xl w-full max-w-2xl p-5 max-h-[90vh] flex flex-col">
+            <div className="flex items-center gap-2 mb-3">
+              <CurrencyEur size={20} weight="duotone" className="text-amber-400" />
+              <h3 className="font-outfit text-xl font-semibold">O que está a pagar</h3>
+              <span className="ml-auto text-sm text-slate-400">Total: <strong className="text-amber-300">{euro(debt)}</strong></span>
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-2">
+              {(data?.debts || []).length === 0 ? (
+                <div className="text-center text-slate-500 py-10 text-sm">Sem valores em aberto.</div>
+              ) : (data?.debts || []).map((d) => (
+                <div key={d.sale_id} className="bg-slate-950 border border-slate-800 rounded-lg p-3">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-semibold text-slate-200">
+                      {d.tx_number ? <Link to={`/transacoes/${d.tx_number}`} className="font-mono text-amber-400 hover:underline">#{d.tx_number}</Link> : "—"}
+                      <span className="text-slate-500 font-normal"> · {new Date(d.created_at).toLocaleString("pt-PT")}</span>
+                    </span>
+                    <span className="font-bold text-amber-300">{euro(d.outstanding)}</span>
+                  </div>
+                  <ul className="mt-1 text-xs text-slate-400 space-y-0.5">
+                    {(d.items || []).map((it, i) => (
+                      <li key={i}>{it.quantity}× {it.product_name} · {euro(it.subtotal)}</li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+            <button onClick={() => setShowDebtDetail(false)} className="mt-3 w-full px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 font-medium">Fechar</button>
+          </div>
         </div>
       )}
 

@@ -27,6 +27,7 @@ import Bilhetes from "./pages/Bilhetes";
 import Documentacao from "./pages/Documentacao";
 import OfertasCasa from "./pages/OfertasCasa";
 import SocioLogin from "./pages/SocioLogin";
+import Adesao from "./pages/Adesao";
 import SocioPortal from "./pages/SocioPortal";
 
 function Protected({ children }) {
@@ -91,6 +92,7 @@ function App() {
                 }
               />
               <Route path="/socio/login" element={<SocioLogin />} />
+              <Route path="/aderir" element={<Adesao />} />
               <Route path="/socio" element={<SocioPortal />} />
               <Route
                 path="/"

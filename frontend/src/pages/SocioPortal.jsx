@@ -1108,13 +1108,15 @@ export default function SocioPortal() {
               >
                 <Storefront size={13} weight="duotone" /> Loja
               </button>
-              <button
-                data-testid="socio-family-btn"
-                onClick={() => setShowFamily(true)}
-                className="text-xs px-3 py-1.5 rounded-md bg-teal-500/15 text-teal-300 border border-teal-500/30 hover:bg-teal-500/25 flex items-center gap-1.5"
-              >
-                <Users size={13} weight="duotone" /> Agregado familiar
-              </button>
+              {!isMinor && (
+                <button
+                  data-testid="socio-family-btn"
+                  onClick={() => setShowFamily(true)}
+                  className="text-xs px-3 py-1.5 rounded-md bg-teal-500/15 text-teal-300 border border-teal-500/30 hover:bg-teal-500/25 flex items-center gap-1.5"
+                >
+                  <Users size={13} weight="duotone" /> Agregado familiar
+                </button>
+              )}
               <button
                 data-testid="socio-community-btn"
                 onClick={() => setShowCommunity(true)}
@@ -1131,13 +1133,15 @@ export default function SocioPortal() {
               >
                 <Camera size={13} weight="duotone" /> {c.birthday && c.photo_data ? "Perfil completo" : "Foto + Aniversário"}
               </button>
-              <button
-                data-testid="socio-quotas-btn"
-                onClick={() => loadQuotas()}
-                className="text-xs px-3 py-1.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1.5"
-              >
-                <CalendarBlank size={13} weight="duotone" /> Pagar cotas
-              </button>
+              {!isMinor && (
+                <button
+                  data-testid="socio-quotas-btn"
+                  onClick={() => loadQuotas()}
+                  className="text-xs px-3 py-1.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1.5"
+                >
+                  <CalendarBlank size={13} weight="duotone" /> Pagar cotas
+                </button>
+              )}
               <button
                 data-testid="socio-points-hist-btn"
                 onClick={loadPointsHist}
