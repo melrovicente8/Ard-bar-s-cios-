@@ -803,6 +803,16 @@ async def client_detail(client_id: str, user: dict = Depends(get_current_user)):
     ).sort("at", -1).to_list(50)
     if not c.get("socio_last_access") and c["access_history"]:
         c["socio_last_access"] = c["access_history"][0].get("at")
+    # Distintivo / medalha da Tabela de Feitos (último mês distinguido)
+    award = await db.ranking_awards.find_one(
+        {"client_id": client_id}, {"_id": 0}, sort=[("year", -1), ("month", -1)]
+    )
+    c["ranking_badge"] = None
+    if award:
+        c["ranking_badge"] = {
+            **award,
+            "month_label": f"{MONTHS_FULL_PT[int(award.get('month', 1)) - 1]} {award.get('year')}",
+        }
     if c.get("is_minor") or c.get("family_head_client_id"):
         h = await db.clients.find_one({"id": c.get("family_head_client_id")}, {"_id": 0, "name": 1, "member_number": 1})
         c["family_head_name"] = h.get("name") if h else None
@@ -1484,6 +1494,8 @@ async def create_sale(body: SaleIn, user: dict = Depends(get_current_user)):
         + f" #{tx_no} · {client_doc['name']} · {total:.2f} € · "
         + ", ".join(f"{li['quantity']}× {li['product_name']}" for li in line_items),
     )
+    # Presença na sede: pelo menos um pedido servido no dia
+    await _mark_presence(client_doc["id"], source="sale")
     if sale_doc["minor_alcohol_alert"]:
         tutor_id = client_doc.get("family_head_client_id")
         if tutor_id:
@@ -2303,6 +2315,8 @@ async def deliver_consumption_request(req_id: str, user: dict = Depends(get_curr
     })
     await _audit("request_deliver", user["email"], entity="consumption_request", entity_id=req_id,
                  summary=f"Pedido entregue no balcão · {req['client_name']} · {euro_fmt(req['total'])} · pronto para pagamento")
+    # Pedido servido = presença do dia na sede
+    await _mark_presence(req["client_id"], source="request")
     return {"ok": True}
 
 async def _reverse_request_sale(req: dict, by: str, reason: str):
@@ -3643,6 +3657,8 @@ async def socio_me(socio: dict = Depends(get_current_socio)):
         {"$set": {"socio_last_access": access_at}, "$inc": {"socio_access_count": 1}},
     )
     socio["socio_last_access"] = access_at
+    # Estado real das cotas (🟢/🟡/🔴) — saudação, bola e acesso aos rankings dependem dele
+    socio["quota_status"] = await _quota_overall_status(socio["id"])
     return {
         "client": socio, "sales": sales, "payments": payments, "mbway": mbway, "family": family,
         "last_access": previous_access, "access_history": access_history,
@@ -4192,6 +4208,7 @@ async def socio_mark_picked_up(req_id: str, socio: dict = Depends(get_current_so
     )
     await _audit("request_picked_up_socio", f"socio:{socio.get('member_number') or socio['id']}", entity="consumption_request", entity_id=req_id,
                  summary=f"Sócio {socio['name']} confirmou no portal o levantamento do pedido ({euro_fmt(req['total'])})")
+    await _mark_presence(socio["id"], source="request")
     return {"ok": True}
 
 
@@ -7595,25 +7612,136 @@ def _group_label(client_doc: dict) -> str:
     return f"{client_doc['name'].split(' ')[0]} (nº {client_doc.get('member_number') or '—'})"
 
 
-async def _mark_presence(client_id: str, table_id: Optional[str] = None) -> None:
-    """Presença do dia (streak) — uma entrada por sócio e por dia."""
+# ---------- Presenças na sede · streak e recompensas ----------
+# Um dia conta como presença quando o sócio tem pelo menos um pedido servido.
+# Ao fim de N dias seguidos a recompensa em pontos é atribuída (regras da direção).
+STREAK_REWARDS = {7: 1, 9: 1, 11: 1, 13: 1, 15: 2, 17: 1, 19: 1, 21: 1, 23: 1, 25: 2, 27: 1, 29: 1, 31: 5}
+
+
+def _lisbon_today():
     try:
         from zoneinfo import ZoneInfo
-        day = datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%Y-%m-%d")
+        return datetime.now(ZoneInfo("Europe/Lisbon")).date()
     except Exception:
-        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    await db.presences.update_one(
-        {"client_id": client_id, "date": day},
-        {"$setOnInsert": {
-            "id": str(uuid.uuid4()),
-            "client_id": client_id,
-            "date": day,
-            "source": "group_round",
-            "table_id": table_id,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }},
-        upsert=True,
+        return datetime.now(timezone.utc).date()
+
+
+def _streak_from_dates(dates: set, today=None) -> int:
+    """Dias consecutivos com presença, a terminar hoje (ou ontem se hoje ainda não conta)."""
+    today = today or _lisbon_today()
+    cursor = today if today.isoformat() in dates else today - timedelta(days=1)
+    if cursor.isoformat() not in dates:
+        return 0
+    n = 0
+    while cursor.isoformat() in dates:
+        n += 1
+        cursor -= timedelta(days=1)
+    return n
+
+
+def _best_streak(dates: set) -> int:
+    """Maior sequência de dias seguidos dentro de um conjunto de datas."""
+    best = run = 0
+    prev = None
+    for value in sorted(dates):
+        try:
+            day = datetime.strptime(value, "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            continue
+        run = run + 1 if prev and (day - prev).days == 1 else 1
+        best = max(best, run)
+        prev = day
+    return best
+
+
+def _next_streak_reward(streak: int) -> Optional[int]:
+    for day in sorted(STREAK_REWARDS):
+        if day > streak:
+            return day
+    return None
+
+
+async def _presence_dates(client_id: str) -> set:
+    docs = await db.presences.find({"client_id": client_id}, {"_id": 0, "date": 1}).to_list(10000)
+    return {d["date"] for d in docs if d.get("date")}
+
+
+async def _apply_streak_reward(presence: dict, factor: float, reason: str) -> int:
+    """Atribui os pontos da recompensa de streak (fator 1 = total, 0,5 = metade)."""
+    points = int(presence.get("reward_points") or 0)
+    applied = int(round(points * factor)) if points > 0 else 0
+    if applied <= 0:
+        return 0
+    await db.clients.update_one({"id": presence["client_id"]}, {"$inc": {"points": applied}})
+    await _log_points(
+        presence["client_id"], applied, "presence_streak", presence["id"],
+        f"{presence.get('streak', 0)} dias seguidos na sede · {reason}", "sistema",
     )
+    await db.presences.update_one(
+        {"id": presence["id"]},
+        {"$set": {"reward_status": "granted", "points_applied": applied, "reward_reason": reason,
+                  "reward_granted_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return applied
+
+
+async def _settle_streak_rewards(client_id: str) -> int:
+    """Cotas regularizadas (🟢): as recompensas bloqueadas por estarem 🟡 passam a valer metade."""
+    qs = await _quota_overall_status(client_id)
+    if not qs or qs.get("status") != "paid":
+        return 0
+    blocked = await db.presences.find(
+        {"client_id": client_id, "reward_status": "blocked_pending"}, {"_id": 0}
+    ).to_list(500)
+    total = 0
+    for p in blocked:
+        total += await _apply_streak_reward(p, 0.5, "regularização de cotas · metade dos pontos")
+    return total
+
+
+async def _mark_presence(client_id: str, table_id: Optional[str] = None, source: str = "group_round") -> Optional[dict]:
+    """Presença do dia (uma por sócio e por dia) + recompensa do streak.
+    🔴 Em dívida → presença fica registada mas não pontua;
+    🟡 Por regularizar → bloqueada até regularizar (depois vale metade)."""
+    client = await db.clients.find_one({"id": client_id}, {"_id": 0, "is_member": 1, "is_temp": 1, "is_walkin": 1})
+    if not client or not client.get("is_member") or client.get("is_temp") or client.get("is_walkin"):
+        return None
+    day = _lisbon_today().isoformat()
+    if await db.presences.find_one({"client_id": client_id, "date": day}, {"_id": 1}):
+        return None
+    dates = await _presence_dates(client_id)
+    dates.add(day)
+    streak = _streak_from_dates(dates)
+    reward = STREAK_REWARDS.get(streak, 0)
+    qs = await _quota_overall_status(client_id)
+    status = (qs or {}).get("status")
+    if not reward:
+        reward_status = "none"
+    elif status == "paid":
+        reward_status = "granted"
+    elif status == "pending":
+        reward_status = "blocked_pending"
+    else:
+        reward_status = "blocked_debt"
+    doc = {
+        "id": str(uuid.uuid4()),
+        "client_id": client_id,
+        "date": day,
+        "source": source,
+        "table_id": table_id,
+        "streak": streak,
+        "reward_points": reward,
+        "reward_status": reward_status,
+        "points_applied": 0,
+        "quota_status": status,
+        "popup_seen": False,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.presences.insert_one(doc)
+    if reward_status == "granted":
+        doc["points_applied"] = await _apply_streak_reward(doc, 1.0, "dia de streak completo")
+    doc.pop("_id", None)
+    return doc
 
 
 async def _group_sale(table: dict, client_doc: dict, label: str, total: float,
@@ -7699,7 +7827,8 @@ async def create_group_table(body: GroupTableIn, user: dict = Depends(get_curren
     table = {
         "id": str(uuid.uuid4()),
         "label": (body.label or "").strip() or f"Mesa de {len(ordered)}",
-        "members": [{"client_id": m["id"], "name": m["name"], "member_number": m.get("member_number")} for m in ordered],
+        "members": [{"client_id": m["id"], "name": m["name"], "member_number": m.get("member_number"),
+                     "joined_round": 1} for m in ordered],
         "rounds": [],
         "status": "open",
         "created_at": now_iso,
@@ -7802,6 +7931,8 @@ async def add_group_round(table_id: str, body: GroupRoundIn, user: dict = Depend
         "added_by": user["email"],
         "payer_client_id": None,
         "sale_id": None,
+        # Quem estava à mesa nesta rodada (permite mostrar quem se juntou depois)
+        "members": [m["client_id"] for m in (table.get("members") or [])],
     }
     await db.group_tables.update_one({"id": table_id}, {"$push": {"rounds": round_doc}})
     await _audit("group_round_add", user["email"], entity="group_table", entity_id=table_id,
@@ -7809,6 +7940,56 @@ async def add_group_round(table_id: str, body: GroupRoundIn, user: dict = Depend
                          + ", ".join(f"{li['quantity']}× {li['product_name']}" for li in line_items))
     table.pop("_id", None)
     return await db.group_tables.find_one({"id": table_id}, {"_id": 0})
+
+
+class GroupMembersIn(BaseModel):
+    member_ids: List[str]
+
+
+@api_router.post("/group-tables/{table_id}/members")
+async def add_group_members(table_id: str, body: GroupMembersIn, user: dict = Depends(get_current_user)):
+    """Junta mais sócios a uma mesa já aberta, registando a rodada em que entraram."""
+    table = await db.group_tables.find_one({"id": table_id}, {"_id": 0})
+    if not table:
+        raise HTTPException(status_code=404, detail="Rodada não encontrada")
+    if table.get("status") != "open":
+        raise HTTPException(status_code=400, detail="Esta Rodada Mista já está fechada")
+    current = table.get("members") or []
+    known = {m["client_id"] for m in current}
+    ids = [i for i in dict.fromkeys(body.member_ids or []) if i not in known]
+    if not ids:
+        raise HTTPException(status_code=400, detail="Escolhe pelo menos um sócio novo para a mesa")
+    docs = await db.clients.find({"id": {"$in": ids}}, {"_id": 0, "pin_hash": 0}).to_list(len(ids))
+    by_id = {d["id"]: d for d in docs}
+    if any(i not in by_id for i in ids):
+        raise HTTPException(status_code=404, detail="Sócio não encontrado")
+    joined_round = len(table.get("rounds") or []) + 1
+    now_iso = datetime.now(timezone.utc).isoformat()
+    new_members = [{
+        "client_id": by_id[i]["id"], "name": by_id[i]["name"],
+        "member_number": by_id[i].get("member_number"),
+        "joined_round": joined_round, "joined_at": now_iso,
+    } for i in ids]
+    await db.group_tables.update_one({"id": table_id}, {"$push": {"members": {"$each": new_members}}})
+    for m in new_members:
+        others = [f"{_group_member_ref(o)}" for o in current]
+        companions = " e ".join(others) if len(others) <= 2 else f"{others[0]}, {others[1]} e mais {len(others) - 2} amigos"
+        await db.socio_messages.insert_one({
+            "id": str(uuid.uuid4()),
+            "client_id": m["client_id"],
+            "client_name": m["name"],
+            "subject": "🍻 Juntaste-te à Rodada Mista",
+            "message": f"Entraste na {table.get('label')} com {companions} (rodada {joined_round})! 🍻 Bebe com moderação.",
+            "from_staff": True,
+            "reply": None,
+            "created_at": now_iso,
+            "group_table_id": table_id,
+        })
+        await _mark_presence(m["client_id"], table_id)
+    await _audit("group_table_add_members", user["email"], entity="group_table", entity_id=table_id,
+                 summary=f"Rodada Mista {table.get('label')} · juntou {', '.join(m['name'] for m in new_members)} (rodada {joined_round})")
+    updated = await db.group_tables.find_one({"id": table_id}, {"_id": 0})
+    return updated
 
 
 @api_router.post("/group-tables/{table_id}/rounds/{round_number}/settle")
@@ -7952,10 +8133,272 @@ async def close_group_table(table_id: str, user: dict = Depends(get_current_user
     return {"ok": True}
 
 
-@api_router.get("/presences/me")
-async def my_presences(socio: dict = Depends(get_current_socio)):
-    days = await db.presences.find({"client_id": socio["id"]}, {"_id": 0}).sort("date", -1).to_list(60)
-    return days
+async def _presence_overview(client_id: str, month: Optional[str] = None) -> dict:
+    """Calendário do mês + streak + recompensa a seguir + aviso de progresso de hoje."""
+    await _settle_streak_rewards(client_id)
+    today = _lisbon_today()
+    ym = month if month and len(month) == 7 else today.strftime("%Y-%m")
+    all_dates = await _presence_dates(client_id)
+    month_dates = sorted(d for d in all_dates if d.startswith(ym))
+    docs = await db.presences.find(
+        {"client_id": client_id, "date": {"$regex": f"^{ym}"}}, {"_id": 0}
+    ).to_list(400)
+    streak = _streak_from_dates(all_dates)
+    next_day = _next_streak_reward(streak)
+    qs = await _quota_overall_status(client_id)
+    status = (qs or {}).get("status")
+    popup_doc = await db.presences.find_one(
+        {"client_id": client_id, "date": today.isoformat(), "popup_seen": False}, {"_id": 0}
+    )
+    popup = None
+    if popup_doc:
+        nxt = _next_streak_reward(popup_doc.get("streak") or 0)
+        popup = {
+            "date": popup_doc["date"],
+            "streak": popup_doc.get("streak") or 0,
+            "next_reward_day": nxt,
+            "days_to_next": (nxt - (popup_doc.get("streak") or 0)) if nxt else 0,
+            "reward_points": popup_doc.get("reward_points") or 0,
+            "reward_status": popup_doc.get("reward_status") or "none",
+        }
+    return {
+        "month": ym,
+        "days": month_dates,
+        "today": today.isoformat(),
+        "today_marked": today.isoformat() in all_dates,
+        "streak": streak,
+        "best_streak_month": _best_streak(set(month_dates)),
+        "next_reward_day": next_day,
+        "days_to_next": (next_day - streak) if next_day else 0,
+        "rewards": [{"day": d, "points": p} for d, p in sorted(STREAK_REWARDS.items())],
+        "month_presences": len(month_dates),
+        "month_points": sum(int(d.get("points_applied") or 0) for d in docs),
+        "quota_status": status,
+        "points_blocked": status in ("pending", "debt"),
+        "popup": popup,
+    }
+
+
+@api_router.get("/socio/presences")
+async def my_presences(month: Optional[str] = None, socio: dict = Depends(get_current_socio)):
+    return await _presence_overview(socio["id"], month)
+
+
+@api_router.post("/socio/presences/seen")
+async def mark_presence_popup_seen(socio: dict = Depends(get_current_socio)):
+    """O sócio fechou o pop-up de progresso — não volta a aparecer."""
+    await db.presences.update_many(
+        {"client_id": socio["id"], "popup_seen": False},
+        {"$set": {"popup_seen": True}},
+    )
+    return {"ok": True}
+
+
+@api_router.get("/clients/{client_id}/presences")
+async def client_presences(client_id: str, month: Optional[str] = None, user: dict = Depends(get_current_user)):
+    """Consulta do staff: calendário de presenças do sócio."""
+    return await _presence_overview(client_id, month)
+
+
+# ---------- Tabela de Feitos · rankings da associativa ----------
+# Alcoólicas e não alcoólicas contam unidades consumidas e pagas no mês corrente;
+# os rankings de consumo reiniciam no dia 1 e o histórico fica guardado em
+# `db.ranking_awards` (badges/medalhas mensais mostradas no perfil).
+RANK_ALCOHOL_CATEGORIES = {"Cerveja", "Vinho", "Licor", "Licores", "Espirituosa", "Espirituosas",
+                           "Aguardente", "Bebidas Alcoólicas"}
+RANK_SOFT_CATEGORIES = {"Água", "Aguas", "Sumo", "Sumos", "Refrigerante", "Refrigerantes",
+                        "Café", "Cafe", "Energética", "Energetica", "Chá", "Cha", "Bebidas Não Alcoólicas"}
+RANK_BADGES = {1: "🏆 Lenda da Nespereira", 2: "🥈 Vice do Balcão", 3: "🥉 Pódio da Sede",
+               4: "🏅 Persistente", 5: "🏅 Top 5 Certificado"}
+
+
+async def _rankings_enabled() -> bool:
+    doc = await db.club_settings.find_one({"id": "rankings_enabled"}, {"_id": 0})
+    return True if not doc else bool(doc.get("value", True))
+
+
+def _rank_display(c: dict) -> str:
+    if c.get("show_in_rankings") is False:
+        return f"Anónimo (Sócio #{c.get('member_number') or '—'})"
+    return c.get("name") or "—"
+
+
+def _rank_rows(rows: list, key: str, label) -> list:
+    ranked = sorted(
+        [r for r in rows if r.get(key, 0) > 0],
+        key=lambda r: (-r.get(key, 0), -r.get("days", 0), str(r.get("member_number") or "999999")),
+    )[:5]
+    return [{**r, "rank": i + 1, "badge": RANK_BADGES.get(i + 1), "value": r.get(key, 0)}
+            for i, r in enumerate(ranked)]
+
+
+async def _rankings_tables(year: int, month: int) -> dict:
+    start = f"{year}-{month:02d}-01"
+    end = f"{year + 1}-01-01" if month == 12 else f"{year}-{month + 1:02d}-01"
+    products = {p["id"]: p for p in await db.products.find({}, {"_id": 0, "id": 1, "category": 1}).to_list(3000)}
+    sales = await db.sales.find(
+        {"created_at": {"$gte": start, "$lt": end}},
+        {"_id": 0, "client_id": 1, "items": 1, "group_items": 1, "source": 1, "is_member_at_sale": 1},
+    ).to_list(20000)
+    agg: dict = {}
+    for s in sales:
+        if not s.get("is_member_at_sale") or s.get("source") == "quota":
+            continue
+        cid = s.get("client_id")
+        if not cid:
+            continue
+        row = agg.setdefault(cid, {"alcohol": 0, "soft": 0})
+        for it in (s.get("group_items") or s.get("items") or []):
+            pid = it.get("product_id") or ""
+            if pid.startswith("quota-") or pid.startswith("group-"):
+                continue
+            cat = (products.get(pid) or {}).get("category") or ""
+            qty = int(it.get("quantity") or 0)
+            if cat in RANK_ALCOHOL_CATEGORIES:
+                row["alcohol"] += qty
+            elif cat in RANK_SOFT_CATEGORIES:
+                row["soft"] += qty
+    presences = await db.presences.find(
+        {"date": {"$gte": start, "$lt": end}}, {"_id": 0, "client_id": 1, "date": 1}
+    ).to_list(20000)
+    pdays: dict = {}
+    for p in presences:
+        pdays.setdefault(p["client_id"], set()).add(p["date"])
+    ids = set(agg) | set(pdays)
+    clients = {c["id"]: c for c in await db.clients.find(
+        {"id": {"$in": list(ids)}}, {"_id": 0, "pin_hash": 0}
+    ).to_list(len(ids) or 1)} if ids else {}
+    rows = []
+    for cid in ids:
+        c = clients.get(cid)
+        if not c or not c.get("is_member"):
+            continue
+        row = agg.get(cid, {"alcohol": 0, "soft": 0})
+        days = pdays.get(cid, set())
+        rows.append({
+            "client_id": cid,
+            "name": _rank_display(c),
+            "member_number": c.get("member_number"),
+            "alcohol": row["alcohol"],
+            "soft": row["soft"],
+            "consumptions": row["alcohol"] + row["soft"],
+            "days": len(days),
+            "streak": _best_streak(days),
+        })
+
+    # Badges do mês (atualização em tempo real ao servir um pedido)
+    top_consumption = sorted(
+        [r for r in rows if r["consumptions"] > 0],
+        key=lambda r: (-r["consumptions"], -r["days"], str(r.get("member_number") or "999999")),
+    )[:5]
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for i, r in enumerate(top_consumption):
+        await db.ranking_awards.update_one(
+            {"year": year, "month": month, "client_id": r["client_id"]},
+            {"$set": {
+                "id": f"{year}-{month:02d}-{r['client_id']}", "year": year, "month": month,
+                "client_id": r["client_id"], "rank": i + 1, "label": RANK_BADGES.get(i + 1),
+                "consumptions": r["consumptions"], "days": r["days"], "updated_at": now_iso,
+            }},
+            upsert=True,
+        )
+    awards = await db.ranking_awards.find({}, {"_id": 0}).to_list(5000)
+    medal_map: dict = {}
+    for a in awards:
+        medal_map.setdefault(a["client_id"], []).append(a)
+    for r in rows:
+        medals = sorted(medal_map.get(r["client_id"], []), key=lambda a: (a.get("year", 0), a.get("month", 0)), reverse=True)
+        r["medals"] = len(medals)
+        r["medal_list"] = [
+            {"year": a.get("year"), "month": a.get("month"), "rank": a.get("rank"),
+             "label": a.get("label"), "month_label": f"{MONTHS_FULL_PT[int(a.get('month', 1)) - 1]} {a.get('year')}"}
+            for a in medals
+        ]
+    for r in rows:
+        r.pop("alcohol_units", None)
+    return {
+        "year": year,
+        "month": month,
+        "month_label": f"{MONTHS_FULL_PT[month - 1]} {year}",
+        "tables": {
+            "medals": [{**r, "rank": i + 1, "value": r["medals"],
+                        "value_label": f"{r['medals']} medalha{'s' if r['medals'] != 1 else ''}"}
+                       for i, r in enumerate(sorted(
+                           [r for r in rows if r["medals"] > 0],
+                           key=lambda r: (-r["medals"], str(r.get("member_number") or "999999")),
+                       )[:5])],
+            "streak": [{**r, "value_label": f"{r['streak']} dia{'s' if r['streak'] != 1 else ''} seguido{'s' if r['streak'] != 1 else ''} · {r['days']} presença{'s' if r['days'] != 1 else ''}"}
+                       for r in _rank_rows(rows, "streak", None)],
+            "alcohol": [{**r, "value_label": f"{r['alcohol']} consumo{'s' if r['alcohol'] != 1 else ''}"} for r in _rank_rows(rows, "alcohol", None)],
+            "nonalcohol": [{**r, "value_label": f"{r['soft']} consumo{'s' if r['soft'] != 1 else ''}"} for r in _rank_rows(rows, "soft", None)],
+        },
+    }
+
+
+@api_router.get("/rankings")
+async def staff_rankings(user: dict = Depends(get_current_user)):
+    """Consulta do staff (direção/balcão) — sempre disponível."""
+    today = _lisbon_today()
+    data = await _rankings_tables(today.year, today.month)
+    return {"enabled": await _rankings_enabled(), **data}
+
+
+class RankingsSettingsIn(BaseModel):
+    enabled: bool
+
+
+@api_router.get("/rankings/settings")
+async def get_rankings_settings(user: dict = Depends(get_current_user)):
+    return {"enabled": await _rankings_enabled()}
+
+
+@api_router.put("/rankings/settings")
+async def set_rankings_settings(body: RankingsSettingsIn, user: dict = Depends(require_role("admin"))):
+    await db.club_settings.update_one(
+        {"id": "rankings_enabled"},
+        {"$set": {"id": "rankings_enabled", "value": bool(body.enabled),
+                  "updated_at": datetime.now(timezone.utc).isoformat(), "updated_by": user["email"]}},
+        upsert=True,
+    )
+    await _audit("rankings_settings", user["email"], entity="club_settings", entity_id="rankings_enabled",
+                 summary=f"Rankings {'ativados' if body.enabled else 'desativados'}")
+    return {"enabled": bool(body.enabled)}
+
+
+class SocioPrivacyIn(BaseModel):
+    show_in_rankings: bool
+
+
+@api_router.put("/socio/privacy")
+async def socio_privacy(body: SocioPrivacyIn, socio: dict = Depends(get_current_socio)):
+    await db.clients.update_one(
+        {"id": socio["id"]}, {"$set": {"show_in_rankings": bool(body.show_in_rankings)}}
+    )
+    return {"show_in_rankings": bool(body.show_in_rankings)}
+
+
+@api_router.get("/socio/rankings")
+async def socio_rankings(socio: dict = Depends(get_current_socio)):
+    """Tabela de Feitos na App Sócio — só para cotas em dia (🟢)."""
+    badges = await db.ranking_awards.find(
+        {"client_id": socio["id"]}, {"_id": 0}
+    ).sort([("year", -1), ("month", -1)]).to_list(50)
+    my_badge = None
+    if badges:
+        b = badges[0]
+        my_badge = {**b, "month_label": f"{MONTHS_FULL_PT[int(b.get('month', 1)) - 1]} {b.get('year')}"}
+    enabled = await _rankings_enabled()
+    if not enabled:
+        return {"enabled": False, "allowed": False, "my_badge": my_badge,
+                "reason": "Os rankings estão desativados pela direção."}
+    qs = await _quota_overall_status(socio["id"])
+    if not qs or qs.get("status") != "paid":
+        return {"enabled": True, "allowed": False, "my_badge": my_badge, "quota_status": qs,
+                "reason": "A Tabela de Feitos é exclusiva para sócios com quotas em dia. Regulariza as tuas quotas para consultar os rankings."}
+    today = _lisbon_today()
+    data = await _rankings_tables(today.year, today.month)
+    return {"enabled": True, "allowed": True, "my_badge": my_badge,
+            "show_in_rankings": socio.get("show_in_rankings") is not False, **data}
 
 
 # ---------- Mount ----------

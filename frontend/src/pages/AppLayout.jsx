@@ -33,6 +33,7 @@ import {
   Gift,
   LockSimple,
   LockSimpleOpen,
+  Trophy,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import HeaderAlerts from "../components/HeaderAlerts";
@@ -69,6 +70,7 @@ const navGroups = [
     section: "Clientes",
     items: [
       { to: "/clientes", label: "Clientes e Sócios", icon: Users, testid: "nav-clients", roles: [...STAFF_ROLES, "funcionario"] },
+      { to: "/rankings", label: "Tabela de Feitos", icon: Trophy, testid: "nav-rankings", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/mbway", label: "MBWay", icon: DeviceMobile, testid: "nav-mbway", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/pedidos", label: "Pedidos sócio", icon: ShoppingCart, testid: "nav-pedidos", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/mensagens", label: "Mensagens", icon: ChatCircle, testid: "nav-mensagens", roles: [...STAFF_ROLES, "funcionario"] },
@@ -180,7 +182,7 @@ function BarStatusButton() {
           }
           setConfirmOpen(true);
         }}
-        title={`Bar ${isOpen ? "aberto" : "fechado"} — clique no interruptor para ${isOpen ? "fechar" : "abrir"} · valor em caixa ${euro(bar.cash_in_drawer)}`}
+        title={`Bar ${isOpen ? "aberto" : "fechado"} — clique no interruptor para ${isOpen ? "fechar" : "abrir"}`}
         className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-bold border transition-colors ${
           isOpen
             ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/25"
@@ -189,7 +191,6 @@ function BarStatusButton() {
       >
         <BarIcon size={14} weight="duotone" />
         <span className="hidden md:inline">Bar {isOpen ? "aberto" : "fechado"}</span>
-        <span className="font-mono font-normal text-[11px] opacity-80">{euro(bar.cash_in_drawer)}</span>
         <span
           data-testid="bar-status-switch"
           className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${isOpen ? "bg-emerald-500" : "bg-slate-600"}`}

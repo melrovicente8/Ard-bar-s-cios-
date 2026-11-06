@@ -6,6 +6,7 @@ import { printCreditNoteTicket } from "../lib/tickets";
 import PaymentModal from "../components/PaymentModal";
 import SecondCopyDialog from "../components/SecondCopyDialog";
 import QuotaBall from "../components/QuotaBall";
+import PresenceCalendar from "../components/PresenceCalendar";
 import {
   ArrowLeft,
   CurrencyEur,
@@ -108,6 +109,19 @@ export default function ClienteFicha() {
   const [showProfileExtra, setShowProfileExtra] = useState(false);
   const [profileForm, setProfileForm] = useState({ birthday: "", photo_data: "" });
   const [showAccess, setShowAccess] = useState(false);
+  const [showPresences, setShowPresences] = useState(false);
+  const [presences, setPresences] = useState(null);
+
+  const openPresences = async () => {
+    setShowPresences(true);
+    setPresences(null);
+    try {
+      const { data } = await api.get(`/clients/${id}/presences`);
+      setPresences(data);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
 
   const loadQuotas = async (year = quotaYear) => {
     try {
@@ -786,6 +800,15 @@ export default function ClienteFicha() {
                   <Crown size={14} weight="fill" /> Direção · {c.direction_role}
                 </span>
               )}
+              {c.ranking_badge && (
+                <span
+                  data-testid="ficha-ranking-badge"
+                  title={`Distinção da Tabela de Feitos · ${c.ranking_badge.month_label}`}
+                  className="px-3 py-1 rounded-full text-xs font-bold bg-amber-500/15 text-amber-200 border border-amber-500/40 flex items-center gap-1.5"
+                >
+                  {c.ranking_badge.label} · {c.ranking_badge.month_label}
+                </span>
+              )}
               {canEditAll && c.pin_visible && (
                 <span
                   className="px-3 py-1 rounded-full text-xs font-bold bg-blue-500/15 text-blue-300 border border-blue-500/30 flex items-center gap-1.5"
@@ -824,6 +847,18 @@ export default function ClienteFicha() {
               >
                 <Clock size={13} weight="duotone" />
                 Último acesso à app do sócio: {new Date(c.socio_last_access).toLocaleString("pt-PT")} · ver histórico
+              </button>
+            )}
+            {(c.is_member || c.member_number) && (
+              <button
+                type="button"
+                data-testid="ficha-presences-btn"
+                onClick={openPresences}
+                className="text-xs text-slate-400 hover:text-amber-300 mt-1 flex items-center gap-1.5"
+                title="Presenças na sede (calendário e streak) tal como o sócio vê na app"
+              >
+                <CalendarBlank size={13} weight="duotone" />
+                Presenças na sede · calendário e streak
               </button>
             )}
             {(c.direction_history || []).length > 0 && (
@@ -2199,6 +2234,23 @@ export default function ClienteFicha() {
               ))}
             </div>
             <button onClick={() => setShowAccess(false)} className="mt-3 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm">Fechar</button>
+          </div>
+        </div>
+      )}
+
+      {showPresences && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setShowPresences(false)} data-testid="ficha-presences-modal">
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg p-5 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center gap-2 mb-3">
+              <CalendarBlank size={20} weight="duotone" className="text-amber-400" />
+              <h3 className="font-outfit text-xl font-semibold flex-1">Presenças na sede</h3>
+              <span className="text-xs text-slate-500">{c.name}</span>
+            </div>
+            <p className="text-xs text-slate-400 mb-3">
+              Igual ao que o sócio vê na app: cada dia com pelo menos um pedido servido conta como presença.
+            </p>
+            {presences ? <PresenceCalendar data={presences} /> : <div className="text-sm text-slate-500 py-6 text-center">A carregar...</div>}
+            <button onClick={() => setShowPresences(false)} className="mt-3 w-full px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm">Fechar</button>
           </div>
         </div>
       )}

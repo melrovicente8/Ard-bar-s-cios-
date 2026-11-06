@@ -36,9 +36,12 @@ import {
   Lightning,
   Trash,
   CheckCircle,
+  Trophy,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import CommunityChat from "../components/CommunityChat";
+import PresenceCalendar from "../components/PresenceCalendar";
+import RankingsBoard from "../components/RankingsBoard";
 import SocioDigitalCard from "../components/SocioDigitalCard";
 import SocioMerch from "../components/SocioMerch";
 import SocioFamily from "../components/SocioFamily";
@@ -132,6 +135,13 @@ export default function SocioPortal() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [showPin, setShowPin] = useState(false);
   const [pinForm, setPinForm] = useState({ current: "", next: "", confirm: "" });
+  // Presenças na sede (calendário + streak) e Tabela de Feitos
+  const [presences, setPresences] = useState(null);
+  const [showPresences, setShowPresences] = useState(false);
+  const [presencePopup, setPresencePopup] = useState(null);
+  const [rankings, setRankings] = useState(null);
+  const [showRankings, setShowRankings] = useState(false);
+  const [savingPrivacy, setSavingPrivacy] = useState(false);
 
   const loadMyRequests = async () => {
     try {
@@ -149,6 +159,44 @@ export default function SocioPortal() {
     } catch { /* ignore */ }
   };
 
+  const loadPresences = async () => {
+    try {
+      const { data: p } = await api.get("/socio/presences");
+      setPresences(p);
+      if (p?.popup) setPresencePopup(p.popup);
+    } catch { /* sem presenças registadas */ }
+  };
+
+  const openRankings = async () => {
+    setShowRankings(true);
+    try {
+      const { data: r } = await api.get("/socio/rankings");
+      setRankings(r);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+      setRankings(null);
+    }
+  };
+
+  const dismissPresencePopup = async () => {
+    setPresencePopup(null);
+    api.post("/socio/presences/seen").catch(() => {});
+  };
+
+  const setRankingPrivacy = async (value) => {
+    setSavingPrivacy(true);
+    try {
+      await api.put("/socio/privacy", { show_in_rankings: value });
+      setRankings((r) => (r ? { ...r, show_in_rankings: value } : r));
+      await refresh();
+      toast.success(value ? "Passas a aparecer nos rankings do clube" : "Nos rankings apareces como Anónimo");
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setSavingPrivacy(false);
+    }
+  };
+
   useEffect(() => {
     api.get("/club/info").then((r) => setClub(r.data)).catch(() => {});
     api.get("/socio/bar-status").then((r) => setBarOpen(!!r.data.open)).catch(() => setBarOpen(null));
@@ -162,6 +210,14 @@ export default function SocioPortal() {
     loadMyRequests();
     loadNotifications();
   }, []);
+
+  // Presenças: carrega ao entrar e atualiza (pop-up em tempo real quando o pedido é servido)
+  useEffect(() => {
+    if (!data || !data.client) return undefined;
+    loadPresences();
+    const t = setInterval(loadPresences, 45000);
+    return () => clearInterval(t);
+  }, [data]);
 
   useEffect(() => {
     if (data === false) navigate("/socio/login", { replace: true });
@@ -262,6 +318,7 @@ export default function SocioPortal() {
       api.get("/socio/can-see-finance").then((r) => setCanSeeFinance(!!r.data.can_see)).catch(() => {});
       loadMyRequests();
       loadNotifications();
+      loadPresences();
       toast.success("Dados atualizados");
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
@@ -977,6 +1034,54 @@ export default function SocioPortal() {
                 })()}
               </div>
             )}
+
+            <div
+              onClick={() => setShowPresences(true)}
+              data-testid="socio-presences-card"
+              title="Ver o mapa de presenças na sede e o teu streak"
+              className="bg-slate-950/60 border border-amber-500/30 hover:border-amber-500/60 rounded-xl p-5 transition-colors cursor-pointer"
+            >
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80 flex items-center gap-1.5">
+                <CalendarBlank size={11} weight="fill" /> As Minhas Presenças
+                <span className="text-amber-300/70 normal-case ml-auto">Calendário ›</span>
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span data-testid="socio-presence-streak" className="font-outfit text-4xl font-bold text-amber-300">
+                  {presences?.streak ?? 0}
+                </span>
+                <span className="text-slate-500 text-sm">dias seguidos</span>
+              </div>
+              <div className="text-[10px] text-slate-500 mt-2">
+                {presences?.next_reward_day
+                  ? `Faltam ${presences.days_to_next} dia(s) para +${(presences.rewards || []).find((r) => r.day === presences.next_reward_day)?.points || 0} pts`
+                  : "Escalão máximo do streak atingido"}
+              </div>
+              {presences?.points_blocked && (
+                <div className="text-[10px] text-amber-300 mt-1">Pontos do streak bloqueados até regularizares as cotas</div>
+              )}
+            </div>
+            <div
+              onClick={openRankings}
+              data-testid="socio-rankings-card"
+              title="Consultar a Tabela de Feitos (só cotas em dia)"
+              className="bg-slate-950/60 border border-slate-800 hover:border-amber-500/60 rounded-xl p-5 transition-colors cursor-pointer"
+            >
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80 flex items-center gap-1.5">
+                <Trophy size={11} weight="duotone" /> Tabela de Feitos
+                <span className="text-amber-300/70 normal-case ml-auto">Ver ›</span>
+              </div>
+              <div className="mt-2 font-outfit text-2xl font-bold text-amber-200">Rankings Top 5</div>
+              <div className="text-[10px] text-slate-500 mt-1">
+                Residentes da Casa · Mestres da Sede · Hidratados &amp; Acafeinados
+              </div>
+              {c.ranking_badge ? (
+                <div className="text-[10px] text-amber-300 mt-1 truncate" data-testid="socio-ranking-badge">
+                  {c.ranking_badge.label} · {c.ranking_badge.month_label}
+                </div>
+              ) : (
+                <div className="text-[10px] text-slate-500 mt-1">{c.quota_status?.status === "paid" ? "Consulta disponível" : "🔒 Exclusivo para cotas em dia"}</div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1135,6 +1240,20 @@ export default function SocioPortal() {
                 <div className="text-slate-200">{c.morada || <span className="text-slate-500">—</span>}</div>
               )}
             </Field>
+          </div>
+          <div className="mt-4 pt-4 border-t border-slate-800 flex items-center gap-2" data-testid="socio-ranking-privacy">
+            <input
+              id="socio-ranking-privacy-check"
+              type="checkbox"
+              checked={c.show_in_rankings !== false}
+              disabled={savingPrivacy}
+              onChange={(e) => setRankingPrivacy(e.target.checked)}
+              className="accent-amber-500"
+            />
+            <label htmlFor="socio-ranking-privacy-check" className="text-xs text-slate-400 cursor-pointer">
+              Aparecer nos Rankings do Clube
+              <span className="text-slate-500"> — se desativado apareces como Anónimo (Sócio #{c.member_number || "—"})</span>
+            </label>
           </div>
         </div>
 
@@ -2421,6 +2540,90 @@ export default function SocioPortal() {
               <button data-testid="socio-pin-submit" type="submit" className="flex-1 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold">Alterar PIN</button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* As Minhas Presenças — calendário do mês + streak */}
+      {showPresences && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-sm p-4" onClick={() => setShowPresences(false)} data-testid="socio-presences-modal">
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg p-5 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center gap-2 mb-3">
+              <CalendarBlank size={20} weight="duotone" className="text-amber-400" />
+              <h3 className="font-outfit text-xl font-semibold flex-1">As Minhas Presenças</h3>
+              <button onClick={() => setShowPresences(false)} className="p-1.5 rounded bg-slate-800"><X size={14} weight="bold" /></button>
+            </div>
+            <p className="text-xs text-slate-400 mb-3">
+              Conta como presença cada dia com pelo menos um pedido servido na sede. A sequência reinicia quando há um dia sem registo.
+            </p>
+            <PresenceCalendar data={presences} />
+          </div>
+        </div>
+      )}
+
+      {/* Pop-up de progresso do streak (em tempo real quando o pedido é servido) */}
+      {presencePopup && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/85 backdrop-blur-sm p-4" onClick={dismissPresencePopup} data-testid="socio-presence-popup">
+          <div onClick={(e) => e.stopPropagation()} className="bg-gradient-to-br from-emerald-600/20 via-slate-900 to-amber-500/15 border border-emerald-500/40 rounded-2xl w-full max-w-md p-6 text-center">
+            <div className="text-5xl mb-2">🏆</div>
+            <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-emerald-300/80">Presença registada</div>
+            <p className="mt-2 text-lg font-outfit font-semibold text-slate-100" data-testid="socio-presence-popup-text">
+              Bateste mais um penalty! <span className="text-amber-300">{presencePopup.streak} dia{presencePopup.streak === 1 ? "" : "s"} seguido{presencePopup.streak === 1 ? "" : "s"}</span> a marcar golo.
+              {presencePopup.next_reward_day
+                ? ` Faltam ${presencePopup.days_to_next} dia${presencePopup.days_to_next === 1 ? "" : "s"} para limpares a próxima recompensa em pontos.`
+                : " Já levantaste todas as recompensas do streak."}
+              {" "}Nem o presidente tem tanta assiduidade! 😜🏆
+            </p>
+            {presencePopup.reward_points > 0 && (
+              <div className="mt-3 text-sm font-bold text-emerald-300">
+                {presencePopup.reward_status === "granted"
+                  ? `+${presencePopup.reward_points} pontos creditados`
+                  : "Recompensa bloqueada até regularizares as cotas"}
+              </div>
+            )}
+            <button
+              data-testid="socio-presence-popup-close"
+              onClick={dismissPresencePopup}
+              className="mt-4 w-full py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold"
+            >
+              Vamos a isso!
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Tabela de Feitos — só cotas em dia */}
+      {showRankings && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/85 backdrop-blur-sm p-4 overflow-y-auto" onClick={() => setShowRankings(false)} data-testid="socio-rankings-modal">
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-4xl p-5 my-6">
+            <div className="flex items-center gap-2 mb-3">
+              <Trophy size={20} weight="duotone" className="text-amber-400" />
+              <h3 className="font-outfit text-xl font-semibold flex-1">Tabela de Feitos</h3>
+              <button onClick={() => setShowRankings(false)} className="p-1.5 rounded bg-slate-800"><X size={14} weight="bold" /></button>
+            </div>
+            {!rankings ? (
+              <div className="text-sm text-slate-500 py-8 text-center">A carregar rankings...</div>
+            ) : rankings.allowed ? (
+              <RankingsBoard data={rankings} />
+            ) : (
+              <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-5 text-center" data-testid="socio-rankings-locked">
+                <div className="text-4xl mb-2">🔒</div>
+                <p className="text-sm text-amber-200">{rankings.reason}</p>
+              </div>
+            )}
+            <div className="mt-4 pt-4 border-t border-slate-800 flex items-center gap-2">
+              <input
+                id="socio-ranking-privacy-modal"
+                type="checkbox"
+                checked={rankings?.show_in_rankings !== false}
+                disabled={savingPrivacy || !rankings}
+                onChange={(e) => setRankingPrivacy(e.target.checked)}
+                className="accent-amber-500"
+              />
+              <label htmlFor="socio-ranking-privacy-modal" className="text-xs text-slate-400 cursor-pointer">
+                Aparecer nos Rankings do Clube (desativado = Anónimo)
+              </label>
+            </div>
+          </div>
         </div>
       )}
     </div>

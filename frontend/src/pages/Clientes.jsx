@@ -84,9 +84,12 @@ export default function Clientes() {
   };
 
   const year = new Date().getFullYear();
+  // Cotas "em dia" seguem o estado real (🟢 = todos os meses vencidos pagos),
+  // não a contagem X/12 — em novembro 10/12 pode já estar em dia.
+  const quotaPaid = (c) => (c.quota_status ? c.quota_status.status === "paid" : !!c.quotas_up_to_date);
   const stats = (() => {
     const socios = clients.filter((c) => c.is_member || c.member_number);
-    const uptodate = socios.filter((c) => c.quotas_up_to_date).length;
+    const uptodate = socios.filter(quotaPaid).length;
     const debt = socios.reduce((s, c) => s + Math.max(c.balance || 0, 0), 0);
     const points = clients.reduce((s, c) => s + (c.points || 0), 0);
     return { total: socios.length, uptodate, behind: socios.length - uptodate, debt, points };
@@ -96,8 +99,8 @@ export default function Clientes() {
   const byType = (c) => {
     if (filterType === "socios") return !!(c.is_member || c.member_number);
     if (filterType === "clientes") return !c.is_member && !c.member_number;
-    if (filterType === "uptodate") return !!c.quotas_up_to_date;
-    if (filterType === "notuptodate") return !!(c.is_member || c.member_number) && !c.quotas_up_to_date;
+    if (filterType === "uptodate") return !!(c.is_member || c.member_number) && quotaPaid(c);
+    if (filterType === "notuptodate") return !!(c.is_member || c.member_number) && !quotaPaid(c);
     if (filterType === "debt") return (c.balance || 0) > 0.004;
     return true;
   };
@@ -307,7 +310,7 @@ export default function Clientes() {
                       </td>
                       <td className="px-4 py-2.5" data-testid={`quotas-cell-${c.id}`}>
                         {c.is_member || c.member_number ? (
-                          c.quotas_up_to_date ? (
+                          quotaPaid(c) ? (
                             <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">✓ {c.quotas_paid || 0}/12</span>
                           ) : (
                             <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-200 border border-amber-500/30">{c.quotas_paid || 0}/12</span>
@@ -376,7 +379,7 @@ export default function Clientes() {
                         </span>
                       )}
                       {(c.is_member || c.member_number) && (
-                        c.quotas_up_to_date ? (
+                        quotaPaid(c) ? (
                           <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">✓ {c.quotas_paid || 0}/12</span>
                         ) : (
                           <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-200 border border-amber-500/30">{c.quotas_paid || 0}/12</span>

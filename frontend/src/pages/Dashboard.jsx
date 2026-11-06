@@ -194,7 +194,7 @@ export default function Dashboard() {
         <StatCard
           testid="kpi-outstanding"
           icon={ReceiptX}
-          label="A receber clientes"
+          label="Valores em dívida"
           value={euro(data.outstanding_debt)}
           accent="bg-rose-500/10 text-rose-400"
           to="/dividas"

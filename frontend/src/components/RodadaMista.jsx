@@ -41,7 +41,7 @@ export default function RodadaMista({ onClose, onChanged }) {
   const [methodByRound, setMethodByRound] = useState({});
   const [splitOpen, setSplitOpen] = useState(false);
   const [splitMode, setSplitMode] = useState("equal");
-  const [itemOwner, setItemOwner] = useState({}); // product_id -> client_id
+  const [unitOwner, setUnitOwner] = useState({}); // chave da unidade -> client_id (uma linha por unidade)
   const [memberMethod, setMemberMethod] = useState({}); // client_id -> account|cash|mbway
   const [receipt, setReceipt] = useState(null);
 
@@ -159,20 +159,53 @@ export default function RodadaMista({ onClose, onChanged }) {
     }
   };
 
-  // Itens acumulados das rodadas em aberto (para divisão por consumo)
-  const splitRows = useMemo(() => {
-    const map = {};
+  // Consumos das rodadas em aberto — UMA linha por unidade (3 colas = 3 linhas, cada uma para o seu sócio)
+  const splitUnits = useMemo(() => {
+    const units = [];
     openRounds.forEach((r) => (r.items || []).forEach((it) => {
-      if (!map[it.product_id]) map[it.product_id] = { ...it, quantity: 0, subtotal: 0 };
-      map[it.product_id].quantity += it.quantity;
-      map[it.product_id].subtotal += it.subtotal;
+      const qty = Number(it.quantity || 0);
+      const unitPrice = Number(it.unit_price || 0);
+      for (let i = 0; i < qty; i += 1) {
+        units.push({
+          key: `${r.number}-${it.product_id}-${i}`,
+          round: r.number,
+          product_id: it.product_id,
+          product_name: it.product_name,
+          unit_price: unitPrice,
+        });
+      }
     }));
-    return Object.values(map);
+    return units;
   }, [openRounds]);
 
-  const splitAssignedTotal = splitRows
-    .filter((it) => itemOwner[it.product_id])
-    .reduce((s, it) => s + it.subtotal, 0);
+  const splitAssignedTotal = splitUnits
+    .filter((u) => unitOwner[u.key])
+    .reduce((s, u) => s + u.unit_price, 0);
+
+  const memberAssigned = useMemo(() => {
+    const map = {};
+    splitUnits.forEach((u) => {
+      const owner = unitOwner[u.key];
+      if (owner) map[owner] = (map[owner] || 0) + u.unit_price;
+    });
+    return map;
+  }, [splitUnits, unitOwner]);
+
+  const addMember = async (clientId) => {
+    if (!table || busy) return;
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/group-tables/${table.id}/members`, { member_ids: [clientId] });
+      setTable(data);
+      setMemberSearch("");
+      await load();
+      toast.success("Sócio juntou-se à mesa");
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const submitSplit = async () => {
     setBusy(true);
@@ -186,11 +219,13 @@ export default function RodadaMista({ onClose, onChanged }) {
           return toast.error(`Faltam ${euro(openTotal - splitAssignedTotal)} por atribuir`);
         }
         const byMember = {};
-        splitRows.forEach((it) => {
-          const owner = itemOwner[it.product_id];
+        splitUnits.forEach((u) => {
+          const owner = unitOwner[u.key];
           if (!owner) return;
           byMember[owner] = byMember[owner] || [];
-          byMember[owner].push({ product_id: it.product_id, quantity: it.quantity });
+          const line = byMember[owner].find((x) => x.product_id === u.product_id);
+          if (line) line.quantity += 1;
+          else byMember[owner].push({ product_id: u.product_id, quantity: 1 });
         });
         payload.items_by_member = byMember;
       }
@@ -395,6 +430,12 @@ export default function RodadaMista({ onClose, onChanged }) {
                       </span>
                       <strong className="text-amber-300 ml-auto">{euro(r.total)}</strong>
                     </div>
+                    <div className="text-[10px] text-slate-500 mt-1" data-testid={`rodada-members-${r.number}`}>
+                      À mesa: {(table.members || [])
+                        .filter((m) => (m.joined_round || 1) <= r.number)
+                        .map((m) => `${m.name.split(" ")[0]}${(m.joined_round || 1) === r.number && r.number > 1 ? " (juntou-se)" : ""}`)
+                        .join(" · ")}
+                    </div>
                     <ul className="text-[11px] text-slate-400 mt-1">
                       {(r.items || []).map((it, i) => (
                         <li key={i}>{it.quantity}× {it.product_name} · {euro(it.subtotal)}</li>
@@ -470,6 +511,37 @@ export default function RodadaMista({ onClose, onChanged }) {
 
             {/* Adicionar rodada */}
             <aside className="space-y-3">
+              {table.status === "open" && (
+                <div className="border border-slate-800 rounded-lg p-2.5 space-y-2" data-testid="rodada-add-member">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 flex items-center gap-1.5">
+                    <Users size={11} weight="duotone" /> Juntar sócio à mesa
+                  </div>
+                  <input
+                    data-testid="rodada-add-member-search"
+                    value={memberSearch}
+                    onChange={(e) => setMemberSearch(e.target.value)}
+                    placeholder="Procurar sócio / nº sócio..."
+                    className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-sky-500/50"
+                  />
+                  <div className="max-h-32 overflow-y-auto divide-y divide-slate-800/60">
+                    {filteredSocios
+                      .filter((c) => !(table.members || []).some((m) => m.client_id === c.id))
+                      .slice(0, 25)
+                      .map((m) => (
+                        <button
+                          key={m.id}
+                          data-testid={`rodada-add-member-${m.id}`}
+                          onClick={() => addMember(m.id)}
+                          disabled={busy}
+                          className="w-full text-left px-1.5 py-1.5 text-xs text-slate-300 hover:bg-slate-800/60 flex items-center justify-between gap-2 disabled:opacity-40"
+                        >
+                          <span className="truncate">{m.name}{m.member_number ? ` · nº ${m.member_number}` : ""}</span>
+                          <Plus size={11} weight="bold" className="text-sky-400 shrink-0" />
+                        </button>
+                      ))}
+                  </div>
+                </div>
+              )}
               <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Nova rodada</h3>
               <div className="relative">
                 <MagnifyingGlass size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
@@ -548,22 +620,30 @@ export default function RodadaMista({ onClose, onChanged }) {
 
             {splitMode === "items" && (
               <div className="space-y-2 mb-4">
-                <div className="text-[11px] text-slate-500">Atribui cada consumo ao sócio que o fez</div>
-                {splitRows.map((it) => (
-                  <div key={it.product_id} className="flex items-center gap-2 text-xs">
-                    <span className="flex-1 truncate">{it.quantity}× {it.product_name} · {euro(it.subtotal)}</span>
-                    <select
-                      value={itemOwner[it.product_id] || ""}
-                      onChange={(e) => setItemOwner({ ...itemOwner, [it.product_id]: e.target.value })}
-                      className="bg-slate-950 border border-slate-800 rounded px-2 py-1 text-white"
-                    >
-                      <option value="">— quem consumiu —</option>
-                      {(table.members || []).map((m) => (
-                        <option key={m.client_id} value={m.client_id}>{m.name.split(" ")[0]}</option>
-                      ))}
-                    </select>
-                  </div>
-                ))}
+                <div className="text-[11px] text-slate-500">
+                  Cada unidade é atribuída à parte — 3 colas podem ficar para 3 sócios diferentes.
+                </div>
+                <div className="max-h-64 overflow-y-auto space-y-1.5 pr-1">
+                  {splitUnits.map((u) => (
+                    <div key={u.key} className="flex items-center gap-2 text-xs">
+                      <span className="flex-1 truncate">
+                        {u.product_name}
+                        <span className="text-slate-500"> · rodada {u.round} · {euro(u.unit_price)}</span>
+                      </span>
+                      <select
+                        data-testid={`rodada-split-unit-${u.key}`}
+                        value={unitOwner[u.key] || ""}
+                        onChange={(e) => setUnitOwner({ ...unitOwner, [u.key]: e.target.value })}
+                        className="bg-slate-950 border border-slate-800 rounded px-2 py-1 text-white"
+                      >
+                        <option value="">— quem consumiu —</option>
+                        {(table.members || []).map((m) => (
+                          <option key={m.client_id} value={m.client_id}>{m.name.split(" ")[0]}</option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
                 <div className="text-[11px] text-slate-500">Atribuído: {euro(splitAssignedTotal)} de {euro(openTotal)}</div>
               </div>
             )}
@@ -574,8 +654,10 @@ export default function RodadaMista({ onClose, onChanged }) {
                 <div key={m.client_id} className="flex items-center gap-2 text-xs">
                   <span className="flex-1 truncate">
                     {m.name.split(" ")[0]}{m.member_number ? ` nº ${m.member_number}` : ""}
-                    {splitMode === "equal" && (
+                    {splitMode === "equal" ? (
                       <span className="text-slate-500"> · {euro(openTotal / (table.members || []).length)}</span>
+                    ) : (
+                      <span className="text-slate-500"> · {euro(memberAssigned[m.client_id] || 0)}</span>
                     )}
                   </span>
                   <select

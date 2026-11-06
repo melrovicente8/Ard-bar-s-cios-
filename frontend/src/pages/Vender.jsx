@@ -6,6 +6,7 @@ import { useAuth } from "../context/AuthContext";
 import OccasionalCards from "../components/OccasionalCards";
 import QuotaBall from "../components/QuotaBall";
 import RodadaMista from "../components/RodadaMista";
+import RodadaMistaCard from "../components/RodadaMistaCard";
 import {
   Plus,
   Minus,
@@ -195,17 +196,14 @@ export default function Vender() {
             <EditableText k="page.vender.title">Vender</EditableText>
           </h1>
         </div>
-        <button
-          data-testid="rodada-mista-btn"
-          onClick={() => setShowRodada(true)}
-          className="px-4 py-2 rounded-lg bg-sky-500/15 text-sky-300 border border-sky-500/30 hover:bg-sky-500/25 text-sm font-bold flex items-center gap-2"
-          title="Abrir uma mesa de grupo (2 ou mais sócios) e dividir a conta ou rodar os pagadores"
-        >
-          <Users size={16} weight="duotone" /> Rodada Mista
-        </button>
       </div>
 
       {showRodada && <RodadaMista onClose={() => setShowRodada(false)} onChanged={load} />}
+
+      {/* Rodada Mista — cartão no mesmo formato do Cliente Ocasional */}
+      <div className="mb-6">
+        <RodadaMistaCard onOpen={() => setShowRodada(true)} refreshKey={cardsVersion} />
+      </div>
 
       {/* Fichas temporárias · Cliente Ocasional / Não Cliente (máx. 3 ativas) */}
       <div className="mb-6">
