@@ -30,6 +30,25 @@ export function printReceipt(tx, extras = {}) {
         )
         .join("")
     : "";
+  // Rodada Mista: o talão descreve o que foi servido em cada rodada e quem estava à mesa
+  const groupRounds = isSale ? tx.group_rounds || [] : [];
+  const groupRoundHtml = groupRounds.length
+    ? groupRounds.map((r) => `
+      <div style="margin-top:6px">
+        <div class="row"><strong>Rodada ${r.number}</strong><strong>${euro(r.total)}</strong></div>
+        ${(r.items || []).map((it) => `<div class="row" style="font-size:11px"><span>&nbsp;&nbsp;${it.quantity}× ${it.product_name} <span class="muted">(${euro(it.unit_price || 0)}/un)</span></span><span>${euro(it.subtotal)}</span></div>`).join("")}
+        ${(r.members_present || []).length ? `<div class="muted">À mesa: ${r.members_present.join(" · ")}</div>` : ""}
+      </div>`).join("")
+    : "";
+  const groupItemsHtml =
+    !groupRounds.length && isSale && (tx.group_items || []).length
+      ? tx.group_items
+          .map((it) => `<div class="row"><span>${it.quantity}× ${it.product_name} <span class="muted">(${euro(it.unit_price || 0)}/un)</span></span><span>${euro(it.subtotal)}</span></div>`)
+          .join("")
+      : "";
+  const saleDetailHtml = groupRoundHtml
+    ? `<div class="muted">Rodada Mista · ${tx.group_label || ""}</div>${groupRoundHtml}`
+    : groupItemsHtml || itemsHtml;
   // Recibo de pagamento com seleção por item: mostra o que foi pago e o que foi oferecido
   const payItemsHtml =
     !isSale && tx.item_targets && tx.item_targets.length
@@ -62,7 +81,12 @@ export function printReceipt(tx, extras = {}) {
     ? `<hr/><div class="muted">Itens consumidos / pagos:</div>${coveredDocs.map((s) => `
         <div style="margin-top:6px">
           <div class="row"><span class="muted">${s.tx_number ? "#" + s.tx_number + " · " : ""}${new Date(s.created_at).toLocaleDateString("pt-PT")}</span><span>${euro(s.applied != null ? s.applied : s.total)}</span></div>
-          ${(s.items || []).map((it) => `<div class="row" style="font-size:11px"><span>&nbsp;&nbsp;· ${it.quantity}× ${it.product_name}</span><span>${euro(it.subtotal)}</span></div>`).join("")}
+          ${(s.rounds || []).length
+            ? (s.rounds || []).map((r) => `
+              <div class="row" style="font-size:11px"><strong>&nbsp;&nbsp;Rodada ${r.number}</strong><span>${euro(r.total)}</span></div>
+              ${(r.items || []).map((it) => `<div class="row" style="font-size:11px"><span>&nbsp;&nbsp;&nbsp;&nbsp;${it.quantity}× ${it.product_name}</span><span>${euro(it.subtotal)}</span></div>`).join("")}
+              ${(r.members_present || []).length ? `<div class="muted">&nbsp;&nbsp;&nbsp;&nbsp;À mesa: ${r.members_present.join(" · ")}</div>` : ""}`).join("")
+            : (s.items || []).map((it) => `<div class="row" style="font-size:11px"><span>&nbsp;&nbsp;· ${it.quantity}× ${it.product_name}</span><span>${euro(it.subtotal)}</span></div>`).join("")}
         </div>`).join("")}`
     : "";
   // Cliente ocasional: nunca mostra o nome/apelido da ficha temporária
@@ -102,7 +126,7 @@ ${!isOccasional && client.member_number ? `<div class="row"><span>Sócio</span><
 ${tx.tutelado ? '<div class="row"><span>Estatuto</span><strong>Sócio Tutelado</strong></div>' : ""}
 ${tx.minor_alcohol_alert ? '<div style="text-align:center;background:#b91c1c;color:#fff;padding:4px;border-radius:3px;margin:6px 0;font-weight:bold">⚠ BEBIDA ALCOÓLICA · SÓCIO TUTELADO</div>' : ""}
 ${quota ? `<div class="row"><span>Cotas</span><strong style="color:${quotaColor[quota.status] || "#000"}">${quota.label}</strong></div>` : ""}
-${isSale ? `<hr/>${itemsHtml}${saleOfferHtml}<hr/>
+${isSale ? `<hr/>${saleDetailHtml}${saleOfferHtml}<hr/>
 <div class="row big"><span>TOTAL</span><span>${euro(tx.total)}</span></div>
 ${saleOfferTotal > 0 ? `<div class="row"><span>Oferta da casa</span><span>−${euro(saleOfferTotal)}</span></div>
 <div class="row big"><span>A PAGAR</span><span>${euro(tx.total - saleOfferTotal)}</span></div>` : ""}

@@ -166,9 +166,9 @@ export default function SocioPortal() {
     } catch { /* ignore */ }
   };
 
-  const loadPresences = async () => {
+  const loadPresences = async (month) => {
     try {
-      const { data: p } = await api.get("/socio/presences");
+      const { data: p } = await api.get("/socio/presences", { params: month ? { month } : {} });
       setPresences(p);
       if (p?.popup) setPresencePopup(p.popup);
     } catch { /* sem presenças registadas */ }
@@ -337,9 +337,7 @@ export default function SocioPortal() {
     await loadNotifications();
     setShowNotifications(true);
     // O sócio abriu as notificações → marca como lidas no servidor (o staff vê a confirmação)
-    api.post("/socio/messages/read", {}).catch(() => {});
-    setNotif((n) => ({ ...n, unread_messages: 0 }));
-    setNotifications((list) => list.map((n) => ({ ...n, read: true })));
+    markNotifsRead();
   };
 
   const reqStatusLabel = { pending: "Pendente", approved: "Aceito · pronto a levantar no balcão", delivered: "Entregue", rejected: "Recusado", cancelled: "Anulado" };
@@ -570,11 +568,19 @@ export default function SocioPortal() {
     }
   };
 
+  // Lidas no servidor assim que o sócio as vê (sino ou lista de mensagens)
+  const markNotifsRead = () => {
+    api.post("/socio/messages/read", {}).catch(() => {});
+    setNotif((n) => ({ ...n, unread_messages: 0 }));
+    setNotifications((list) => list.map((n) => ({ ...n, read: true })));
+  };
+
   const loadMessages = async () => {
     try {
       const { data } = await api.get("/socio/messages");
       setMyMessages(data);
       setShowMessages(true);
+      markNotifsRead();
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
@@ -2619,7 +2625,7 @@ export default function SocioPortal() {
             <p className="text-xs text-slate-400 mb-3">
               Conta como presença cada dia com pelo menos um pedido servido na sede. A sequência reinicia quando há um dia sem registo.
             </p>
-            <PresenceCalendar data={presences} />
+            <PresenceCalendar data={presences} onMonthChange={(m) => loadPresences(m)} />
           </div>
         </div>
       )}

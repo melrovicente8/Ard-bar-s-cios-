@@ -131,7 +131,7 @@ export default function HeaderAlerts() {
       )}
       {pending.memberships > 0 && (
         <Link
-          to="/aderir?filter=pending"
+          to="/clientes?tab=adesao"
           data-testid="header-alert-memberships"
           title="Pedidos de adesão a sócio à espera de aprovação"
           className={`${pill} bg-teal-400 text-slate-950 ring-teal-400/70`}

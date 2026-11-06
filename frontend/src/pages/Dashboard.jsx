@@ -36,7 +36,7 @@ const MASK = "••••";
 
 const isoDate = (d) => d.toISOString().slice(0, 10);
 
-const StatCard = ({ icon: Icon, label, value, accent, testid, to, masked = false, unmaskedDefault = false, forceHidden = false }) => {
+const StatCard = ({ icon: Icon, label, value, accent, testid, to, masked = false, unmaskedDefault = false, forceHidden = false, details = null }) => {
   const [revealed, setRevealed] = useState(unmaskedDefault);
   useEffect(() => {
     if (revealed && masked && !unmaskedDefault) {
@@ -66,6 +66,16 @@ const StatCard = ({ icon: Icon, label, value, accent, testid, to, masked = false
         <div className={`mt-3 font-outfit text-3xl font-bold tracking-tight ${isMasked ? "text-slate-500" : "text-white"}`}>
           {shownValue}
         </div>
+        {details && !isMasked && (
+          <div className="mt-2 space-y-1">
+            {details.map((d) => (
+              <div key={d.label} className="flex items-baseline justify-between gap-3 text-[11px]" data-testid={d.testid}>
+                <span className="text-slate-400">{d.label}</span>
+                <span className="font-bold text-slate-200">{d.value}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       <div className={`p-3 rounded-lg ${accent}`}>
         <Icon size={22} weight="duotone" />
@@ -270,6 +280,10 @@ export default function Dashboard() {
             masked={isDirection}
             unmaskedDefault={!isDirection && !cashHiddenForStaff}
             forceHidden={cashHiddenForStaff}
+            details={[
+              { label: "Numerário", value: euro(cashBank.cash_numerario || 0), testid: "kpi-cash-numerario" },
+              { label: "MBWay", value: euro(cashBank.cash_mbway || 0), testid: "kpi-cash-mbway" },
+            ]}
           />
         )}
         {cashBank && cashBank.bank_balance != null && (
@@ -325,7 +339,7 @@ export default function Dashboard() {
           <div className="flex gap-2 shrink-0">
             {pendingApps > 0 && (
               <Link
-                to="/pedidos"
+                to="/clientes?tab=adesao"
                 data-testid="dashboard-adesao-open-requests"
                 className="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm font-bold transition-colors"
               >

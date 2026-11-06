@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { CalendarBlank, Fire, Trophy, LockSimple, CheckCircle } from "@phosphor-icons/react";
+import { CalendarBlank, Fire, Trophy, LockSimple, CheckCircle, CaretLeft, CaretRight, Cake } from "@phosphor-icons/react";
 
 const WEEKDAYS = ["D", "S", "T", "Q", "Q", "S", "S"];
 const MONTHS_PT = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho",
@@ -9,7 +9,7 @@ const MONTHS_PT = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "
  * Mapa de presenças na sede + contador de dias seguidos (streak).
  * Um dia conta quando o sócio tem pelo menos um pedido servido.
  */
-export default function PresenceCalendar({ data, compact = false }) {
+export default function PresenceCalendar({ data, compact = false, onMonthChange = null }) {
   const grid = useMemo(() => {
     if (!data?.month) return { cells: [], label: "" };
     const [y, m] = data.month.split("-").map(Number);
@@ -29,6 +29,14 @@ export default function PresenceCalendar({ data, compact = false }) {
   if (!data) {
     return <div className="text-sm text-slate-500 py-6 text-center">A carregar presenças...</div>;
   }
+
+  const currentMonth = (data.today || "").slice(0, 7);
+  const shiftMonth = (delta) => {
+    if (!onMonthChange || !data.month) return;
+    const [y, m] = data.month.split("-").map(Number);
+    const d = new Date(y, m - 1 + delta, 1);
+    onMonthChange(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  };
 
   const statusLabel = data.quota_status === "paid"
     ? "🟢 Cotas em dia — os pontos do streak contam"
@@ -78,33 +86,74 @@ export default function PresenceCalendar({ data, compact = false }) {
         <div className="flex items-center gap-2 mb-2">
           <CalendarBlank size={14} weight="duotone" className="text-amber-400" />
           <span className="text-sm font-semibold text-slate-200" data-testid="presence-month-label">{grid.label}</span>
+          {onMonthChange && (
+            <div className="ml-auto flex items-center gap-1">
+              <button
+                type="button"
+                data-testid="presence-month-prev"
+                onClick={() => shiftMonth(-1)}
+                className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300"
+                title="Mês anterior"
+              >
+                <CaretLeft size={12} weight="bold" />
+              </button>
+              <button
+                type="button"
+                data-testid="presence-month-next"
+                onClick={() => shiftMonth(1)}
+                disabled={data.month >= currentMonth}
+                className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-40"
+                title="Mês seguinte"
+              >
+                <CaretRight size={12} weight="bold" />
+              </button>
+            </div>
+          )}
         </div>
         <div className="grid grid-cols-7 gap-1 text-center">
           {WEEKDAYS.map((w, i) => (
             <div key={`${w}-${i}`} className="text-[9px] font-bold uppercase tracking-wider text-slate-600 py-0.5">{w}</div>
           ))}
-          {grid.cells.map((c) => (
-            <div
-              key={c.key}
-              data-testid={c.empty ? undefined : `presence-day-${c.iso}`}
-              className={`aspect-square rounded-md flex items-center justify-center text-[11px] border ${
-                c.empty
-                  ? "border-transparent"
-                  : c.present
-                  ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-200 font-bold"
-                  : c.today
-                  ? "bg-slate-900 border-amber-500/50 text-slate-300"
-                  : "bg-slate-950/40 border-slate-800 text-slate-500"
-              }`}
-              title={
-                c.present
-                  ? `${c.iso} · ${(data.partner_days || {})[c.iso] ? "presença validada por parceiro local" : "presença na sede"}`
-                  : c.iso
-              }
-            >
-              {c.empty ? "" : c.present ? ((data.partner_days || {})[c.iso] || "🏠") : c.day}
-            </div>
-          ))}
+          {grid.cells.map((c) => {
+            const bdays = c.empty ? [] : (data.birthdays || {})[c.iso] || [];
+            const myBday = bdays.some((b) => b.me);
+            const bdayNumbers = bdays.map((b) => b.member_number).filter(Boolean).join(",");
+            return (
+              <div
+                key={c.key}
+                data-testid={c.empty ? undefined : `presence-day-${c.iso}`}
+                className={`aspect-square rounded-md flex flex-col items-center justify-center gap-0.5 text-[11px] border relative ${
+                  c.empty
+                    ? "border-transparent"
+                    : c.present
+                    ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-200 font-bold"
+                    : c.today
+                    ? "bg-slate-900 border-amber-500/50 text-slate-300"
+                    : "bg-slate-950/40 border-slate-800 text-slate-500"
+                } ${myBday ? "ring-2 ring-amber-400" : ""} ${
+                  !myBday && bdays.length ? "border-amber-500/40" : ""
+                }`}
+                title={[
+                  c.present
+                    ? `${c.iso} · ${(data.partner_days || {})[c.iso] ? "presença validada por parceiro local" : "presença na sede"}`
+                    : c.iso,
+                  bdays.length
+                    ? `🎂 Aniversário: ${bdays.map((b) => `nº ${b.member_number || "—"}${b.me ? " (tu)" : ""}`).join(", ")}`
+                    : "",
+                ].filter(Boolean).join(" · ")}
+              >
+                {c.empty ? "" : c.present ? ((data.partner_days || {})[c.iso] || "🏠") : c.day}
+                {bdays.length > 0 && (
+                  <span
+                    data-testid={`presence-birthday-${c.iso}`}
+                    className={`text-[8px] leading-none font-bold ${myBday ? "text-amber-300" : "text-amber-500/80"}`}
+                  >
+                    🎂{bdayNumbers}
+                  </span>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 

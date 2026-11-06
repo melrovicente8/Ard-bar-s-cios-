@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import EditableText from "../components/EditableText";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { Plus, User, ArrowRight, MagnifyingGlass, Trash, Medal, Funnel, Star, SealCheck } from "@phosphor-icons/react";
@@ -8,6 +8,8 @@ import { useAuth } from "../context/AuthContext";
 import MessageModal from "../components/MessageModal";
 import QuotaBulkLaunchModal from "../components/QuotaBulkLaunchModal";
 import QuotaBall from "../components/QuotaBall";
+import AdesaoApprovals from "../components/AdesaoApprovals";
+import AdesaoForm from "../components/AdesaoForm";
 
 export default function Clientes() {
   const { user } = useAuth();
@@ -23,6 +25,11 @@ export default function Clientes() {
   const [sortKey, setSortKey] = useState("name"); // name | number | activity | total_points
   const [viewMode, setViewMode] = useState("grid"); // grid | list
   const [honoraryEnabled, setHonoraryEnabled] = useState(false);
+  // A aba "Adesão de sócios" vive dentro de Clientes e sócios
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = searchParams.get("tab") === "adesao" ? "adesao" : "lista";
+  const setTab = (value) =>
+    setSearchParams(value === "adesao" ? { tab: "adesao" } : {}, { replace: true });
   const [form, setForm] = useState({ name: "", contact: "", email: "", note: "", member_number: "", is_member: true, morada: "", pin: "" });
 
   // Ativação do estatuto de Sócio Honorário na app — desativada por defeito (só admin liga)
@@ -220,6 +227,31 @@ export default function Clientes() {
         </div>
       </div>
 
+      <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900/60 p-1 mb-6" data-testid="clientes-tabs">
+        {[
+          { v: "lista", label: "Clientes e sócios" },
+          { v: "adesao", label: "Adesão de sócios" },
+        ].map((opt) => (
+          <button
+            key={opt.v}
+            data-testid={`clientes-tab-${opt.v}`}
+            onClick={() => setTab(opt.v)}
+            className={`px-4 py-1.5 rounded-md text-xs font-bold uppercase tracking-wider transition-colors ${
+              tab === opt.v ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "adesao" ? (
+        <div className="max-w-2xl space-y-4" data-testid="clientes-adesao">
+          <AdesaoApprovals />
+          <AdesaoForm embedded />
+        </div>
+      ) : (
+      <>
       {/* Estatísticas de sócios e cotas (da antiga aba Sócios) */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <StatBox label={`Sócios c/ cotas ${year} em dia`} value={stats.uptodate} accent="bg-green-500/10 text-green-300" />
@@ -624,6 +656,8 @@ export default function Clientes() {
       {msgTarget && <MessageModal client={msgTarget} onClose={() => setMsgTarget(null)} />}
       {showQuotaLaunch && (
         <QuotaBulkLaunchModal onClose={() => setShowQuotaLaunch(false)} onDone={load} />
+      )}
+      </>
       )}
     </div>
   );

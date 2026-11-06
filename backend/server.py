@@ -2871,7 +2871,8 @@ async def dashboard(user: dict = Depends(get_current_user)):
     else:
         # Funcionários veem apenas o valor em caixa (o banco fica reservado à direção/tesouraria)
         _balances = await _account_balances()
-        cash_bank = {"cash_balance": _balances["cash_balance"], "bank_balance": None, "total_balance": None}
+        cash_bank = {"cash_balance": _balances["cash_balance"], "bank_balance": None, "total_balance": None,
+                     "cash_numerario": _balances["cash_numerario"], "cash_mbway": _balances["cash_mbway"]}
     # Dívidas antigas (sem pagamento há mais de X dias) — alerta automático
     overdue = await _overdue_debtors(clients, OVERDUE_DEBT_DAYS)
     # Aniversários dos próximos 7 dias
@@ -3606,6 +3607,13 @@ async def _maybe_award_birthday(client_id: str):
         return
     if c.get("birthday_points_year") == now.year:
         return
+    # A compensação de aniversário só se aplica se o sócio passar pela sede e
+    # fizer um pedido de consumo nesse dia (presença registada ou venda do dia).
+    day = now.date().isoformat()
+    had_consumption = await db.presences.find_one({"client_id": client_id, "date": day}, {"_id": 1}) \
+        or await db.sales.find_one({"client_id": client_id, "created_at": {"$gte": day}}, {"_id": 1})
+    if not had_consumption:
+        return
     age = max(now.year - bd.year, 1)
     pts = max(age // 4, 1)
     await db.clients.update_one(
@@ -3755,7 +3763,9 @@ def _allocate_payment_coverages(sales: list, payments: list) -> dict:
                 "created_at": s.get("created_at"),
                 "total": float(s.get("total", 0) or 0),
                 "applied": take,
-                "items": s.get("items") or [],
+                # Rodada Mista: o talão detalha os produtos realmente consumidos
+                "items": s.get("group_items") or s.get("items") or [],
+                "rounds": s.get("group_rounds") or [],
             })
         out[p["id"]] = covered
     return out
@@ -4782,7 +4792,8 @@ def _socio_notif_query(client_id: str, unread_only: bool = False):
     """Mensagens que são notificações para o sócio: enviadas pelo staff ou respostas do staff."""
     q: dict = {"client_id": client_id, "$or": [{"from_staff": True}, {"status": "replied"}]}
     if unread_only:
-        q["read_at"] = {"$exists": False}
+        # `None` apanha tanto os documentos sem o campo como os que têm read_at: null
+        q["read_at"] = None
     return q
 
 
@@ -6020,6 +6031,18 @@ def _payment_cash_value(p: dict) -> float:
     offer = float(p.get("offer_amount", 0) or 0)
     return max(credited - pts - offer + tip, 0.0)
 
+def _payment_mbway_value(p: dict) -> float:
+    """Valor efetivamente pago por MBWay (fora da gaveta).
+    Desconta pontos usados e a oferta da casa; devoluções de crédito não contam."""
+    src = (p.get("source") or "").lower()
+    if "mbway" not in src or src == "refund":
+        return 0.0
+    credited = float(p.get("total_credited", p.get("amount", 0)) or 0)
+    pts = float(p.get("points_value", 0) or 0)
+    offer = float(p.get("offer_amount", 0) or 0)
+    return max(credited - pts - offer, 0.0)
+
+
 async def _live_cash_in_drawer(doc: dict) -> float:
     """Valor em caixa da sessão atual: valor declarado na abertura + entradas em
     numerário desde então (as saídas já são subtraídas ao próprio cash_in_drawer)."""
@@ -6063,6 +6086,8 @@ async def _account_balances() -> dict:
     receita nem despesa."""
     cash_payments = await db.payments.find({"source": {"$ne": "refund"}}, {"_id": 0}).to_list(50000)
     cash_in = round(sum(_payment_cash_value(p) for p in cash_payments), 2)
+    # Para o cartão "Valor em caixa": quanto entrou em numerário e quanto foi pago por MBWay
+    mbway_in = round(sum(_payment_mbway_value(p) for p in cash_payments), 2)
     wd_all = await db.cash_withdrawals.find({}, {"_id": 0}).to_list(50000)
     deposits = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "bank_deposit"), 2)
     refunds = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "credit_refund"), 2)
@@ -6077,6 +6102,8 @@ async def _account_balances() -> dict:
         "cash_balance": cash_balance,
         "bank_balance": bank_balance,
         "total_balance": round(bank_balance + cash_balance, 2),
+        "cash_numerario": cash_in,
+        "cash_mbway": mbway_in,
     }
 
 
@@ -7749,12 +7776,45 @@ async def _mark_presence(client_id: str, table_id: Optional[str] = None, source:
     await db.presences.insert_one(doc)
     if reward_status == "granted":
         doc["points_applied"] = await _apply_streak_reward(doc, 1.0, "dia de streak completo")
+    # Se hoje é o aniversário do sócio, a compensação é atribuída agora que consumiu
+    await _maybe_award_birthday(client_id)
     doc.pop("_id", None)
     return doc
 
 
+def _group_rounds_detail(table: dict, rounds: list) -> list:
+    """O que foi servido em cada rodada + quem estava à mesa nessa rodada (para o talão)."""
+    members = {m["client_id"]: m for m in (table.get("members") or [])}
+    for m in table.get("departed") or []:
+        members.setdefault(m["client_id"], m)
+    out = []
+    for r in rounds:
+        names = []
+        for cid in (r.get("members") or [m["client_id"] for m in (table.get("members") or [])]):
+            m = members.get(cid)
+            if not m:
+                continue
+            label = m.get("name") or "—"
+            if m.get("member_number"):
+                label += f" (nº {m['member_number']})"
+            names.append(label)
+        out.append({
+            "number": r.get("number"),
+            "total": round(float(r.get("total") or 0), 2),
+            "items": [{
+                "product_name": it.get("product_name"),
+                "quantity": it.get("quantity"),
+                "unit_price": it.get("unit_price"),
+                "subtotal": it.get("subtotal"),
+            } for it in (r.get("items") or [])],
+            "members_present": names,
+        })
+    return out
+
+
 async def _group_sale(table: dict, client_doc: dict, label: str, total: float,
-                      detail_items: list, user: dict, round_number: Optional[int] = None) -> dict:
+                      detail_items: list, user: dict, round_number: Optional[int] = None,
+                      rounds_detail: Optional[list] = None) -> dict:
     """Cria a venda/lançamento de uma rodada ou partilha para um sócio.
     O stock já foi abatido no lançamento da rodada, por isso aqui não se mexe no stock."""
     total = round(float(total), 2)
@@ -7776,6 +7836,7 @@ async def _group_sale(table: dict, client_doc: dict, label: str, total: float,
             "subtotal": total,
         }],
         "group_items": detail_items,
+        "group_rounds": rounds_detail or [],
         "group_table_id": table["id"],
         "group_round": round_number,
         "group_label": label,
@@ -8109,6 +8170,49 @@ async def add_group_members(table_id: str, body: GroupMembersIn, user: dict = De
     return updated
 
 
+@api_router.delete("/group-tables/{table_id}/members/{client_id}")
+async def remove_group_member(table_id: str, client_id: str, user: dict = Depends(get_current_user)):
+    """Retira um sócio da mesa (sai a partir da rodada seguinte)."""
+    table = await db.group_tables.find_one({"id": table_id}, {"_id": 0})
+    if not table:
+        raise HTTPException(status_code=404, detail="Rodada não encontrada")
+    if table.get("status") != "open":
+        raise HTTPException(status_code=400, detail="Esta Rodada Mista já está fechada")
+    members = table.get("members") or []
+    member = next((m for m in members if m.get("client_id") == client_id), None)
+    if not member:
+        raise HTTPException(status_code=404, detail="Este sócio não está na mesa")
+    if len(members) <= 1:
+        raise HTTPException(status_code=400, detail="A mesa tem de manter pelo menos um sócio")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    left_round = len(table.get("rounds") or []) + 1
+    remaining = [m for m in members if m.get("client_id") != client_id]
+    await db.group_tables.update_one(
+        {"id": table_id},
+        {
+            "$set": {"members": remaining},
+            "$push": {"departed": {
+                "client_id": client_id, "name": member.get("name"), "member_number": member.get("member_number"),
+                "joined_round": member.get("joined_round", 1), "left_round": left_round, "left_at": now_iso,
+            }},
+        },
+    )
+    await db.socio_messages.insert_one({
+        "id": str(uuid.uuid4()),
+        "client_id": client_id,
+        "client_name": member.get("name") or "",
+        "subject": "🍻 Saíste da Rodada Mista",
+        "message": f"Saíste da {table.get('label')} (rodada {left_round}). Os consumos que já fizeste mantêm-se na conta da mesa.",
+        "from_staff": True,
+        "reply": None,
+        "created_at": now_iso,
+        "group_table_id": table_id,
+    })
+    await _audit("group_table_remove_member", user["email"], entity="group_table", entity_id=table_id,
+                 summary=f"Rodada Mista {table.get('label')} · saiu {member.get('name')} (rodada {left_round})")
+    return await db.group_tables.find_one({"id": table_id}, {"_id": 0})
+
+
 @api_router.post("/group-tables/{table_id}/rounds/{round_number}/settle")
 async def settle_group_round(table_id: str, round_number: int, body: GroupRoundSettleIn,
                              user: dict = Depends(get_current_user)):
@@ -8129,6 +8233,7 @@ async def settle_group_round(table_id: str, round_number: int, body: GroupRoundS
         raise HTTPException(status_code=404, detail="Sócio não encontrado")
     sale = await _group_sale(
         table, payer, "Rodada Mista (Oferecida à Mesa)", rnd["total"], rnd.get("items") or [], user, round_number,
+        _group_rounds_detail(table, [rnd]),
     )
     pay = await _settle_group_sale(sale, (body.method or "account").lower(), user)
     await db.group_tables.update_one(
@@ -8197,7 +8302,8 @@ async def split_group_table(table_id: str, body: GroupSplitIn, user: dict = Depe
             if not client_doc:
                 continue
             label = f"Rodada Mista (Partilha {i + 1}/{len(plans)})"
-            sale = await _group_sale(table, client_doc, label, subtotal, detail, user)
+            sale = await _group_sale(table, client_doc, label, subtotal, detail, user,
+                                     rounds_detail=_group_rounds_detail(table, open_rounds))
             pay = await _settle_group_sale(sale, (methods.get(m["client_id"]) or "account").lower(), user)
             sales.append(sale)
             if pay:
@@ -8212,7 +8318,8 @@ async def split_group_table(table_id: str, body: GroupSplitIn, user: dict = Depe
             if not client_doc:
                 continue
             label = f"Rodada Mista (Partilha {i + 1}/{n})"
-            sale = await _group_sale(table, client_doc, label, subtotal, detail_all, user)
+            sale = await _group_sale(table, client_doc, label, subtotal, detail_all, user,
+                                     rounds_detail=_group_rounds_detail(table, open_rounds))
             pay = await _settle_group_sale(sale, (methods.get(m["client_id"]) or "account").lower(), user)
             sales.append(sale)
             if pay:
@@ -8248,6 +8355,34 @@ async def close_group_table(table_id: str, user: dict = Depends(get_current_user
         raise HTTPException(status_code=400, detail="Ainda há rodadas por liquidar nesta mesa")
     await db.group_tables.update_one({"id": table_id}, {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc).isoformat()}})
     return {"ok": True}
+
+
+async def _month_birthdays(ym: str, client_id: Optional[str] = None) -> dict:
+    """Aniversários dos sócios no mês: data → [{member_number, name, me}].
+    `me` marca o aniversário do próprio sócio que está a ver o calendário."""
+    try:
+        month = int(ym[5:7])
+    except (ValueError, IndexError):
+        return {}
+    docs = await db.clients.find(
+        {"is_member": True, "is_temp": {"$ne": True}},
+        {"_id": 0, "id": 1, "name": 1, "birthday": 1, "member_number": 1},
+    ).to_list(5000)
+    out: dict = {}
+    for c in docs:
+        try:
+            bd = datetime.fromisoformat(str(c.get("birthday") or ""))
+        except (ValueError, TypeError):
+            continue
+        if bd.month != month:
+            continue
+        key = f"{ym}-{bd.day:02d}"
+        out.setdefault(key, []).append({
+            "member_number": c.get("member_number"),
+            "name": (c.get("name") or "").split(" ")[0],
+            "me": bool(client_id) and c.get("id") == client_id,
+        })
+    return out
 
 
 async def _presence_overview(client_id: str, month: Optional[str] = None) -> dict:
@@ -8291,6 +8426,8 @@ async def _presence_overview(client_id: str, month: Optional[str] = None) -> dic
         "month_presences": len(month_dates),
         # Selo do parceiro local nos dias em que a presença veio de um talão
         "partner_days": {d["date"]: (d.get("partner_emoji") or "🤝") for d in docs if d.get("partner_id")},
+        # Nº de sócio de quem faz anos em cada dia do mês (o próprio fica marcado com `me`)
+        "birthdays": await _month_birthdays(ym, client_id),
         "month_points": sum(int(d.get("points_applied") or 0) for d in docs),
         "quota_status": status,
         "points_blocked": status in ("pending", "debt"),

@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
+import { printReceipt } from "../lib/receipt";
 import {
   Users,
   X,
@@ -14,6 +15,9 @@ import {
   ArrowClockwise,
   PencilSimple,
   Check,
+  Lightning,
+  Printer,
+  UserMinus,
 } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
@@ -48,16 +52,28 @@ export default function RodadaMista({ onClose, onChanged }) {
   const [receipt, setReceipt] = useState(null);
   const [renaming, setRenaming] = useState(false);
   const [labelDraft, setLabelDraft] = useState("");
+  const [topProducts, setTopProducts] = useState([]);
+  const [lastReceipt, setLastReceipt] = useState(null);
+  const prefilledMembers = useRef(false);
 
   const load = async () => {
-    const [c, p, t] = await Promise.all([
+    const [c, p, t, all, top] = await Promise.all([
       api.get("/clients").catch(() => ({ data: [] })),
       api.get("/products").catch(() => ({ data: [] })),
       api.get("/group-tables", { params: { status_filter: "open" } }).catch(() => ({ data: [] })),
+      api.get("/group-tables").catch(() => ({ data: [] })),
+      api.get("/products/top", { params: { limit: 6 } }).catch(() => ({ data: [] })),
     ]);
     setClients(c.data || []);
     setProducts(p.data || []);
     setTables(t.data || []);
+    setTopProducts(top.data || []);
+    // Nova rodada: a mesa começa com os sócios da rodada anterior (podem sair ou entrar outros)
+    const lastIds = (((all.data || [])[0] || {}).members || []).map((m) => m.client_id);
+    if (!prefilledMembers.current && lastIds.length) {
+      prefilledMembers.current = true;
+      setMemberIds(lastIds);
+    }
   };
 
   const refreshTable = async (id) => {
@@ -67,7 +83,8 @@ export default function RodadaMista({ onClose, onChanged }) {
     const methods = {};
     (data.rounds || []).forEach((r) => {
       if (r.status !== "paid") {
-        payers[r.number] = payers[r.number] || data.members?.[0]?.client_id || "";
+        // Por omissão ninguém assume a despesa — o staff escolhe quem paga a rodada
+        payers[r.number] = payers[r.number] || "";
         methods[r.number] = methods[r.number] || "account";
       }
     });
@@ -97,6 +114,14 @@ export default function RodadaMista({ onClose, onChanged }) {
     if (!q) return list;
     return list.filter((p) => (p.name || "").toLowerCase().includes(q));
   }, [products, productSearch]);
+
+  // Os 6 produtos com mais saída — atalhos para lançar a rodada num toque
+  const quickTop = useMemo(
+    () => topProducts
+      .map((t) => products.find((p) => p.id === t.id) || t)
+      .filter((p) => p && !p.is_quota && !p.is_house_account),
+    [topProducts, products]
+  );
 
   const cartItems = Object.entries(cart)
     .map(([pid, qty]) => {
@@ -150,11 +175,12 @@ export default function RodadaMista({ onClose, onChanged }) {
     if (!payer) return toast.error("Escolhe quem paga esta rodada");
     setBusy(true);
     try {
-      await api.post(`/group-tables/${table.id}/rounds/${round.number}/settle`, {
+      const { data } = await api.post(`/group-tables/${table.id}/rounds/${round.number}/settle`, {
         payer_client_id: payer,
         method: methodByRound[round.number] || "account",
       });
       await refreshTable(table.id);
+      setLastReceipt({ sale: data.sale, payment: data.payment, label: `Rodada ${round.number}` });
       toast.success("Rodada liquidada");
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
@@ -195,6 +221,28 @@ export default function RodadaMista({ onClose, onChanged }) {
     return map;
   }, [splitUnits, unitOwner]);
 
+  const printTicket = (tx) => {
+    if (!tx) return;
+    const res = printReceipt(tx, {});
+    if (!res.ok) toast.error("Não foi possível abrir o talão — permite janelas pop-up");
+  };
+
+  const removeMember = async (member) => {
+    if (!table || busy) return;
+    if (!window.confirm(`Retirar ${member.name} da mesa?`)) return;
+    setBusy(true);
+    try {
+      const { data } = await api.delete(`/group-tables/${table.id}/members/${member.client_id}`);
+      setTable(data);
+      await load();
+      toast.success("Sócio retirado da mesa");
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const addMember = async (clientId) => {
     if (!table || busy) return;
     setBusy(true);
@@ -234,7 +282,7 @@ export default function RodadaMista({ onClose, onChanged }) {
         payload.items_by_member = byMember;
       }
       const { data } = await api.post(`/group-tables/${table.id}/split`, payload);
-      setReceipt({ table: data.table, sales: data.sales || [] });
+      setReceipt({ table: data.table, sales: data.sales || [], payments: data.payments || [] });
       setSplitOpen(false);
       setTable(data.table);
       await load();
@@ -315,16 +363,42 @@ export default function RodadaMista({ onClose, onChanged }) {
               Conta dividida · {receipt.table?.label} · {receipt.sales.length} lançamento(s)
             </div>
             <ul className="space-y-2">
-              {receipt.sales.map((s) => (
-                <li key={s.id} className="flex items-center justify-between bg-slate-950/60 border border-slate-800 rounded-lg px-4 py-2.5 text-sm">
-                  <span className="flex items-center gap-2">
-                    <Receipt size={14} className="text-amber-400" /> {s.client_name}
-                    <span className="text-[10px] text-slate-500">#{s.tx_number}</span>
-                  </span>
-                  <span className="text-slate-400 text-xs flex-1 px-3 truncate">{s.items?.[0]?.product_name}</span>
-                  <strong className="text-amber-300">{euro(s.total)}</strong>
-                </li>
-              ))}
+              {receipt.sales.map((s) => {
+                const pay = (receipt.payments || []).find((p) => (p.sale_ids || []).includes(s.id));
+                return (
+                  <li key={s.id} className="bg-slate-950/60 border border-slate-800 rounded-lg px-4 py-3 text-sm" data-testid={`rodada-receipt-${s.id}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-2 font-semibold text-slate-100">
+                        <Receipt size={14} className="text-amber-400" /> {s.client_name}
+                        <span className="text-[10px] text-slate-500">Transação nº {pay?.tx_number || s.tx_number}</span>
+                      </span>
+                      <span className="flex items-center gap-2">
+                        <strong className="text-amber-300">{euro(s.total)}</strong>
+                        <button
+                          type="button"
+                          onClick={() => printTicket(pay || s)}
+                          className="p-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200"
+                          title="Imprimir talão"
+                        >
+                          <Printer size={13} />
+                        </button>
+                      </span>
+                    </div>
+                    <div className="mt-1.5 space-y-1 text-[11px] text-slate-400">
+                      {(s.group_rounds || []).map((r) => (
+                        <div key={r.number}>
+                          <span className="text-slate-300 font-semibold">Rodada {r.number}</span>
+                          {" · "}
+                          {(r.items || []).map((it) => `${it.quantity}× ${it.product_name}`).join(", ")}
+                          {(r.members_present || []).length ? (
+                            <span className="text-slate-500"> · À mesa: {r.members_present.join(" · ")}</span>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
             <button onClick={() => { setReceipt(null); setTable(null); }} className="w-full py-2.5 rounded-lg bg-amber-500 text-slate-950 font-bold">
               Fechar
@@ -456,8 +530,24 @@ export default function RodadaMista({ onClose, onChanged }) {
                       </button>
                     </h3>
                   )}
-                  <div className="text-[11px] text-slate-500">
-                    {(table.members || []).map((m) => m.name.split(" ")[0] + (m.member_number ? ` (nº ${m.member_number})` : "")).join(" · ")}
+                  <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-1.5" data-testid="rodada-table-members">
+                    {(table.members || []).map((m) => (
+                      <span key={m.client_id} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-slate-800/70 text-slate-300">
+                        {m.name.split(" ")[0]}{m.member_number ? ` nº ${m.member_number}` : ""}
+                        {table.status === "open" && (table.members || []).length > 1 && (
+                          <button
+                            type="button"
+                            data-testid={`rodada-remove-member-${m.client_id}`}
+                            onClick={() => removeMember(m)}
+                            disabled={busy}
+                            title="Retirar este sócio da mesa"
+                            className="text-slate-500 hover:text-rose-400 disabled:opacity-40"
+                          >
+                            <UserMinus size={10} weight="bold" />
+                          </button>
+                        )}
+                      </span>
+                    ))}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -530,6 +620,26 @@ export default function RodadaMista({ onClose, onChanged }) {
                 ))}
               </div>
 
+              {lastReceipt && (
+                <div className="flex items-center justify-between gap-2 bg-emerald-500/5 border border-emerald-500/25 rounded-lg px-3 py-2 text-xs" data-testid="rodada-last-receipt">
+                  <span className="text-emerald-200">
+                    {lastReceipt.label} liquidada · Transação nº {lastReceipt.payment?.tx_number || lastReceipt.sale?.tx_number}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => printTicket(lastReceipt.payment || lastReceipt.sale)}
+                      className="px-2.5 py-1 rounded bg-emerald-500 text-slate-950 font-bold flex items-center gap-1"
+                    >
+                      <Printer size={12} /> Talão
+                    </button>
+                    <button type="button" onClick={() => setLastReceipt(null)} className="text-slate-500 hover:text-slate-300">
+                      <X size={12} weight="bold" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {table.status === "open" && (
                 <>
                   <div className="flex items-center justify-between border-t border-slate-800 pt-3">
@@ -597,6 +707,26 @@ export default function RodadaMista({ onClose, onChanged }) {
                 </div>
               )}
               <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-slate-500">Nova rodada</h3>
+              {quickTop.length > 0 && (
+                <div className="space-y-1.5" data-testid="rodada-top-items">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Os 6 mais pedidos</div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {quickTop.map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        data-testid={`rodada-top-${p.id}`}
+                        disabled={p.quantity <= 0}
+                        onClick={() => addProduct(p)}
+                        className="text-left px-2 py-1.5 rounded-lg bg-slate-950/70 border border-slate-800 hover:border-amber-500/50 disabled:opacity-40 text-[11px]"
+                      >
+                        <div className="truncate text-slate-200">{p.name}</div>
+                        <div className="text-amber-400 font-bold">{euro(p.price)}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div className="relative">
                 <MagnifyingGlass size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
                 <input
@@ -640,9 +770,9 @@ export default function RodadaMista({ onClose, onChanged }) {
                 data-testid="rodada-add-round"
                 onClick={addRound}
                 disabled={busy || !cartItems.length || table.status !== "open"}
-                className="w-full py-2.5 rounded-lg bg-amber-500 text-slate-950 font-bold disabled:opacity-40"
+                className="w-full py-2.5 rounded-lg bg-amber-500 text-slate-950 font-bold disabled:opacity-40 flex items-center justify-center gap-2"
               >
-                Lançar rodada
+                <Lightning size={16} weight="fill" /> Lançar rodada rápida
               </button>
             </aside>
           </div>

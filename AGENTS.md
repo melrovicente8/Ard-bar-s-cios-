@@ -51,12 +51,19 @@ docker compose -f docker-compose.base44.yml up -d
 ## Portal do sócio
 - Cabeçalho: saudação por hora do dia (`Bom dia/Boa tarde/Boa noite`) + mensagem fixa por estado de quotas (`QUOTA_GREETING` em `SocioPortal.jsx`, testid `socio-dynamic-greeting`).
 - "Movimento do clube · Despesas trimestre ›" abre o modal com as despesas do trimestre (`GET /api/socio/expenses-quarterly`, descrições já anonimizadas com nº de sócio).
-- "Insistir" num pedido pendente só ativa após 5 min (`POST /api/socio/consumption-requests/{id}/insist`); o staff recebe um pop-up em `HeaderAlerts` (`insist-popup`) alimentado por `insisted_at` dos pedidos pendentes.
+- "Insistir" num pedido pendente só ativa após 5 min (`POST /api/socio/consumption-requests/{id}/insist`); o staff recebe um pop-up em `HeaderAlerts` (`insist-popup`) alimentado por `insisted_at` dos pedidos pendentes`.
+- **As Minhas Presenças**: o calendário (`PresenceCalendar.jsx`) tem setas de mês (`presence-month-prev/next`) que pedem `GET /api/socio/presences?month=YYYY-MM`; o mês seguinte fica desativado no mês corrente.
+- **Aniversários no calendário**: `_presence_overview` devolve `birthdays` (`data → [{member_number, name, me}]` via `_month_birthdays`). Cada dia com aniversário mostra o nº de sócio (`presence-birthday-<data>`, ex.: `🎂88`) e o do próprio sócio tem anel âmbar (`ring-amber-400`).
+- **Compensação de aniversário**: `_maybe_award_birthday` só atribui os pontos (idade ÷ 4) se o sócio tiver presença/venda nesse dia — é chamada por `_mark_presence`, pelo que a compensação entra logo após o primeiro consumo do dia.
+- **Notificações lidas**: abrir o sino (`socio-bell-btn`) **ou** a lista de mensagens marca tudo como lido (`POST /api/socio/messages/read`, helper `markNotifsRead` em `SocioPortal.jsx`); o staff vê "✓ Lida pelo sócio" em `/mensagens`. `_socio_notif_query` usa `read_at: None` (apanha documentos sem o campo **e** com `read_at: null`).
 
 ## Pagamentos na app do sócio (MBWay · balcão)
 - **Cotas**: `POST /api/socio/quotas/pay` com `pay_at_counter: true` cria o pedido (`db.mbway_payments`, `kind: "quota"`); a confirmação do staff lança a venda na conta corrente. Sem a flag é pedido MBWay.
 - **Consumo**: `POST /api/socio/mbway-request` aceita `pay_at_counter` (`kind: "consumption"`, `mbway_phone` opcional). A confirmação regista o pagamento com `source: "counter"` e nota "Balcão". Em `/mbway` a coluna MBWay mostra "Balcão" quando não há telefone.
 - **Sócio Honorário na app**: ativação **desativada por defeito** — `db.club_settings {id: "honorary_self_activation"}` (default `false`), exposta em `/api/club/info` e `/api/socio/quota-settings` e ligada pelo admin em `/clientes` (`honorary-app-toggle` → `PUT /api/club/honorary-settings`). Desligada, `POST /api/socio/honorary/activate` responde **403** e o portal mostra `socio-honorary-disabled` em vez do botão.
+
+## Cartão "Valor em caixa" (Dashboard)
+- `_account_balances()` devolve também `cash_numerario` (soma de `_payment_cash_value`) e `cash_mbway` (soma de `_payment_mbway_value`, já sem pontos/oferta) — o cartão `kpi-cash` mostra o saldo e, por baixo, "Numerário" (`kpi-cash-numerario`) e "MBWay" (`kpi-cash-mbway`). Os detalhes só aparecem depois de revelar com o olho (o valor continua mascarado à direção por omissão).
 
 ## Bola de quotas junto ao nome
 - `src/components/QuotaBall.jsx` (🟢 paid / 🟡 pending / 🔴 debt; não-sócios sem bola). Usada na lista de clientes, na ficha (`ficha-client-name`) e no POS (`Vender`).
@@ -65,6 +72,11 @@ docker compose -f docker-compose.base44.yml up -d
 - Botão "Rodada Mista" em `Vender` → `src/components/RodadaMista.jsx` (modal). Backend em `db.group_tables`:
   `POST /api/group-tables` (2+ sócios, notifica cada um e marca presença), `POST /{id}/rounds` (valida stock e desconta), `POST /{id}/rounds/{n}/settle` (rotação: um sócio assume a rodada), `POST /{id}/split` (partes iguais ou por consumo; cria uma venda por sócio), `POST /{id}/close`.
 - As vendas ficam com `source: "group_round"` e uma única linha-resumo: "Rodada Mista (Oferecida à Mesa)" ou "Rodada Mista (Partilha i/n)"; o detalhe dos produtos vai em `group_items`. O stock é abatido no lançamento da rodada, por isso estas vendas não voltam a mexer no stock.
+- **Quem paga**: por omissão ninguém assume a despesa — cada rodada mostra "Quem paga?" vazio até o staff escolher (nunca pré-seleciona o primeiro sócio).
+- **Mesa nova a partir da anterior**: ao abrir o modal, os sócios da última Rodada Mista (aberta ou fechada) vêm pré-selecionados; podem sair (chip com X antes de abrir) ou entrar outros.
+- **Retirar sócio de uma mesa aberta**: `DELETE /api/group-tables/{id}/members/{client_id}` — tira-o de `members`, guarda-o em `departed` (`left_round`) e notifica-o. Não é possível ficar sem sócios nem mexer em mesas fechadas.
+- **Atalhos**: os 6 produtos com mais saída (`GET /products/top?limit=6`) aparecem como botões de um toque (`rodada-top-items`) e o lançamento é um só clique ("Lançar rodada rápida", `rodada-add-round`).
+- **Talão detalhado**: `_group_rounds_detail()` guarda em cada venda `group_rounds` (`{number, total, items[], members_present[]}`) — o que foi servido em cada rodada e quem estava à mesa. `printReceipt` usa-o (e `covered_docs[].rounds` nos recibos de pagamento) para descrever as rodadas em vez da linha-resumo; o modal de fecho mostra o detalhe e o botão "Imprimir talão" (`data-testid="rodada-last-receipt"` após assumir uma rodada).
 - Presenças do dia em `db.presences` (`client_id` + `date`), `GET /api/socio/presences/me`.
 
 ## Rodada Mista na app do sócio
@@ -85,6 +97,7 @@ docker compose -f docker-compose.base44.yml up -d
 - Frontend: `ClubArchive.jsx` tem os separadores e `ClubArchiveLegacy.jsx` renderiza as secções só de leitura (identidade, cronologia, plantéis, resultados, tradições). O botão "Editar" fica `disabled` enquanto o GET não chega — um clique antes do load gravava o arquivo vazio.
 
 ## Recibos (talão A6)
+- Rodada Mista: quando a venda (ou o `covered_docs` do pagamento) traz `group_rounds`, o talão imprime "Rodada N" com os itens e a linha "À mesa: …" em vez da linha-resumo.
 - `frontend/src/lib/receipt.js` (`printReceipt`) desenha vendas e recibos de pagamento: itens com quantidade/preço unitário, valor entregue, abatido na dívida e troco.
 - Recibo de pagamento detalha as vendas abatidas em `covered_docs` (`{tx_number, applied, items[]}`). `POST /api/payments` já devolve `covered_docs` — sem isso o talão emitido logo após a cobrança (modal "Enviar recibo?" da ficha) saía sem itens. `GET /transactions/{n}` e `GET /clients/{id}` calculam-no por FIFO (`_allocate_payment_coverages`) quando não vem no documento.
 - Pagamentos com `item_targets` mostram as linhas "N× pago · N× OFERTA DA CASA" com o valor da linha.
@@ -95,7 +108,8 @@ docker compose -f docker-compose.base44.yml up -d
 - `AdesaoApprovals` (só admin/tesoureiro/presidente) lista os pedidos pendentes com aprovar/rejeitar e os 10 últimos sócios aprovados (nº de sócio + data de decisão).
 - Manual de regras: `frontend/public/manual.html` tem "Como te tornares sócio (adesão)" e "Regras que valem para todos os sócios"; `/aderir` mostra um resumo expansível (`adesao-regras`) com link para o manual.
 - Lagarto Amarelo: `ARDN_SYSTEM_PROMPT` descreve o fluxo de adesão (pendente → aprovação em `/aderir?filter=pending` ou `/pedidos` → nº de sócio + PIN, padrinho +1 ponto, menores tutelados, honorário anual) e onde está o arquivo. `_lagarto_archive_context()` injeta em cada pergunta a história, a cronologia, as épocas com plantel, o palmarés e os documentos de `db.club_archive`/`CLUB_LEGACY`.
-- Entradas (antes não existia nenhuma): cartão `dashboard-adesao-cta` no Dashboard (só admin/tesoureiro/presidente, com o nº de pendentes), link em `/login`, link em `/socio/login` e item de menu `Clientes → Adesão de sócios` (`nav-adesao`).
+- Entradas: cartão `dashboard-adesao-cta` no Dashboard (só admin/tesoureiro/presidente, com o nº de pendentes), link em `/login` e link em `/socio/login`.
+- **A aba "Adesão de sócios" vive dentro de Clientes e sócios** (`/clientes?tab=adesao`): mostra `AdesaoApprovals` + o mesmo formulário (`src/components/AdesaoForm.jsx`, partilhado com a página pública `/aderir`). O item de menu `nav-adesao` foi removido e a pill do cabeçalho abre `/clientes?tab=adesao`.
 
 ## Parceiros locais · upload de talão
 - `db.partners` `{name, emoji, active, points_per_5eur}` — CRUD em `/api/partners` (admin). A checkbox "Parceria ativa" tira/coloca o parceiro na app do sócio. O antigo `auto_validate` foi removido (docs antigos podem ainda tê-lo; é ignorado).
