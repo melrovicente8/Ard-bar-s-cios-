@@ -9018,7 +9018,7 @@ ARDN_SYSTEM_PROMPT = (
     "Nunca dás conselhos médicos, jurídicos ou fiscais."
 )
 
-ASSISTANT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+ASSISTANT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 
 
 class AssistantChatIn(BaseModel):

@@ -46,6 +46,7 @@ docker compose -f docker-compose.base44.yml up -d
 
 ## Secrets
 - `RESEND_API_KEY` (opcional) via dashboard Base44 → `/run/base44/app.env`, ligado ao serviço backend como último `env_file`. Sem ela, `send_email` falha graciosamente.
+- `GEMINI_API_KEY` (necessária ao Lagarto Amarelo) no mesmo `env_file`. Modelo por omissão: `gemini-3.5-flash` (`GEMINI_MODEL` sobrescreve). A Gemini descontinua modelos antigos: `gemini-2.5-flash`/`gemini-2.0-flash` já devolvem 404 "no longer available to new users", e `gemini-3.8-flash`/`gemini-flash-latest` dão timeout no `generateContent`. Se o widget responder 502, testar `GET https://generativelanguage.googleapis.com/v1beta/models` e trocar o modelo.
 
 ## Portal do sócio
 - Cabeçalho: saudação por hora do dia (`Bom dia/Boa tarde/Boa noite`) + mensagem fixa por estado de quotas (`QUOTA_GREETING` em `SocioPortal.jsx`, testid `socio-dynamic-greeting`).
