@@ -6685,6 +6685,21 @@ async def list_membership_applications(status_filter: Optional[str] = None, user
     items = await db.membership_applications.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
     return items
 
+@api_router.get("/membership-applications/pending-count")
+async def membership_applications_pending_count(user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
+    """Contador do aviso do cabeçalho: adesões à espera de aprovação da direção."""
+    return {"pending": await db.membership_applications.count_documents({"status": "pending"})}
+
+@api_router.delete("/membership-applications/{app_id}")
+async def delete_membership_application(app_id: str, user: dict = Depends(require_role("admin"))):
+    """Remove um registo de adesão (pedido duplicado ou engano). Não altera o cliente."""
+    res = await db.membership_applications.delete_one({"id": app_id})
+    if not res.deleted_count:
+        raise HTTPException(status_code=404, detail="Proposta não encontrada")
+    await _audit("membership_application_deleted", user["email"], entity="membership_application",
+                 entity_id=app_id, summary="Registo de adesão removido do histórico")
+    return {"ok": True}
+
 @api_router.post("/membership-applications/{app_id}/accept")
 async def accept_membership_application(app_id: str, user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
     app_doc = await db.membership_applications.find_one({"id": app_id}, {"_id": 0})
@@ -9261,6 +9276,17 @@ ARDN_SYSTEM_PROMPT = (
     "acumula pontos, o sócio em dívida (🔴) não pontua; 5 pontos valem 1 €; um pedido de pagamento de "
     "quotas feito na app fica pendente até a direção o confirmar; a Rodada Mista junta sócios na mesma "
     "mesa e cada sócio só pode ter uma rodada mista aberta; as presenças na sede dão pontos por streak. "
+    "Adesão de sócios: quem quer ser sócio preenche o formulário público de adesão (/aderir) na app; o "
+    "pedido fica PENDENTE até a direção (admin, tesoureiro ou presidente) aprovar, e há um aviso no "
+    "cabeçalho do painel com o número de adesões à espera. Só depois da aprovação é atribuído o nº de "
+    "sócio (sequencial) e o PIN automático (nº de sócio com zeros à esquerda até 5 dígitos). Se a adesão "
+    "indicar um sócio padrinho, o padrinho recebe 1 ponto quando o pedido é aprovado. Menores de 16 anos "
+    "ficam registados como menor/tutelado. O Sócio Honorário 👔 paga uma quota anual acordada (mínimo "
+    "20 €), paga menos por consumo e é convidado automático para os eventos. Um pedido rejeitado não cria "
+    "sócio nem dá pontos. "
+    "Tens acesso ao arquivo oficial do clube — história, cronologia, plantéis, resultados, palmarés e "
+    "documentos. Usa o contexto do arquivo abaixo para responder a perguntas sobre o historial e o "
+    "palmarés; se um dado não estiver no arquivo, diz que não o tens. "
     "Nunca dás conselhos médicos, jurídicos ou fiscais."
 )
 
@@ -9272,12 +9298,12 @@ class AssistantChatIn(BaseModel):
     history: Optional[List[dict]] = None
 
 
-def _gemini_generate(api_key: str, model: str, contents: list) -> dict:
+def _gemini_generate(api_key: str, model: str, contents: list, system_prompt: str = ARDN_SYSTEM_PROMPT) -> dict:
     import json as _json
     import urllib.request
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     payload = _json.dumps({
-        "systemInstruction": {"parts": [{"text": ARDN_SYSTEM_PROMPT}]},
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
         "contents": contents,
         "generationConfig": {"temperature": 0.3, "maxOutputTokens": 800},
     }).encode("utf-8")
@@ -9287,6 +9313,38 @@ def _gemini_generate(api_key: str, model: str, contents: list) -> dict:
     )
     with urllib.request.urlopen(req, timeout=45) as resp:
         return _json.loads(resp.read().decode("utf-8", "replace"))
+
+
+async def _lagarto_archive_context() -> str:
+    """Historial e palmarés do clube injetados no prompt do Lagarto Amarelo."""
+    try:
+        doc = await _club_archive_doc()
+    except Exception as exc:  # nunca bloqueia a conversa por faltar o arquivo
+        logger.warning("Lagarto Amarelo: arquivo do clube indisponível (%s)", exc)
+        return ""
+    lines = ["\n--- ARQUIVO OFICIAL DA ARDN ---"]
+    history = str(doc.get("history") or "").strip()
+    if history:
+        lines.append("HISTÓRIA DO CLUBE:\n" + history[:4000])
+    palmares = [p for p in (doc.get("palmares") or []) if isinstance(p, dict)]
+    if palmares:
+        lines.append("PALMARÉS:")
+        lines += [
+            f"- {p.get('season') or '—'} · {p.get('competition') or '—'} · {p.get('result') or '—'}"
+            for p in palmares[:40]
+        ]
+    documents = [d for d in (doc.get("documents") or []) if isinstance(d, dict)]
+    if documents:
+        lines.append("DOCUMENTOS DO ARQUIVO:")
+        lines += [
+            f"- {d.get('title') or '—'}" + (f" ({d.get('year')})" if d.get("year") else "")
+            for d in documents[:20]
+        ]
+    lines.append(
+        "No painel, o arquivo completo (cronologia, plantéis por época, resultados oficiais da AF Guarda "
+        "e tradições) está em «Arquivo do clube»; no portal do sócio há o mesmo arquivo em modo consulta."
+    )
+    return "\n".join(lines)
 
 
 async def _lagarto_answer(message: str, history: Optional[List[dict]]) -> str:
@@ -9313,8 +9371,9 @@ async def _lagarto_answer(message: str, history: Optional[List[dict]]) -> str:
             "parts": [{"text": text[:2000]}],
         })
     contents.append({"role": "user", "parts": [{"text": msg}]})
+    system_prompt = ARDN_SYSTEM_PROMPT + await _lagarto_archive_context()
     try:
-        data = await asyncio.to_thread(_gemini_generate, api_key, ASSISTANT_MODEL, contents)
+        data = await asyncio.to_thread(_gemini_generate, api_key, ASSISTANT_MODEL, contents, system_prompt)
     except Exception as exc:
         logger.warning("Lagarto Amarelo (Gemini) falhou: %s", exc)
         raise HTTPException(status_code=502, detail="O Lagarto Amarelo não conseguiu responder agora. Tenta novamente.")

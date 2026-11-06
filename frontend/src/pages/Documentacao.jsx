@@ -204,7 +204,9 @@ App de gestão integrada de bar/clube ARD Nespereira em **PT-PT**. Combina:
 ### Adesão de novos sócios
 - Formulário público em **\`/aderir\`** (\`Adesao.jsx\`): nome, nascimento, telemóvel, morada, email, nº de sócio padrinho e aceitação do regulamento → \`POST /api/public/membership-application\` (fica **pendente** de aprovação da direção)
 - Entradas para a página: **Dashboard** (cartão "Adesão de novos sócios" com o nº de pedidos pendentes + botões "Formulário de adesão" e "Ver pedidos"), **ecrã de entrada** (\`/login\`, link "Adesão de novos sócios"), **portal do sócio** (\`/socio/login\`, "Ainda não és sócio? Adere aqui") e **menu lateral** (\`Clientes → Adesão de sócios\`)
-- Aprovação: **Pedidos sócio** (\`/pedidos\`, painel \`ApprovalsPanel\`) → \`POST /api/membership-applications/{id}/accept\` (atribui nº de sócio, cria o PIN e dá 1 ponto ao padrinho) ou \`/reject\`
+- **Notificação à administração**: cada nova adesão gera o aviso "N adesões" no cabeçalho (\`HeaderAlerts\`, teal, \`header-alert-memberships\`), alimentado por \`GET /api/membership-applications/pending-count\` (polling 15 s), que abre \`/aderir?filter=pending\`
+- Aprovação: painel \`AdesaoApprovals\` na própria página \`/aderir\` (só admin/tesoureiro/presidente) com os **pedidos pendentes** (Aprovar / Rejeitar) e a **lista dos novos sócios aprovados** (nº de sócio + data). Também continua disponível o painel \`ApprovalsPanel\` em **Pedidos sócio** (\`/pedidos\`) → \`POST /api/membership-applications/{id}/accept\` (atribui nº de sócio, cria o PIN e dá 1 ponto ao padrinho) ou \`/reject\`
+- Manual de regras: \`/manual.html\` atualizado com as secções "Como te tornares sócio (adesão)" e "Regras que valem para todos os sócios"; a página \`/aderir\` mostra um resumo expansível com link para o manual
 
 ### Parceiros locais — talões e notificações
 - Sócio envia a fotografia do talão: \`POST /api/socio/partner-tickets\` (máx. **3/dia**, até **48 h** após a compra; \`doc_number\` repetido fica sinalizado como duplicado)
@@ -297,7 +299,7 @@ Restantes (Vendas semana/mês, A pagar fornecedores, Valor stock, Clientes) masc
 
 ### Adesão de sócios
 - \`POST /api/public/membership-application\` (formulário público \`/aderir\`)
-- \`GET /api/membership-applications?status_filter=\` · \`POST /api/membership-applications/{id}/accept\` · \`/reject\`
+- \`GET /api/membership-applications?status_filter=\` · \`GET /api/membership-applications/pending-count\` · \`POST /api/membership-applications/{id}/accept\` · \`/reject\`
 
 ### Parceiros locais
 - \`GET/POST /api/partners\` · \`PUT/DELETE /api/partners/{id}\` (admin)

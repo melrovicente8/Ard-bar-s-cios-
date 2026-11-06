@@ -1,8 +1,18 @@
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import api, { formatApiErrorDetail } from "../lib/api";
-import { UserPlus, CheckCircle } from "@phosphor-icons/react";
+import { UserPlus, CheckCircle, BookOpen } from "@phosphor-icons/react";
 import { toast } from "sonner";
+import AdesaoApprovals from "../components/AdesaoApprovals";
+
+const REGRAS = [
+  "O pedido fica pendente até a direção aprovar — a administração recebe um aviso de cada nova adesão.",
+  "Depois da aprovação recebes o nº de sócio e o PIN automático (nº de sócio com zeros à esquerda até 5 dígitos).",
+  "As quotas são mensais (12 por ano): 🟢 em dia, 🟡 por regularizar, 🔴 em dívida.",
+  "Só com quotas 🟢 acumulas pontos: 1 ponto por cada 5 € e 5 pontos valem 1 €.",
+  "Quem te apadrinhar recebe 1 ponto quando a adesão é aprovada.",
+  "Menores de 16 anos ficam registados como tutelados do titular do agregado.",
+];
 
 const Field = ({ label, required, children }) => (
   <div>
@@ -57,12 +67,27 @@ export default function Adesao() {
           <p className="text-sm text-slate-400 mt-1">Preenche o formulário — o pedido fica pendente de aprovação da direção.</p>
         </div>
 
+        <AdesaoApprovals />
+
+        <details className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 mb-4" data-testid="adesao-regras">
+          <summary className="cursor-pointer text-sm font-semibold text-amber-300 flex items-center gap-2">
+            <BookOpen size={16} weight="duotone" /> Manual de regras · novos sócios e sócios atuais
+          </summary>
+          <ul className="mt-3 space-y-1.5 text-xs text-slate-400 list-disc pl-5">
+            {REGRAS.map((r) => <li key={r}>{r}</li>)}
+          </ul>
+          <a href="/manual.html" target="_blank" rel="noreferrer" className="inline-block mt-3 text-xs font-bold text-amber-400 hover:text-amber-300" data-testid="adesao-manual-link">
+            Abrir o Manual do Sócio completo (imprimível) →
+          </a>
+        </details>
+
         {done ? (
           <div className="bg-slate-900/60 border border-emerald-500/30 rounded-xl p-8 text-center" data-testid="adesao-success">
             <CheckCircle size={42} weight="duotone" className="mx-auto text-emerald-400 mb-3" />
             <h2 className="font-outfit text-xl font-semibold">Pedido submetido</h2>
             <p className="text-sm text-slate-400 mt-2">
-              O teu pedido de adesão foi registado com data e hora. Serás contactado após aprovação da direção.
+              O teu pedido de adesão foi registado com data e hora e a direção já recebeu o aviso para aprovar.
+              Serás contactado depois da decisão — só então é atribuído o nº de sócio e o PIN.
             </p>
             <Link to="/socio/login" className="inline-block mt-5 px-5 py-2.5 rounded-lg bg-amber-500 text-slate-950 font-bold text-sm">
               Voltar ao portal do sócio

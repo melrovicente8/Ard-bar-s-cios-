@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import api, { euro } from "../lib/api";
-import { Bell, ChatCircle, DeviceMobile, Package, Gift, WarningCircle, Lightning, Receipt } from "@phosphor-icons/react";
+import { Bell, ChatCircle, DeviceMobile, Package, Gift, WarningCircle, Lightning, Receipt, UserPlus } from "@phosphor-icons/react";
 
 /**
  * Relógio + notificações pendentes no topo — presente em todas as abas.
@@ -47,19 +47,20 @@ const dismissInsist = (key) => {
 
 export default function HeaderAlerts() {
   const navigate = useNavigate();
-  const [pending, setPending] = useState({ requests: 0, messages: 0, mbway: 0, toDeliver: 0, gifts: 0, tickets: 0 });
+  const [pending, setPending] = useState({ requests: 0, messages: 0, mbway: 0, toDeliver: 0, gifts: 0, tickets: 0, memberships: 0 });
   const [lateRequest, setLateRequest] = useState(null);
   const [insistRequest, setInsistRequest] = useState(null);
 
   const loadPending = async () => {
     try {
-      const [r, m, mb, td, gf, tk] = await Promise.all([
+      const [r, m, mb, td, gf, tk, ma] = await Promise.all([
         api.get("/consumption-requests", { params: { status_filter: "pending" } }).catch(() => ({ data: [] })),
         api.get("/socio-messages", { params: { status_filter: "open" } }).catch(() => ({ data: [] })),
         api.get("/mbway-payments").catch(() => ({ data: [] })),
         api.get("/consumption-requests", { params: { status_filter: "approved" } }).catch(() => ({ data: [] })),
         api.get("/socio-gifts", { params: { status_filter: "active" } }).catch(() => ({ data: [] })),
         api.get("/partner-tickets/pending-count").catch(() => ({ data: {} })),
+        api.get("/membership-applications/pending-count").catch(() => ({ data: {} })),
       ]);
       const approved = td.data || [];
       const pendingReqs = r.data || [];
@@ -71,6 +72,7 @@ export default function HeaderAlerts() {
         toDeliver: approved.length,
         gifts: (gf.data || []).filter((x) => x.status === "claimed" || x.status === "pending").length,
         tickets: Number(tk.data?.pending) || 0,
+        memberships: Number(ma.data?.pending) || 0,
       });
       // Notificação em destaque: pronto a levantar há mais de 5 minutos e ainda por entregar
       const ignored = dismissedIds();
@@ -125,6 +127,16 @@ export default function HeaderAlerts() {
       {pending.mbway > 0 && (
         <Link to="/mbway" data-testid="header-alert-mbway" className={`${pill} bg-sky-400 text-slate-950 ring-sky-400/70`}>
           <DeviceMobile size={13} weight="fill" /> {pending.mbway} MBWay
+        </Link>
+      )}
+      {pending.memberships > 0 && (
+        <Link
+          to="/aderir?filter=pending"
+          data-testid="header-alert-memberships"
+          title="Pedidos de adesão a sócio à espera de aprovação"
+          className={`${pill} bg-teal-400 text-slate-950 ring-teal-400/70`}
+        >
+          <UserPlus size={13} weight="fill" /> {pending.memberships} ades{pending.memberships > 1 ? "ões" : "ão"}
         </Link>
       )}
       {pending.tickets > 0 && (
