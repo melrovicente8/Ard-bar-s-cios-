@@ -16,11 +16,9 @@ import {
   EyeSlash,
   Vault,
   Bank,
-  ArrowsLeftRight,
   Coffee,
   Cake,
   Trophy,
-  UserPlus,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -63,7 +61,7 @@ const StatCard = ({ icon: Icon, label, value, accent, testid, to, masked = false
             </button>
           )}
         </div>
-        <div className={`mt-3 font-outfit text-3xl font-bold tracking-tight ${isMasked ? "text-slate-500" : "text-white"}`}>
+        <div className={`mt-2 font-outfit text-2xl font-bold tracking-tight ${isMasked ? "text-slate-500" : "text-white"}`}>
           {shownValue}
         </div>
         {details && !isMasked && (
@@ -77,12 +75,12 @@ const StatCard = ({ icon: Icon, label, value, accent, testid, to, masked = false
           </div>
         )}
       </div>
-      <div className={`p-3 rounded-lg ${accent}`}>
-        <Icon size={22} weight="duotone" />
+      <div className={`p-2 rounded-lg ${accent}`}>
+        <Icon size={16} weight="duotone" />
       </div>
     </div>
   );
-  const cls = "block bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-5 hover:border-amber-500/40 transition-colors";
+  const cls = "block bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-lg px-4 py-3 hover:border-amber-500/40 transition-colors";
   if (to) return <Link to={to} data-testid={testid} className={cls}>{inner}</Link>;
   return <div data-testid={testid} className={cls}>{inner}</div>;
 };
@@ -121,7 +119,6 @@ export default function Dashboard() {
   const cashHiddenForStaff = !isDirection && cashHour >= 2 && cashHour < 8;
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [pendingApps, setPendingApps] = useState(0);
   // Valor de stock (venda/custo) fica oculto até ser revelado
   const [stockRevealed, setStockRevealed] = useState(false);
   const cashBank = data ? (data.cash_bank || null) : null;
@@ -142,15 +139,6 @@ export default function Dashboard() {
   useEffect(() => {
     load();
   }, []);
-
-  // Adesões digitais à espera de aprovação da direção
-  useEffect(() => {
-    if (!isDirection) return;
-    api
-      .get("/membership-applications", { params: { status_filter: "pending" } })
-      .then((r) => setPendingApps((r.data || []).length))
-      .catch(() => {});
-  }, [isDirection]);
 
   if (loading)
     return (
@@ -184,7 +172,7 @@ export default function Dashboard() {
         )}
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-5">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
         <StatCard
           testid="kpi-today-sales"
           icon={CurrencyEur}
@@ -234,7 +222,7 @@ export default function Dashboard() {
           <Link
             to="/stock"
             data-testid="kpi-stock-value"
-            className="block bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-5 hover:border-amber-500/40 transition-colors"
+            className="block bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-lg px-4 py-3 hover:border-amber-500/40 transition-colors"
           >
             <div className="flex items-start justify-between">
               <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 flex items-center gap-1.5">
@@ -249,18 +237,18 @@ export default function Dashboard() {
                   {stockRevealed ? <EyeSlash size={11} weight="duotone" /> : <Eye size={11} weight="duotone" />}
                 </button>
               </div>
-              <div className="p-2.5 rounded-lg bg-emerald-500/10 text-emerald-400">
-                <Package size={20} weight="duotone" />
+              <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400">
+                <Package size={16} weight="duotone" />
               </div>
             </div>
-            <div className="mt-3 space-y-1.5">
+            <div className="mt-2 space-y-1">
               <div className="flex items-baseline justify-between gap-2">
                 <span className="text-[11px] text-slate-400">Venda ao público</span>
-                <span className={`font-outfit text-xl font-bold ${stockRevealed ? "text-white" : "text-slate-500"}`} data-testid="kpi-stock-value-sale">{stockRevealed ? euro(data.total_stock_value) : MASK}</span>
+                <span className={`font-outfit text-lg font-bold ${stockRevealed ? "text-white" : "text-slate-500"}`} data-testid="kpi-stock-value-sale">{stockRevealed ? euro(data.total_stock_value) : MASK}</span>
               </div>
               <div className="flex items-baseline justify-between gap-2">
                 <span className="text-[11px] text-slate-400">Preço de custo</span>
-                <span className={`font-outfit text-base font-bold ${stockRevealed ? "text-slate-300" : "text-slate-500"}`} data-testid="kpi-stock-value-cost">{stockRevealed ? euro(data.total_stock_cost || 0) : MASK}</span>
+                <span className={`font-outfit text-sm font-bold ${stockRevealed ? "text-slate-300" : "text-slate-500"}`} data-testid="kpi-stock-value-cost">{stockRevealed ? euro(data.total_stock_cost || 0) : MASK}</span>
               </div>
             </div>
           </Link>
@@ -312,68 +300,6 @@ export default function Dashboard() {
           unmaskedDefault
         />
       </div>
-
-      {/* Adesão de novos sócios (formulário público + pedidos da direção) */}
-      {isDirection && (
-        <div
-          className="bg-slate-900/40 backdrop-blur-xl border border-emerald-500/25 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center gap-4 justify-between"
-          data-testid="dashboard-adesao-cta"
-        >
-          <div className="flex items-center gap-3">
-            <div className="p-3 rounded-lg bg-emerald-500/10 text-emerald-400">
-              <UserPlus size={22} weight="duotone" />
-            </div>
-            <div>
-              <div className="font-outfit text-lg font-semibold text-slate-100">Adesão de novos sócios</div>
-              <div className="text-xs text-slate-500" data-testid="dashboard-adesao-info">
-                {pendingApps > 0
-                  ? `${pendingApps} pedido${pendingApps > 1 ? "s" : ""} de adesão à espera de aprovação da direção.`
-                  : "Abre o formulário público para inscrever um novo sócio."}
-              </div>
-            </div>
-          </div>
-          <div className="flex gap-2 shrink-0">
-            {pendingApps > 0 && (
-              <Link
-                to="/clientes?tab=adesao"
-                data-testid="dashboard-adesao-open-requests"
-                className="px-4 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm font-bold transition-colors"
-              >
-                Ver pedidos
-              </Link>
-            )}
-            <Link
-              to="/aderir"
-              data-testid="dashboard-adesao-form"
-              className="px-5 py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm font-bold inline-flex items-center justify-center gap-2 transition-colors"
-            >
-              <UserPlus size={16} weight="bold" /> Formulário de adesão
-            </Link>
-          </div>
-        </div>
-      )}
-
-      {/* Transferência caixa → banco (chamada de atenção para a aba Banco) */}
-      {cashBank && (user?.role === "admin" || user?.role === "tesoureiro") && (
-        <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center gap-4 justify-between" data-testid="dashboard-transfer-cta">
-          <div className="flex items-center gap-3">
-            <div className="p-3 rounded-lg bg-sky-500/10 text-sky-400">
-              <ArrowsLeftRight size={22} weight="duotone" />
-            </div>
-            <div>
-              <div className="font-outfit text-lg font-semibold text-slate-100">Transferir dinheiro da caixa para o banco</div>
-              <div className="text-xs text-slate-500">Vais ao banco depositar o dinheiro da caixa? Regista aqui a retirada para o valor do banco subir e a caixa descer.</div>
-            </div>
-          </div>
-          <Link
-            to="/banco?mov=caixa-banco"
-            data-testid="dashboard-transfer-cta-button"
-            className="shrink-0 px-5 py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-sm font-bold transition-colors inline-flex items-center justify-center gap-2"
-          >
-            Transferir caixa → banco
-          </Link>
-        </div>
-      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Chart */}

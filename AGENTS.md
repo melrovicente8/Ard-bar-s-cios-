@@ -122,7 +122,7 @@ docker compose -f docker-compose.base44.yml up -d
 - `AdesaoApprovals` (só admin/tesoureiro/presidente) lista os pedidos pendentes com aprovar/rejeitar e os 10 últimos sócios aprovados (nº de sócio + data de decisão).
 - Manual de regras: `frontend/public/manual.html` tem "Como te tornares sócio (adesão)" e "Regras que valem para todos os sócios"; `/aderir` mostra um resumo expansível (`adesao-regras`) com link para o manual.
 - Lagarto Amarelo: `ARDN_SYSTEM_PROMPT` descreve o fluxo de adesão (pendente → aprovação em `/aderir?filter=pending` ou `/pedidos` → nº de sócio + PIN, padrinho +1 ponto, menores tutelados, honorário anual) e onde está o arquivo. `_lagarto_archive_context()` injeta em cada pergunta a história, a cronologia, as épocas com plantel, o palmarés e os documentos de `db.club_archive`/`CLUB_LEGACY`.
-- Entradas: cartão `dashboard-adesao-cta` no Dashboard (só admin/tesoureiro/presidente, com o nº de pendentes), link em `/login` e link em `/socio/login`.
+- Entradas: pill `header-alert-memberships` no cabeçalho (com o nº de pendentes), aba Adesão de sócios em `/clientes?tab=adesao`, link em `/login` e link em `/socio/login`. O cartão `dashboard-adesao-cta` e o atalho de transferência caixa → banco (`dashboard-transfer-cta`) foram retirados do Dashboard — cada fluxo vive na sua aba.
 - **A aba "Adesão de sócios" vive dentro de Clientes e sócios** (`/clientes?tab=adesao`): mostra `AdesaoApprovals` + o mesmo formulário (`src/components/AdesaoForm.jsx`, partilhado com a página pública `/aderir`). O item de menu `nav-adesao` foi removido e a pill do cabeçalho abre `/clientes?tab=adesao`.
 
 ## Parceiros locais · upload de talão
