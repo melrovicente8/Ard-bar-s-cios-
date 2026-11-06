@@ -21,7 +21,6 @@ import Contas from "./pages/Contas";
 import Banco from "./pages/Banco";
 import Transacao from "./pages/Transacao";
 import TransacoesHub from "./pages/TransacoesHub";
-import Bilhetes from "./pages/Bilhetes";
 import Documentacao from "./pages/Documentacao";
 import Parceiros from "./pages/Parceiros";
 import Arquivo from "./pages/Arquivo";
@@ -132,7 +131,7 @@ function App() {
                 <Route path="transacoes/:tx_number" element={<Transacao />} />
                 <Route path="transacoes" element={<AllStaffOnly><TransacoesHub /></AllStaffOnly>} />
                 <Route path="ofertas" element={<AllStaffOnly><TransacoesHub /></AllStaffOnly>} />
-                <Route path="bilhetes" element={<Bilhetes />} />
+                <Route path="bilhetes" element={<Navigate to="/vender?tab=bilhetes" replace />} />
                 <Route path="rankings" element={<Navigate to="/clientes?tab=rankings" replace />} />
                 <Route path="parceiros" element={<AllStaffOnly><Parceiros /></AllStaffOnly>} />
                 <Route path="arquivo" element={<AllStaffOnly><Arquivo /></AllStaffOnly>} />

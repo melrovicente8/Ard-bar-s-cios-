@@ -7,7 +7,7 @@ import { toast } from "sonner";
 const inputCls =
   "w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500/50";
 
-export default function Bilhetes() {
+export default function Bilhetes({ embedded = false }) {
   const [products, setProducts] = useState([]);
   const [clients, setClients] = useState([]);
   const [search, setSearch] = useState("");
@@ -56,17 +56,21 @@ export default function Bilhetes() {
   };
 
   return (
-    <div className="p-6 md:p-10 animate-in" data-testid="bilhetes-page">
-      <div className="flex items-center gap-3 mb-2">
-        <Ticket size={32} weight="duotone" className="text-amber-400" />
-        <div>
-          <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">Bilheteira</div>
-          <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1"><EditableText k="page.bilhetes.title">Bilhetes e Merchandising</EditableText></h1>
-        </div>
-      </div>
-      <p className="text-sm text-slate-400 mb-6">
-        Venda de bilhetes para o Estádio Dia Gonçalves (em breve) e merchandising oficial da ARDN.
-      </p>
+    <div className={embedded ? "animate-in" : "p-6 md:p-10 animate-in"} data-testid="bilhetes-page">
+      {!embedded && (
+        <>
+          <div className="flex items-center gap-3 mb-2">
+            <Ticket size={32} weight="duotone" className="text-amber-400" />
+            <div>
+              <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">Bilheteira</div>
+              <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1"><EditableText k="page.bilhetes.title">Bilhetes e Merchandising</EditableText></h1>
+            </div>
+          </div>
+          <p className="text-sm text-slate-400 mb-6">
+            Venda de bilhetes para o Estádio Dia Gonçalves (em breve) e merchandising oficial da ARDN.
+          </p>
+        </>
+      )}
 
       <div className="bg-slate-900/40 border border-amber-500/20 rounded-xl p-5 mb-6 max-w-xl">
         <div className="inline-flex px-3 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px] font-bold uppercase tracking-widest mb-2">

@@ -7,6 +7,7 @@ import OccasionalCards from "../components/OccasionalCards";
 import QuotaBall from "../components/QuotaBall";
 import RodadaMista from "../components/RodadaMista";
 import RodadaMistaCard from "../components/RodadaMistaCard";
+import Bilhetes from "./Bilhetes";
 import {
   Plus,
   Minus,
@@ -23,8 +24,15 @@ import { toast } from "sonner";
 
 export default function Vender() {
   const { user } = useAuth();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const presetClientId = searchParams.get("cliente");
+  const tab = searchParams.get("tab") === "bilhetes" ? "bilhetes" : "loja";
+  const setTab = (v) => {
+    const next = new URLSearchParams(searchParams);
+    if (v === "bilhetes") next.set("tab", "bilhetes");
+    else next.delete("tab");
+    setSearchParams(next, { replace: true });
+  };
   const canHouseOffer = user?.role === "admin" || user?.role === "tesoureiro";
   const [products, setProducts] = useState([]);
   const [viewMode, setViewMode] = useState(() => localStorage.getItem("vender_view") || "grid");
@@ -198,7 +206,31 @@ export default function Vender() {
         </div>
       </div>
 
+      <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900/60 p-1 mb-6" data-testid="vender-tabs">
+        {[
+          { v: "loja", label: "Loja Bar" },
+          { v: "bilhetes", label: "Bilhetes e Merchandising" },
+        ].map((opt) => (
+          <button
+            key={opt.v}
+            type="button"
+            data-testid={`vender-tab-${opt.v}`}
+            onClick={() => setTab(opt.v)}
+            className={`px-4 py-1.5 rounded-md text-xs font-bold uppercase tracking-wider transition-colors ${
+              tab === opt.v ? "bg-amber-500 text-slate-950" : "text-slate-400 hover:text-white"
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
       {showRodada && <RodadaMista onClose={() => setShowRodada(false)} onChanged={load} />}
+
+      {tab === "bilhetes" ? (
+        <Bilhetes embedded />
+      ) : (
+        <>
 
       {/* Selector de Cliente/Sócio — sempre por CIMA dos produtos */}
       <div className="mb-6 bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-5" data-testid="client-picker">
@@ -630,6 +662,8 @@ export default function Vender() {
           </div>
         </aside>
       </div>
+        </>
+      )}
     </div>
   );
 }

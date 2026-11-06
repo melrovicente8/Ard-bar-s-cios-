@@ -23,7 +23,6 @@ import {
   Book,
   List,
   ListDashes,
-  Ticket,
   ArrowClockwise,
   X as XIcon,
   Storefront as BarIcon,
@@ -51,8 +50,10 @@ const navGroups = [
     items: [
       { to: "/", label: "Dashboard", icon: ChartLineUp, testid: "nav-dashboard", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/dividas", label: "Dívidas em aberto", icon: Wallet, testid: "nav-dividas", roles: [...STAFF_ROLES, "funcionario"] },
-      { to: "/vender", label: "Vender", icon: Storefront, testid: "nav-sell", roles: [...STAFF_ROLES, "funcionario"] },
-      { to: "/bilhetes", label: "Bilhetes", icon: Ticket, testid: "nav-bilhetes", roles: [...STAFF_ROLES, "funcionario"] },
+      {
+        to: "/vender", label: "Vender", icon: Storefront, testid: "nav-sell",
+        also: ["/bilhetes"], roles: [...STAFF_ROLES, "funcionario"],
+      },
     ],
   },
   {
