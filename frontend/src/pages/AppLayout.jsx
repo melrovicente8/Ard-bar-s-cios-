@@ -18,11 +18,8 @@ import {
   Truck,
   Wallet,
   UsersThree,
-  ClockCounterClockwise,
-  ShoppingCart,
   Bank,
   Vault,
-  ChatCircle,
   Book,
   List,
   ListDashes,
@@ -30,7 +27,6 @@ import {
   ArrowClockwise,
   X as XIcon,
   Storefront as BarIcon,
-  Gift,
   LockSimple,
   LockSimpleOpen,
   Trophy,
@@ -74,9 +70,10 @@ const navGroups = [
       { to: "/rankings", label: "Tabela de Feitos", icon: Trophy, testid: "nav-rankings", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/arquivo", label: "Historial e Palmarés", icon: Book, testid: "nav-arquivo", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/parceiros", label: "Parceiros locais", icon: Storefront, testid: "nav-parceiros", roles: [...STAFF_ROLES, "funcionario"] },
-      { to: "/mbway", label: "MBWay", icon: DeviceMobile, testid: "nav-mbway", roles: [...STAFF_ROLES, "funcionario"] },
-      { to: "/pedidos", label: "Pedidos sócio", icon: ShoppingCart, testid: "nav-pedidos", roles: [...STAFF_ROLES, "funcionario"] },
-      { to: "/mensagens", label: "Mensagens", icon: ChatCircle, testid: "nav-mensagens", roles: [...STAFF_ROLES, "funcionario"] },
+      {
+        to: "/mbway", label: "MBWay e Pedidos", icon: DeviceMobile, testid: "nav-mbway",
+        also: ["/pedidos", "/mensagens"], roles: [...STAFF_ROLES, "funcionario"],
+      },
     ],
   },
   {
@@ -85,9 +82,10 @@ const navGroups = [
       { to: "/equipa", label: "Equipa", icon: UsersThree, testid: "nav-equipa", roles: ["admin"] },
       { to: "/contas", label: "Contas", icon: Bank, testid: "nav-contas", roles: [...STAFF_ROLES, "funcionario"] },
       { to: "/banco", label: "Caixa e Banco", icon: Vault, testid: "nav-banco", roles: ["admin", "tesoureiro"] },
-      { to: "/historico", label: "Histórico", icon: ClockCounterClockwise, testid: "nav-historico", roles: STAFF_ROLES },
-      { to: "/transacoes", label: "Transações", icon: ListDashes, testid: "nav-transacoes", roles: [...STAFF_ROLES, "funcionario"] },
-      { to: "/ofertas", label: "Ofertas casa", icon: Gift, testid: "nav-ofertas", roles: STAFF_ROLES },
+      {
+        to: "/transacoes", label: "Transações", icon: ListDashes, testid: "nav-transacoes",
+        also: ["/historico", "/ofertas"], roles: [...STAFF_ROLES, "funcionario"],
+      },
       { to: "/documentacao", label: "Documentação", icon: Book, testid: "nav-documentacao", roles: ["admin"] },
     ],
   },
@@ -423,7 +421,7 @@ export default function AppLayout() {
                     data-testid={item.testid}
                     className={({ isActive }) =>
                       `flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
-                        isActive
+                        isActive || (item.also || []).some((p) => location.pathname === p || location.pathname.startsWith(p + "/"))
                           ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
                           : "text-slate-400 hover:text-white hover:bg-slate-900"
                       }`

@@ -75,7 +75,9 @@ export default function RodadaMistaCard({ onOpen, refreshKey = 0 }) {
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {tables.slice(0, 6).map((t) => {
             const openRounds = (t.rounds || []).filter((r) => r.status !== "paid");
-            const openTotal = openRounds.reduce((s, r) => s + (r.total || 0), 0);
+            const openTotal = t.remaining_total != null
+              ? t.remaining_total
+              : openRounds.reduce((s, r) => s + (r.total || 0), 0);
             const editing = editingId === t.id;
             return (
               <div

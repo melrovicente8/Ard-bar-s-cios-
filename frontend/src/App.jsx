@@ -13,20 +13,16 @@ import Vender from "./pages/Vender";
 import Stock from "./pages/Stock";
 import Clientes from "./pages/Clientes";
 import ClienteFicha from "./pages/ClienteFicha";
-import MBWay from "./pages/MBWay";
+import MbwayPedidos from "./pages/MbwayPedidos";
 import Fornecedores from "./pages/Fornecedores";
 import DividasHoje from "./pages/DividasHoje";
 import Equipa from "./pages/Equipa";
-import Historico from "./pages/Historico";
 import Contas from "./pages/Contas";
 import Banco from "./pages/Banco";
-import Mensagens from "./pages/Mensagens";
-import Pedidos from "./pages/Pedidos";
 import Transacao from "./pages/Transacao";
-import Transacoes from "./pages/Transacoes";
+import TransacoesHub from "./pages/TransacoesHub";
 import Bilhetes from "./pages/Bilhetes";
 import Documentacao from "./pages/Documentacao";
-import OfertasCasa from "./pages/OfertasCasa";
 import Rankings from "./pages/Rankings";
 import Parceiros from "./pages/Parceiros";
 import Arquivo from "./pages/Arquivo";
@@ -112,7 +108,9 @@ function App() {
                 <Route path="stock" element={<Stock />} />
                 <Route path="clientes" element={<Clientes />} />
                 <Route path="clientes/:id" element={<ClienteFicha />} />
-                <Route path="mbway" element={<MBWay />} />
+                <Route path="mbway" element={<MbwayPedidos />} />
+                <Route path="pedidos" element={<MbwayPedidos />} />
+                <Route path="mensagens" element={<MbwayPedidos />} />
                 <Route path="dividas" element={<DividasHoje />} />
                 <Route path="fornecedores" element={<AllStaffOnly><Fornecedores /></AllStaffOnly>} />
                 <Route path="socios" element={<Navigate to="/clientes" replace />} />
@@ -122,7 +120,7 @@ function App() {
                 />
                 <Route
                   path="historico"
-                  element={<StaffOnly><Historico /></StaffOnly>}
+                  element={<StaffOnly><TransacoesHub /></StaffOnly>}
                 />
                 <Route
                   path="contas"
@@ -132,11 +130,9 @@ function App() {
                   path="banco"
                   element={<StaffOnly><Banco /></StaffOnly>}
                 />
-                <Route path="mensagens" element={<Mensagens />} />
-                <Route path="pedidos" element={<Pedidos />} />
                 <Route path="transacoes/:tx_number" element={<Transacao />} />
-                <Route path="transacoes" element={<AllStaffOnly><Transacoes /></AllStaffOnly>} />
-                <Route path="ofertas" element={<AllStaffOnly><OfertasCasa /></AllStaffOnly>} />
+                <Route path="transacoes" element={<AllStaffOnly><TransacoesHub /></AllStaffOnly>} />
+                <Route path="ofertas" element={<AllStaffOnly><TransacoesHub /></AllStaffOnly>} />
                 <Route path="bilhetes" element={<Bilhetes />} />
                 <Route path="rankings" element={<Rankings />} />
                 <Route path="parceiros" element={<AllStaffOnly><Parceiros /></AllStaffOnly>} />

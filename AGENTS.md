@@ -43,6 +43,10 @@ docker compose -f docker-compose.base44.yml up -d
 ## Cabeçalho em telemóvel
 - O topbar (`AppLayout`) e as notificações (`HeaderAlerts`) usam `flex-wrap`: os avisos passam para a linha seguinte em ecrãs estreitos em vez de serem cortados. O relógio está escondido abaixo de `sm`.
 
+## Menu: páginas agrupadas em abas
+- **MBWay e Pedidos** (`nav-mbway`, `also: ["/pedidos","/mensagens"]`) → `src/pages/MbwayPedidos.jsx` com os separadores MBWay · Pedidos de sócio · Mensagens (`mbway-pedidos-tabs`). As rotas `/mbway`, `/pedidos` e `/mensagens` continuam a existir e abrem a aba certa (os links do `HeaderAlerts` mantêm o `?filter=`).
+- **Transações** (`nav-transacoes`, `also: ["/historico","/ofertas"]`) → `src/pages/TransacoesHub.jsx` com Transações · Histórico · Ofertas da casa (`transacoes-tabs`); a aba Histórico fica escondida para `funcionario` (rota continua `StaffOnly`). Os itens `nav-pedidos`, `nav-mensagens`, `nav-historico` e `nav-ofertas` saíram do menu; o `NavLink` usa `item.also` para ficar ativo nas rotas irmãs.
+
 
 ## Secrets
 - `RESEND_API_KEY` (opcional) via dashboard Base44 → `/run/base44/app.env`, ligado ao serviço backend como último `env_file`. Sem ela, `send_email` falha graciosamente.
@@ -63,7 +67,9 @@ docker compose -f docker-compose.base44.yml up -d
 - **Sócio Honorário na app**: ativação **desativada por defeito** — `db.club_settings {id: "honorary_self_activation"}` (default `false`), exposta em `/api/club/info` e `/api/socio/quota-settings` e ligada pelo admin em `/clientes` (`honorary-app-toggle` → `PUT /api/club/honorary-settings`). Desligada, `POST /api/socio/honorary/activate` responde **403** e o portal mostra `socio-honorary-disabled` em vez do botão.
 
 ## Cartão "Valor em caixa" (Dashboard)
-- `_account_balances()` devolve também `cash_numerario` (soma de `_payment_cash_value`) e `cash_mbway` (soma de `_payment_mbway_value`, já sem pontos/oferta) — o cartão `kpi-cash` mostra o saldo e, por baixo, "Numerário" (`kpi-cash-numerario`) e "MBWay" (`kpi-cash-mbway`). Os detalhes só aparecem depois de revelar com o olho (o valor continua mascarado à direção por omissão).
+- **Caixa = só numerário da gaveta.** `_account_balances()` calcula `cash_balance` apenas com entradas em numerário (`_payment_cash_value`) ± depósitos/transferências/despesas em caixa − `cash_reset`. O MBWay **não** passa pela gaveta: entra no `bank_balance` (`mbway_in`), tal como os depósitos bancários. Ex.: venda de 30 € (20 numerário + 10 MBWay) → caixa +20 €, banco +10 €.
+- O cartão `kpi-cash` mostra o saldo e, por baixo, "Recebido em numerário" (`kpi-cash-numerario`, bruto de sempre) e "MBWay (direto para o banco)" (`kpi-cash-mbway`). Os detalhes só aparecem depois de revelar com o olho (o valor continua mascarado à direção por omissão).
+- **Acerto de abertura (`cash_reset`)**: movimento em `db.cash_withdrawals` com `kind: "cash_reset"` que reduz o saldo de caixa sem mexer no banco (não é receita nem despesa). Foi usado para recontar a gaveta a zero; aparece em `/banco` como "Acerto de abertura de caixa".
 
 ## Bola de quotas junto ao nome
 - `src/components/QuotaBall.jsx` (🟢 paid / 🟡 pending / 🔴 debt; não-sócios sem bola). Usada na lista de clientes, na ficha (`ficha-client-name`) e no POS (`Vender`).
@@ -74,7 +80,8 @@ docker compose -f docker-compose.base44.yml up -d
 - As vendas ficam com `source: "group_round"` e uma única linha-resumo: "Rodada Mista (Oferecida à Mesa)" ou "Rodada Mista (Partilha i/n)"; o detalhe dos produtos vai em `group_items`. O stock é abatido no lançamento da rodada, por isso estas vendas não voltam a mexer no stock.
 - **Quem paga**: por omissão ninguém assume a despesa — cada rodada mostra "Quem paga?" vazio até o staff escolher (nunca pré-seleciona o primeiro sócio).
 - **Mesa nova a partir da anterior**: ao abrir o modal, os sócios da última Rodada Mista (aberta ou fechada) vêm pré-selecionados; podem sair (chip com X antes de abrir) ou entrar outros.
-- **Retirar sócio de uma mesa aberta**: `DELETE /api/group-tables/{id}/members/{client_id}` — tira-o de `members`, guarda-o em `departed` (`left_round`) e notifica-o. Não é possível ficar sem sócios nem mexer em mesas fechadas.
+- **Retirar sócio de uma mesa aberta**: `DELETE /api/group-tables/{id}/members/{client_id}` — tira-o de `members`, guarda-o em `departed` (`left_round`) e notifica-o. **Só sai a partir dessa rodada**: cada rodada guarda `members` no momento do lançamento, por isso as rodadas anteriores continuam associadas a ele e `_split_members()` volta a incluí-lo na divisão (`departed: true`, mostrado como "Anibal (saiu)"). Não é possível ficar sem sócios nem mexer em mesas fechadas.
+- **Divisão por consumo às prestações**: `POST /{id}/split` com `mode: "items"` aceita `items_by_member` **parcial** (`[{round, product_id, quantity}]`) — cria a venda/pagamento só dos sócios dessa passagem, guarda o que foi dividido em `split_parts` e mantém a mesa aberta (`fully_split: false`, `remaining_total`) até tudo estar atribuído. Só a última passagem fecha a mesa. `GET /group-tables/{id}` devolve `split_remaining` (unidades por dividir), `remaining_total` e `split_members` — o modal `RodadaMista.jsx` constrói a lista de unidades e o total a partir daí. Uma rodada com consumos já divididos não pode ser assumida inteira (`/rounds/{n}/settle` responde 400).
 - **Atalhos**: os 6 produtos com mais saída (`GET /products/top?limit=6`) aparecem como botões de um toque (`rodada-top-items`) e o lançamento é um só clique ("Lançar rodada rápida", `rodada-add-round`).
 - **Talão detalhado**: `_group_rounds_detail()` guarda em cada venda `group_rounds` (`{number, total, items[], members_present[]}`) — o que foi servido em cada rodada e quem estava à mesa. `printReceipt` usa-o (e `covered_docs[].rounds` nos recibos de pagamento) para descrever as rodadas em vez da linha-resumo; o modal de fecho mostra o detalhe e o botão "Imprimir talão" (`data-testid="rodada-last-receipt"` após assumir uma rodada).
 - Presenças do dia em `db.presences` (`client_id` + `date`), `GET /api/socio/presences/me`.

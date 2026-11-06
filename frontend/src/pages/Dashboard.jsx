@@ -281,8 +281,8 @@ export default function Dashboard() {
             unmaskedDefault={!isDirection && !cashHiddenForStaff}
             forceHidden={cashHiddenForStaff}
             details={[
-              { label: "Numerário", value: euro(cashBank.cash_numerario || 0), testid: "kpi-cash-numerario" },
-              { label: "MBWay", value: euro(cashBank.cash_mbway || 0), testid: "kpi-cash-mbway" },
+              { label: "Recebido em numerário", value: euro(cashBank.cash_numerario || 0), testid: "kpi-cash-numerario" },
+              { label: "MBWay (direto para o banco)", value: euro(cashBank.cash_mbway || 0), testid: "kpi-cash-mbway" },
             ]}
           />
         )}

@@ -135,7 +135,12 @@ export default function RodadaMista({ onClose, onChanged }) {
   const paidTotal = (table?.rounds || [])
     .filter((r) => r.status === "paid")
     .reduce((s, r) => s + (r.total || 0), 0);
-  const openTotal = openRounds.reduce((s, r) => s + (r.total || 0), 0);
+  // O que falta dividir — uma divisão por consumo pode já ter liquidado parte
+  const openTotal = table?.remaining_total != null
+    ? table.remaining_total
+    : openRounds.reduce((s, r) => s + (r.total || 0), 0);
+  // Quem pode receber consumos: quem está à mesa + quem saiu a meio das rodadas em aberto
+  const splitMembers = table?.split_members || table?.members || [];
 
   const createTable = async () => {
     if (memberIds.length < 2) return toast.error("Escolhe pelo menos 2 sócios");
@@ -189,24 +194,23 @@ export default function RodadaMista({ onClose, onChanged }) {
     }
   };
 
-  // Consumos das rodadas em aberto — UMA linha por unidade (3 colas = 3 linhas, cada uma para o seu sócio)
+  // Consumos ainda por dividir — UMA linha por unidade (3 colas = 3 linhas, cada uma para o seu sócio)
   const splitUnits = useMemo(() => {
     const units = [];
-    openRounds.forEach((r) => (r.items || []).forEach((it) => {
-      const qty = Number(it.quantity || 0);
+    (table?.split_remaining || []).forEach((it) => {
       const unitPrice = Number(it.unit_price || 0);
-      for (let i = 0; i < qty; i += 1) {
+      for (let i = 0; i < Number(it.quantity || 0); i += 1) {
         units.push({
-          key: `${r.number}-${it.product_id}-${i}`,
-          round: r.number,
+          key: `${it.round}-${it.product_id}-${i}`,
+          round: it.round,
           product_id: it.product_id,
           product_name: it.product_name,
           unit_price: unitPrice,
         });
       }
-    }));
+    });
     return units;
-  }, [openRounds]);
+  }, [table?.split_remaining]);
 
   const splitAssignedTotal = splitUnits
     .filter((u) => unitOwner[u.key])
@@ -229,7 +233,7 @@ export default function RodadaMista({ onClose, onChanged }) {
 
   const removeMember = async (member) => {
     if (!table || busy) return;
-    if (!window.confirm(`Retirar ${member.name} da mesa?`)) return;
+    if (!window.confirm(`Retirar ${member.name} da mesa? Sai a partir da próxima rodada — as rodadas anteriores continuam associadas a ele(a).`)) return;
     setBusy(true);
     try {
       const { data } = await api.delete(`/group-tables/${table.id}/members/${member.client_id}`);
@@ -263,30 +267,37 @@ export default function RodadaMista({ onClose, onChanged }) {
     setBusy(true);
     try {
       const methods = {};
-      (table.members || []).forEach((m) => { methods[m.client_id] = memberMethod[m.client_id] || "account"; });
+      splitMembers.forEach((m) => { methods[m.client_id] = memberMethod[m.client_id] || "account"; });
       const payload = { mode: splitMode, methods };
       if (splitMode === "items") {
-        if (splitAssignedTotal + 0.01 < openTotal) {
-          setBusy(false);
-          return toast.error(`Faltam ${euro(openTotal - splitAssignedTotal)} por atribuir`);
-        }
         const byMember = {};
         splitUnits.forEach((u) => {
           const owner = unitOwner[u.key];
           if (!owner) return;
           byMember[owner] = byMember[owner] || [];
-          const line = byMember[owner].find((x) => x.product_id === u.product_id);
+          const line = byMember[owner].find((x) => x.product_id === u.product_id && x.round === u.round);
           if (line) line.quantity += 1;
-          else byMember[owner].push({ product_id: u.product_id, quantity: 1 });
+          else byMember[owner].push({ round: u.round, product_id: u.product_id, quantity: 1 });
         });
+        if (!Object.keys(byMember).length) {
+          setBusy(false);
+          return toast.error("Atribui pelo menos um consumo a quem está a pagar");
+        }
         payload.items_by_member = byMember;
       }
       const { data } = await api.post(`/group-tables/${table.id}/split`, payload);
-      setReceipt({ table: data.table, sales: data.sales || [], payments: data.payments || [] });
-      setSplitOpen(false);
       setTable(data.table);
       await load();
       onChanged?.();
+      if (data.fully_split === false) {
+        // Divisão a meio: o resto fica por dividir e paga-se sócio a sócio
+        setUnitOwner({});
+        setMemberMethod({});
+        toast.success(`Parte liquidada — faltam ${euro(data.remaining_total || 0)} por dividir`);
+        return;
+      }
+      setReceipt({ table: data.table, sales: data.sales || [], payments: data.payments || [] });
+      setSplitOpen(false);
       toast.success("Conta dividida — lançamentos criados");
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
@@ -785,7 +796,7 @@ export default function RodadaMista({ onClose, onChanged }) {
           <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg p-5 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()} data-testid="rodada-split-dialog">
             <div className="flex items-center gap-2 mb-4">
               <Scissors size={18} weight="duotone" className="text-sky-400" />
-              <h3 className="font-outfit text-lg font-semibold flex-1">Dividir conta · {euro(openTotal)}</h3>
+              <h3 className="font-outfit text-lg font-semibold flex-1">Dividir conta · {euro(openTotal)} por dividir</h3>
               <button onClick={() => setSplitOpen(false)} className="p-1.5 rounded bg-slate-800"><X size={14} weight="bold" /></button>
             </div>
 
@@ -806,8 +817,12 @@ export default function RodadaMista({ onClose, onChanged }) {
               <div className="space-y-2 mb-4">
                 <div className="text-[11px] text-slate-500">
                   Cada unidade é atribuída à parte — 3 colas podem ficar para 3 sócios diferentes.
+                  Podes liquidar só uma parte agora: o resto fica por dividir para o próximo sócio.
                 </div>
                 <div className="max-h-64 overflow-y-auto space-y-1.5 pr-1">
+                  {splitUnits.length === 0 && (
+                    <div className="text-[11px] text-emerald-300">Tudo dividido.</div>
+                  )}
                   {splitUnits.map((u) => (
                     <div key={u.key} className="flex items-center gap-2 text-xs">
                       <span className="flex-1 truncate">
@@ -821,23 +836,31 @@ export default function RodadaMista({ onClose, onChanged }) {
                         className="bg-slate-950 border border-slate-800 rounded px-2 py-1 text-white"
                       >
                         <option value="">— quem consumiu —</option>
-                        {(table.members || []).map((m) => (
-                          <option key={m.client_id} value={m.client_id}>{m.name.split(" ")[0]}</option>
+                        {splitMembers.map((m) => (
+                          <option key={m.client_id} value={m.client_id}>
+                            {m.name.split(" ")[0]}{m.departed ? " (saiu)" : ""}
+                          </option>
                         ))}
                       </select>
                     </div>
                   ))}
                 </div>
-                <div className="text-[11px] text-slate-500">Atribuído: {euro(splitAssignedTotal)} de {euro(openTotal)}</div>
+                <div className="text-[11px] text-slate-500">
+                  Atribuído agora: {euro(splitAssignedTotal)} de {euro(openTotal)} por dividir
+                </div>
               </div>
             )}
 
             <div className="space-y-2 mb-4">
               <div className="text-[11px] text-slate-500">Como cada sócio liquida a sua parte</div>
-              {(table.members || []).map((m) => (
+              {(splitMode === "equal"
+                ? (table.members || [])
+                : splitMembers.filter((m) => (memberAssigned[m.client_id] || 0) > 0)
+              ).map((m) => (
                 <div key={m.client_id} className="flex items-center gap-2 text-xs">
                   <span className="flex-1 truncate">
                     {m.name.split(" ")[0]}{m.member_number ? ` nº ${m.member_number}` : ""}
+                    {m.departed && <span className="text-slate-500"> (saiu)</span>}
                     {splitMode === "equal" ? (
                       <span className="text-slate-500"> · {euro(openTotal / (table.members || []).length)}</span>
                     ) : (
@@ -861,7 +884,7 @@ export default function RodadaMista({ onClose, onChanged }) {
               disabled={busy}
               className="w-full py-2.5 rounded-lg bg-sky-500 text-slate-950 font-bold disabled:opacity-40"
             >
-              Confirmar divisão
+              {splitMode === "items" ? "Liquidar esta parte" : "Confirmar divisão"}
             </button>
           </div>
         </div>

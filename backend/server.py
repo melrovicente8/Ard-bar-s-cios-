@@ -6068,7 +6068,7 @@ async def _expected_cash_today() -> float:
     movements = await db.cash_withdrawals.find({"created_at": {"$gte": day_start}}, {"_id": 0}).to_list(5000)
     cash_out = sum(
         float(m.get("amount", 0)) for m in movements
-        if m.get("kind") in ("bank_deposit", "credit_refund", "expense_cash")
+        if m.get("kind") in ("bank_deposit", "credit_refund", "expense_cash", "cash_reset")
     )
     cash_extra_in = sum(
         float(m.get("amount", 0)) for m in movements
@@ -6080,10 +6080,11 @@ async def _expected_cash_today() -> float:
 async def _account_balances() -> dict:
     """Saldos contabilísticos de caixa e banco (todas as datas).
     Caixa = entradas em numerário + depósitos externos em caixa + transferências
-    banco→caixa − depósitos bancários − devoluções de crédito − despesas pagas em caixa.
-    Banco = depósitos + depósitos externos em banco − transferências banco→caixa
-    − despesas pagas por banco. Transferências entre caixa e banco NÃO são
-    receita nem despesa."""
+    banco→caixa − depósitos bancários − devoluções de crédito − despesas pagas em caixa
+    − acertos de abertura de caixa (cash_reset).
+    Banco = valor pago por MBWay (entra diretamente na conta) + depósitos
+    + depósitos externos em banco − transferências banco→caixa − despesas pagas
+    por banco. Transferências entre caixa e banco NÃO são receita nem despesa."""
     cash_payments = await db.payments.find({"source": {"$ne": "refund"}}, {"_id": 0}).to_list(50000)
     cash_in = round(sum(_payment_cash_value(p) for p in cash_payments), 2)
     # Para o cartão "Valor em caixa": quanto entrou em numerário e quanto foi pago por MBWay
@@ -6096,8 +6097,11 @@ async def _account_balances() -> dict:
     dep_in_cash = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "deposit_in" and w.get("target") == "caixa"), 2)
     dep_in_bank = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "deposit_in" and w.get("target") == "banco"), 2)
     bank_to_cash = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "transfer_bank_cash"), 2)
-    bank_balance = round(deposits + dep_in_bank - bank_to_cash - exp_bank, 2)
-    cash_balance = round(cash_in + dep_in_cash + bank_to_cash - deposits - refunds - exp_cash, 2)
+    # Acerto de abertura: zera/ajusta o saldo físico da gaveta (não é receita nem despesa)
+    cash_reset = round(sum(float(w.get("amount", 0)) for w in wd_all if w.get("kind") == "cash_reset"), 2)
+    # O MBWay não passa pela gaveta: entra diretamente no banco
+    bank_balance = round(mbway_in + deposits + dep_in_bank - bank_to_cash - exp_bank, 2)
+    cash_balance = round(cash_in + dep_in_cash + bank_to_cash - deposits - refunds - exp_cash - cash_reset, 2)
     return {
         "cash_balance": cash_balance,
         "bank_balance": bank_balance,
@@ -6249,6 +6253,7 @@ async def treasury_movements(account: str = "cash", date_from: Optional[str] = N
                 "expense_cash": "Despesa paga em caixa",
                 "deposit_in": f"Depósito · {w.get('category', '')}",
                 "transfer_bank_cash": "Transferência Banco → Caixa",
+                "cash_reset": "Acerto de abertura de caixa",
             }.get(kind, "Movimento de caixa")
             direction = "in" if kind in ("deposit_in", "transfer_bank_cash") else "out"
             movements.append({
@@ -7883,6 +7888,93 @@ def _open_group_rounds(table: dict) -> list:
     return [r for r in (table.get("rounds") or []) if r.get("status") != "paid"]
 
 
+def _split_taken(table: dict) -> dict:
+    """Unidades de consumo já divididas por consumo (divisão feita às prestações)."""
+    taken = {}
+    for part in table.get("split_parts") or []:
+        for it in part.get("items") or []:
+            key = (int(it.get("round") or 0), it.get("product_id"))
+            taken[key] = taken.get(key, 0) + int(it.get("quantity") or 0)
+    return taken
+
+
+def _split_remaining(table: dict) -> tuple:
+    """Consumos das rodadas em aberto que ainda faltam dividir (por rodada + produto)."""
+    taken = _split_taken(table)
+    units, total = [], 0.0
+    for r in _open_group_rounds(table):
+        for it in r.get("items") or []:
+            key = (int(r.get("number") or 0), it.get("product_id"))
+            left = int(it.get("quantity") or 0) - taken.get(key, 0)
+            if left <= 0:
+                continue
+            price = float(it.get("unit_price") or 0)
+            units.append({
+                "round": int(r.get("number") or 0),
+                "product_id": it.get("product_id"),
+                "product_name": it.get("product_name"),
+                "unit_price": price,
+                "quantity": left,
+            })
+            total += price * left
+    return units, round(total, 2)
+
+
+def _split_members(table: dict) -> list:
+    """Quem pode receber consumos na divisão: sócios à mesa + quem saiu a meio
+    (as rodadas anteriores à saída continuam associadas a ele)."""
+    members = list(table.get("members") or [])
+    known = {m.get("client_id") for m in members}
+    open_numbers = [int(r.get("number") or 0) for r in _open_group_rounds(table)]
+    first_open = min(open_numbers) if open_numbers else 0
+    for d in table.get("departed") or []:
+        if d.get("client_id") in known:
+            continue
+        if int(d.get("left_round") or 0) <= first_open:
+            continue
+        members.append({
+            "client_id": d.get("client_id"), "name": d.get("name"),
+            "member_number": d.get("member_number"),
+            "joined_round": d.get("joined_round", 1),
+            "left_round": d.get("left_round"), "departed": True,
+        })
+    return members
+
+
+def _split_plan_rounds(table: dict, detail: list) -> list:
+    """Talão de uma partilha: só o que este sócio ficou a pagar, rodada a rodada."""
+    names = {m.get("client_id"): m for m in (list(table.get("members") or []) + list(table.get("departed") or []))}
+    by_round = {}
+    for d in detail:
+        r = by_round.setdefault(d["round"], {"number": d["round"], "total": 0.0, "items": [], "members_present": []})
+        r["items"].append({k: d[k] for k in ("product_name", "quantity", "unit_price", "subtotal")})
+        r["total"] = round(r["total"] + d["subtotal"], 2)
+    out = sorted(by_round.values(), key=lambda x: x["number"])
+    for r in out:
+        present = next((x.get("members") or [] for x in (table.get("rounds") or [])
+                        if int(x.get("number") or 0) == r["number"]), [])
+        labels = []
+        for cid in present:
+            m = names.get(cid)
+            if not m:
+                continue
+            label = m.get("name") or "—"
+            if m.get("member_number"):
+                label += f" (nº {m['member_number']})"
+            labels.append(label)
+        r["members_present"] = labels
+    return out
+
+
+def _group_table_payload(table: dict) -> dict:
+    """Mesa + o que ainda falta dividir por consumo."""
+    units, remaining = _split_remaining(table)
+    table["split_remaining"] = units
+    table["remaining_total"] = remaining
+    table["split_members"] = _split_members(table)
+    return table
+
+
 async def _open_group_table(ids: List[str], label: Optional[str], actor_email: str) -> dict:
     """Abre uma mesa de Rodada Mista, notifica os sócios e marca presença."""
     ids = list(dict.fromkeys(ids or []))
@@ -7967,7 +8059,8 @@ def _group_table_for_socio(table: dict, client_id: str) -> dict:
     """Resumo da mesa visto pelo sócio: rodadas, o que está em aberto e as suas partes."""
     rounds = table.get("rounds") or []
     open_rounds = [r for r in rounds if r.get("status") != "paid"]
-    open_total = round(sum(float(r.get("total") or 0) for r in open_rounds), 2)
+    # O que falta dividir (uma divisão por consumo pode já ter pago parte das rodadas)
+    open_total = _split_remaining(table)[1]
     members = table.get("members") or []
     mine_paid = round(sum(float(r.get("total") or 0) for r in rounds
                           if r.get("status") == "paid" and r.get("payer_client_id") == client_id), 2)
@@ -8040,7 +8133,7 @@ async def socio_add_group_round(table_id: str, body: GroupRoundIn, socio: dict =
 async def list_group_tables(status_filter: Optional[str] = None, user: dict = Depends(get_current_user)):
     q = {} if status_filter in (None, "", "all") else {"status": status_filter}
     tables = await db.group_tables.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
-    return tables
+    return [_group_table_payload(t) for t in tables]
 
 
 @api_router.get("/group-tables/{table_id}")
@@ -8048,7 +8141,7 @@ async def get_group_table(table_id: str, user: dict = Depends(get_current_user))
     table = await db.group_tables.find_one({"id": table_id}, {"_id": 0})
     if not table:
         raise HTTPException(status_code=404, detail="Rodada não encontrada")
-    return table
+    return _group_table_payload(table)
 
 
 @api_router.post("/group-tables/{table_id}/rounds")
@@ -8117,7 +8210,7 @@ async def _append_group_round(table_id: str, items: list, actor_email: str, is_s
     await _audit("group_round_add", actor_email, entity="group_table", entity_id=table_id,
                  summary=f"Rodada Mista {table.get('label')} · rodada {round_no} · {total:.2f} € · "
                          + ", ".join(f"{li['quantity']}× {li['product_name']}" for li in line_items))
-    return await db.group_tables.find_one({"id": table_id}, {"_id": 0})
+    return _group_table_payload(await db.group_tables.find_one({"id": table_id}, {"_id": 0}))
 
 
 class GroupMembersIn(BaseModel):
@@ -8210,7 +8303,7 @@ async def remove_group_member(table_id: str, client_id: str, user: dict = Depend
     })
     await _audit("group_table_remove_member", user["email"], entity="group_table", entity_id=table_id,
                  summary=f"Rodada Mista {table.get('label')} · saiu {member.get('name')} (rodada {left_round})")
-    return await db.group_tables.find_one({"id": table_id}, {"_id": 0})
+    return _group_table_payload(await db.group_tables.find_one({"id": table_id}, {"_id": 0}))
 
 
 @api_router.post("/group-tables/{table_id}/rounds/{round_number}/settle")
@@ -8228,6 +8321,9 @@ async def settle_group_round(table_id: str, round_number: int, body: GroupRoundS
         raise HTTPException(status_code=404, detail="Rodada não encontrada")
     if rnd.get("status") == "paid":
         raise HTTPException(status_code=400, detail="Esta rodada já foi paga")
+    if any(int(it.get("round") or 0) == round_number
+           for part in (table.get("split_parts") or []) for it in (part.get("items") or [])):
+        raise HTTPException(status_code=400, detail="Esta rodada já tem consumos divididos — termina a divisão por consumo")
     payer = await db.clients.find_one({"id": body.payer_client_id}, {"_id": 0, "pin_hash": 0})
     if not payer:
         raise HTTPException(status_code=404, detail="Sócio não encontrado")
@@ -8246,7 +8342,7 @@ async def settle_group_round(table_id: str, round_number: int, body: GroupRoundS
         await _mark_presence(m["client_id"], table_id)
     table = await db.group_tables.find_one({"id": table_id}, {"_id": 0})
     table.pop("_id", None)
-    return {"table": table, "sale": sale, "payment": pay}
+    return {"table": _group_table_payload(table), "sale": sale, "payment": pay}
 
 
 @api_router.post("/group-tables/{table_id}/split")
@@ -8266,48 +8362,83 @@ async def split_group_table(table_id: str, body: GroupSplitIn, user: dict = Depe
     detail_all = [it for r in open_rounds for it in (r.get("items") or [])]
     methods = body.methods or {}
     sales, payments = [], []
+    split_parts = []
+    fully_split = True
     mode = (body.mode or "equal").lower()
+    if mode != "items" and table.get("split_parts"):
+        # Uma divisão por consumo já liquidou parte da conta: acaba-se por consumo
+        raise HTTPException(status_code=400, detail="Esta mesa já tem consumos divididos — continua a divisão por consumo")
 
     if mode == "items":
+        # Divisão por consumo às prestações: só se dividem agora os consumos
+        # atribuídos nesta passagem — o resto continua por dividir.
         assigned = body.items_by_member or {}
-        price_map = {}
-        for it in detail_all:
-            price_map[it["product_id"]] = float(it.get("unit_price") or 0)
+        remaining, meta = {}, {}
+        for u in _split_remaining(table)[0]:
+            key = (u["round"], u["product_id"])
+            remaining[key] = remaining.get(key, 0) + int(u["quantity"])
+            meta[key] = u
+        participants = {m["client_id"]: m for m in _split_members(table)}
         plans = []
-        assigned_total = 0.0
-        for m in members:
-            rows = assigned.get(m["client_id"]) or []
+        for cid, rows in assigned.items():
+            m = participants.get(cid)
+            if not m:
+                continue
             detail = []
-            for row in rows:
+            for row in rows or []:
                 qty = int(row.get("quantity") or 0)
                 pid = row.get("product_id")
-                if qty <= 0 or pid not in price_map:
+                if qty <= 0 or not pid:
                     continue
-                name = next((it["product_name"] for it in detail_all if it["product_id"] == pid), pid)
-                detail.append({"product_id": pid, "product_name": name, "unit_price": price_map[pid],
-                               "quantity": qty, "subtotal": round(price_map[pid] * qty, 2)})
+                keys = [k for k in remaining if k[1] == pid and remaining[k] > 0]
+                if row.get("round"):
+                    keys = [k for k in keys if k[0] == int(row["round"])]
+                if qty > sum(remaining[k] for k in keys):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Quantidade indisponível para {row.get('product_name') or pid}",
+                    )
+                for key in keys:
+                    if qty <= 0:
+                        break
+                    take = min(qty, remaining[key])
+                    remaining[key] -= take
+                    qty -= take
+                    u = meta[key]
+                    line = next((d for d in detail if d["round"] == key[0] and d["product_id"] == pid), None)
+                    if line:
+                        line["quantity"] += take
+                        line["subtotal"] = round(line["unit_price"] * line["quantity"], 2)
+                    else:
+                        detail.append({
+                            "round": key[0], "product_id": pid, "product_name": u["product_name"],
+                            "unit_price": u["unit_price"], "quantity": take,
+                            "subtotal": round(u["unit_price"] * take, 2),
+                        })
             subtotal = round(sum(d["subtotal"] for d in detail), 2)
             if subtotal > 0:
                 plans.append((m, subtotal, detail))
-                assigned_total += subtotal
         if not plans:
-            raise HTTPException(status_code=400, detail="Atribui os consumos aos sócios da mesa")
-        if abs(assigned_total - total) > 0.01:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Faltam consumos por atribuir: {total - assigned_total:.2f} € de {total:.2f} €",
-            )
+            raise HTTPException(status_code=400, detail="Atribui os consumos aos sócios que estão a pagar agora")
         for i, (m, subtotal, detail) in enumerate(plans):
             client_doc = await db.clients.find_one({"id": m["client_id"]}, {"_id": 0, "pin_hash": 0})
             if not client_doc:
                 continue
             label = f"Rodada Mista (Partilha {i + 1}/{len(plans)})"
             sale = await _group_sale(table, client_doc, label, subtotal, detail, user,
-                                     rounds_detail=_group_rounds_detail(table, open_rounds))
+                                     rounds_detail=_split_plan_rounds(table, detail))
             pay = await _settle_group_sale(sale, (methods.get(m["client_id"]) or "account").lower(), user)
             sales.append(sale)
+            split_parts.append({
+                "sale_id": sale["id"], "client_id": m["client_id"], "client_name": m.get("name"),
+                "total": subtotal,
+                "items": [{k: d[k] for k in ("round", "product_id", "product_name", "unit_price", "quantity", "subtotal")}
+                          for d in detail],
+                "paid_at": datetime.now(timezone.utc).isoformat(),
+            })
             if pay:
                 payments.append(pay)
+        fully_split = not any(q > 0 for q in remaining.values())
     else:
         share = round(total / n, 2)
         for i, m in enumerate(members):
@@ -8327,23 +8458,34 @@ async def split_group_table(table_id: str, body: GroupSplitIn, user: dict = Depe
 
     for m in members:
         await _mark_presence(m["client_id"], table_id)
-    # Todas as rodadas em aberto ficam liquidadas pela divisão da conta
     now_iso = datetime.now(timezone.utc).isoformat()
     rounds = table.get("rounds") or []
-    for r in rounds:
-        if r.get("status") != "paid":
-            r["status"] = "paid"
-            r["method"] = "split"
-            r["paid_at"] = now_iso
-    await db.group_tables.update_one(
-        {"id": table_id},
-        {"$set": {"status": "closed", "closed_at": now_iso, "rounds": rounds,
-                  "split_mode": mode, "split_sale_ids": [s["id"] for s in sales]}},
-    )
+    if fully_split:
+        # Já não falta nada por dividir: todas as rodadas em aberto ficam liquidadas
+        for r in rounds:
+            if r.get("status") != "paid":
+                r["status"] = "paid"
+                r["method"] = "split"
+                r["paid_at"] = now_iso
+        await db.group_tables.update_one(
+            {"id": table_id},
+            {"$set": {"status": "closed", "closed_at": now_iso, "rounds": rounds,
+                      "split_mode": mode, "split_sale_ids": [s["id"] for s in sales]},
+             **({"$push": {"split_parts": {"$each": split_parts}}} if split_parts else {})},
+        )
+    else:
+        # Divisão a meio: a mesa continua aberta com o que falta dividir
+        await db.group_tables.update_one(
+            {"id": table_id},
+            {"$push": {"split_parts": {"$each": split_parts}}, "$set": {"split_mode": mode}},
+        )
     await _audit("group_table_split", user["email"], entity="group_table", entity_id=table_id,
-                 summary=f"Rodada Mista {table.get('label')} dividida ({'partes iguais' if mode == 'equal' else 'por consumo'}) · {total:.2f} €")
+                 summary=f"Rodada Mista {table.get('label')} dividida ({'partes iguais' if mode == 'equal' else 'por consumo'}) · {total:.2f} €"
+                         + ("" if fully_split else " · divisão parcial"))
     updated = await db.group_tables.find_one({"id": table_id}, {"_id": 0})
-    return {"table": updated, "sales": sales, "payments": payments}
+    payload = _group_table_payload(updated)
+    return {"table": payload, "sales": sales, "payments": payments, "fully_split": fully_split,
+            "remaining_total": payload.get("remaining_total", 0.0)}
 
 
 @api_router.post("/group-tables/{table_id}/close")
