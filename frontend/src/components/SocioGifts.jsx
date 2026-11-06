@@ -24,7 +24,10 @@ const GIFT_STATUS = {
   consumed: { label: "Consumido", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" },
 };
 
-export default function SocioGifts({ me }) {
+export default function SocioGifts({ me, onNotify }) {
+  const isMinor = !!(me?.is_minor || me?.family_head_client_id);
+  // O sócio pode bloquear os pedidos de pagamento entre sócios
+  const [giftsBlocked, setGiftsBlocked] = useState(!!me?.gifts_blocked);
   const [gifts, setGifts] = useState([]);
   const [members, setMembers] = useState([]);
   const [products, setProducts] = useState([]);
@@ -85,12 +88,31 @@ export default function SocioGifts({ me }) {
       setShowModal(false);
       setEditingGift(null);
       await loadGifts();
+      onNotify?.();
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     } finally {
       setSaving(false);
     }
   };
+
+  const toggleBlock = async () => {
+    const next = !giftsBlocked;
+    try {
+      await api.put("/socio/me", { gifts_blocked: next });
+      setGiftsBlocked(next);
+      toast.success(next ? "Pedidos de pagamento entre sócios bloqueados" : "Já aceitas pedidos de pagamento entre sócios");
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  // Destinatários válidos: menores não pagam consumos de outros sócios e quem
+  // bloqueou os pedidos não é escolhido para pagar.
+  const recipientOptions = members.filter((m) => {
+    if (giftKind === "delegated") return !m.is_minor && !m.gifts_blocked;
+    return true;
+  });
 
   const action = async (g, verb, msg) => {
     try {
@@ -211,14 +233,21 @@ export default function SocioGifts({ me }) {
         <h3 className="font-outfit text-xl font-semibold">Consumos entre sócios</h3>
         <span className="text-xs text-slate-500 ml-auto">Deixa pago um consumo a outro sócio ou pede-lhe para pagar a despesa</span>
       </div>
-      <div className="flex flex-wrap gap-2 mt-3">
-        <button
-          data-testid="socio-gift-new-prepaid"
-          onClick={() => openModal("prepaid")}
-          className="text-xs px-3 py-1.5 rounded-md bg-pink-500/15 text-pink-300 border border-pink-500/30 hover:bg-pink-500/25 flex items-center gap-1.5"
-        >
-          <Gift size={13} weight="bold" /> Deixar pago a outro sócio
-        </button>
+      {isMinor && (
+        <div className="mt-3 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-200" data-testid="socio-gift-minor-note">
+          Conta tutelada: só podes <strong>pedir a outro sócio para pagar</strong> o teu consumo.
+        </div>
+      )}
+      <div className="flex flex-wrap gap-2 mt-3 items-center">
+        {!isMinor && (
+          <button
+            data-testid="socio-gift-new-prepaid"
+            onClick={() => openModal("prepaid")}
+            className="text-xs px-3 py-1.5 rounded-md bg-pink-500/15 text-pink-300 border border-pink-500/30 hover:bg-pink-500/25 flex items-center gap-1.5"
+          >
+            <Gift size={13} weight="bold" /> Deixar pago a outro sócio
+          </button>
+        )}
         <button
           data-testid="socio-gift-new-delegated"
           onClick={() => openModal("delegated")}
@@ -226,6 +255,20 @@ export default function SocioGifts({ me }) {
         >
           <Coins size={13} weight="duotone" /> Pedir a outro sócio para pagar
         </button>
+        {!isMinor && (
+          <button
+            data-testid="socio-gift-block-toggle"
+            onClick={toggleBlock}
+            title="Se bloqueares, deixas de receber pedidos de outros sócios para pagares os consumos deles"
+            className={`text-xs px-3 py-1.5 rounded-md border flex items-center gap-1.5 ml-auto ${
+              giftsBlocked
+                ? "bg-rose-500/15 text-rose-300 border-rose-500/30 hover:bg-rose-500/25"
+                : "bg-slate-800/60 text-slate-300 border-slate-700 hover:bg-slate-800"
+            }`}
+          >
+            {giftsBlocked ? "Bloqueado: não recebo pedidos" : "Bloquear pedidos de pagamento"}
+          </button>
+        )}
       </div>
 
       {gifts.length === 0 ? (
@@ -284,8 +327,9 @@ export default function SocioGifts({ me }) {
                 <div className="inline-flex rounded-lg border border-slate-800 bg-slate-950/60 p-1 mb-3" data-testid="socio-gift-kind">
                   <button
                     type="button"
+                    disabled={isMinor}
                     onClick={() => setGiftKind("prepaid")}
-                    className={`px-3 py-1.5 rounded-md text-xs font-bold ${giftKind === "prepaid" ? "bg-pink-500 text-slate-950" : "text-slate-400 hover:text-white"}`}
+                    className={`px-3 py-1.5 rounded-md text-xs font-bold disabled:opacity-30 ${giftKind === "prepaid" ? "bg-pink-500 text-slate-950" : "text-slate-400 hover:text-white"}`}
                   >
                     Deixar pago
                   </button>
@@ -305,7 +349,7 @@ export default function SocioGifts({ me }) {
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm mb-3"
                 >
                   <option value="">— Escolhe o sócio —</option>
-                  {members.map((m) => (
+                  {recipientOptions.map((m) => (
                     <option key={m.id} value={m.id}>{m.name} (nº {m.member_number})</option>
                   ))}
                 </select>

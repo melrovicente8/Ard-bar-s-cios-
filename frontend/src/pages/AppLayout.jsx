@@ -100,12 +100,17 @@ function BarStatusButton() {
       if (data.auto_closed) toast.error("O bar fechou automaticamente às 2h da manhã");
     }).catch(() => {});
   };
+  const { pathname } = useLocation();
+  // O valor em caixa muda a cada venda/pagamento: atualiza ao mudar de aba,
+  // a cada 20s e quando a janela volta a estar em foco.
   useEffect(() => {
     load();
-    const t = setInterval(load, 60000);
-    return () => clearInterval(t);
+    const t = setInterval(load, 20000);
+    const onFocus = () => load();
+    window.addEventListener("focus", onFocus);
+    return () => { clearInterval(t); window.removeEventListener("focus", onFocus); };
     /* eslint-disable-next-line */
-  }, []);
+  }, [pathname]);
 
   // Aviso pop-up 10 minutos antes do fecho automático (02:00)
   useEffect(() => {

@@ -101,6 +101,8 @@ export default function SocioPortal() {
   const [editItemInfo, setEditItemInfo] = useState({}); // nome/preço de itens do pedido em edição (fallback quando o produto sai da lista)
   const [top5, setTop5] = useState([]);
   const [notif, setNotif] = useState({ unread_messages: 0, community_unseen: 0 });
+  const [notifications, setNotifications] = useState([]);
+  const [showNotifications, setShowNotifications] = useState(false);
   const [showPin, setShowPin] = useState(false);
   const [pinForm, setPinForm] = useState({ current: "", next: "", confirm: "" });
 
@@ -116,6 +118,7 @@ export default function SocioPortal() {
     try {
       const { data } = await api.get("/socio/notifications");
       setNotif({ unread_messages: data.unread_messages || 0, community_unseen: data.community_unseen || 0 });
+      setNotifications(data.items || []);
     } catch { /* ignore */ }
   };
 
@@ -215,6 +218,14 @@ export default function SocioPortal() {
     navigate("/socio/login");
   };
 
+  // Cartão "Total consumido" → leva aos consumos (histórico completo)
+  const goToConsumptions = () => {
+    setHistoryFilter("all");
+    setTimeout(() => {
+      document.getElementById("socio-history-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 60);
+  };
+
   const onRefresh = async () => {
     try {
       await refresh();
@@ -230,11 +241,14 @@ export default function SocioPortal() {
     }
   };
 
-  const openMessagesSeen = async () => {
-    await loadMessages();
+  // Sino = notificações (avisos do clube), não o formulário de mensagens
+  const openNotifications = async () => {
+    await loadNotifications();
+    setShowNotifications(true);
     // O sócio abriu as notificações → marca como lidas no servidor (o staff vê a confirmação)
     api.post("/socio/messages/read", {}).catch(() => {});
     setNotif((n) => ({ ...n, unread_messages: 0 }));
+    setNotifications((list) => list.map((n) => ({ ...n, read: true })));
   };
 
   const reqStatusLabel = { pending: "Pendente", approved: "Aceito · pronto a levantar no balcão", delivered: "Entregue", rejected: "Recusado", cancelled: "Anulado" };
@@ -350,6 +364,8 @@ export default function SocioPortal() {
     ...sales.map((s) => ({ type: "sale", date: s.created_at, ...s })),
     ...payments.map((p) => ({ type: "payment", date: p.created_at, ...p })),
     ...mbway.map((m) => ({ type: "mbway", date: m.created_at, ...m })),
+    // Avisos do clube (pedido aceite/recusado, respostas, consumos entre sócios)
+    ...notifications.map((n) => ({ type: "notif", date: n.created_at, ...n })),
   ].sort((a, b) => (a.date < b.date ? 1 : -1));
 
   const inHistoryRange = (iso) => {
@@ -621,7 +637,7 @@ export default function SocioPortal() {
           <div className="flex items-center gap-2">
             <button
               data-testid="socio-bell-btn"
-              onClick={openMessagesSeen}
+              onClick={openNotifications}
               title="Notificações do clube"
               className="relative flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-slate-400 hover:text-white hover:bg-slate-900 transition-colors"
             >
@@ -658,7 +674,7 @@ export default function SocioPortal() {
         {/* Notificações do clube — pedido aceito/recusado, respostas da direção */}
         {notif.unread_messages > 0 && (
           <button
-            onClick={openMessagesSeen}
+            onClick={openNotifications}
             data-testid="socio-notifications-banner"
             className="w-full bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-4 py-3 flex items-center gap-3 text-left hover:bg-emerald-500/15 transition-colors"
           >
@@ -793,9 +809,15 @@ export default function SocioPortal() {
                 </button>
               )}
             </div>
-            <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-5">
-              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
-                Total consumido
+            <div
+              onClick={goToConsumptions}
+              data-testid="socio-total-consumed-btn"
+              title="Ver os meus consumos"
+              className="bg-slate-950/60 border border-slate-800 hover:border-slate-600 rounded-xl p-5 transition-colors cursor-pointer"
+            >
+              <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 flex items-center justify-between">
+                <span>Total consumido</span>
+                <span className="text-slate-400 normal-case">Consumos ›</span>
               </div>
               <div className="mt-2 font-outfit text-4xl font-bold text-slate-200">
                 {euro(c.total_spent || 0)}
@@ -803,7 +825,12 @@ export default function SocioPortal() {
               <div className="text-[10px] text-slate-500 mt-2">{sales.length} vendas</div>
             </div>
             {c.member_number && quotas && (
-              <div className="bg-slate-950/60 border border-amber-500/30 rounded-xl p-5" data-testid="socio-quotas-card">
+              <div
+                onClick={() => loadQuotas()}
+                title="Consultar quotas pagas e em atraso"
+                className="bg-slate-950/60 border border-amber-500/30 hover:border-amber-500/60 rounded-xl p-5 transition-colors cursor-pointer"
+                data-testid="socio-quotas-card"
+              >
                 {(() => {
                   // Contagem sempre sobre os 12 meses do ano (ex.: 10/12)
                   const paid = quotas.quotas.filter((q) => q.status === "paid").length;
@@ -814,6 +841,7 @@ export default function SocioPortal() {
                     <>
                       <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-amber-400/80 flex items-center gap-1.5">
                         <CalendarBlank size={11} weight="fill" /> Cotas {quotas.year}
+                        <span className="text-amber-300/70 normal-case ml-auto">Ver cotas ›</span>
                       </div>
                       <div className="mt-2 flex items-baseline gap-2">
                         <span data-testid="socio-quotas-paid" className={`font-outfit text-4xl font-bold ${upToDate ? "text-emerald-300" : "text-amber-300"}`}>{paid}</span>
@@ -1075,11 +1103,8 @@ export default function SocioPortal() {
           )}
         </div>
 
-        {/* Consumos entre sócios: deixar pago / delegar pagamento */}
-        <SocioGifts me={c} />
-
         {/* History */}
-        <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-6">
+        <div id="socio-history-card" className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-6">
           <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
             <div className="flex items-center gap-2">
               <Receipt size={20} weight="duotone" className="text-amber-500" />
@@ -1214,7 +1239,7 @@ export default function SocioPortal() {
               {filteredEvents.map((ev, i) => (
                 <li
                   key={i}
-                  data-testid={ev.type === "payment" ? `socio-payment-${ev.id}` : ev.type === "sale" ? `socio-sale-${ev.id}` : `socio-mbway-${ev.id}`}
+                  data-testid={ev.type === "payment" ? `socio-payment-${ev.id}` : ev.type === "sale" ? `socio-sale-${ev.id}` : ev.type === "notif" ? `socio-notif-hist-${ev.id}` : `socio-mbway-${ev.id}`}
                   className={`flex items-start gap-3 px-4 py-3 rounded-lg border ${
                     ev.type === "sale"
                       ? "bg-rose-500/5 border-rose-500/10"
@@ -1235,7 +1260,11 @@ export default function SocioPortal() {
                       {ev.type === "sale" && "Consumo"}
                       {ev.type === "payment" && "Pagamento"}
                       {ev.type === "mbway" && `MBWay · ${ev.status === "pending" ? "pendente" : ev.status === "confirmed" ? "confirmado" : "rejeitado"}`}
+                      {ev.type === "notif" && ev.subject}
                     </div>
+                    {ev.type === "notif" && (
+                      <p className="text-xs text-slate-400 mt-1 whitespace-pre-wrap">{ev.message}</p>
+                    )}
                     {ev.type === "sale" && (
                       <ul className="text-xs text-slate-400 mt-1.5 space-y-0.5">
                         {ev.items.map((it, j) => (
@@ -1248,17 +1277,23 @@ export default function SocioPortal() {
                     )}
                   </div>
                   <div className="flex flex-col items-end gap-1.5">
-                    <div
-                      className={`font-bold ${
-                        ev.type === "sale"
-                          ? "text-rose-400"
-                          : ev.type === "payment"
-                          ? "text-emerald-400"
-                          : "text-amber-300"
-                      }`}
-                    >
-                      {ev.type === "sale" ? "+" : "-"}{euro(ev.type === "sale" ? ev.total : ev.amount)}
-                    </div>
+                    {ev.type === "notif" ? (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold border bg-emerald-500/15 text-emerald-300 border-emerald-500/30">
+                        Aviso
+                      </span>
+                    ) : (
+                      <div
+                        className={`font-bold ${
+                          ev.type === "sale"
+                            ? "text-rose-400"
+                            : ev.type === "payment"
+                            ? "text-emerald-400"
+                            : "text-amber-300"
+                        }`}
+                      >
+                        {ev.type === "sale" ? "+" : "-"}{euro(ev.type === "sale" ? ev.total : ev.amount)}
+                      </div>
+                    )}
                     {ev.type === "payment" && (
                       <button
                         data-testid={`socio-print-receipt-${ev.id}`}
@@ -1275,6 +1310,9 @@ export default function SocioPortal() {
             </ul>
           )}
         </div>
+
+        {/* Consumos entre sócios: deixar pago / delegar pagamento (abaixo do histórico) */}
+        <SocioGifts me={c} onNotify={loadNotifications} />
       </main>
 
       {showPoints && (
@@ -1420,6 +1458,49 @@ export default function SocioPortal() {
         </div>
       )}
 
+      {showNotifications && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+          onClick={() => setShowNotifications(false)}
+          data-testid="socio-notifications-modal"
+        >
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg p-6 max-h-[85vh] flex flex-col">
+            <div className="flex items-center gap-2 mb-3">
+              <Bell size={22} weight="duotone" className="text-emerald-400" />
+              <h3 className="font-outfit text-xl font-semibold">Notificações</h3>
+              <span className="text-xs text-slate-500 ml-auto">{notifications.length}</span>
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1" data-testid="socio-notifications-list">
+              {notifications.length === 0 ? (
+                <div className="text-center text-slate-500 py-8 text-sm">Sem notificações.</div>
+              ) : notifications.map((n) => (
+                <div
+                  key={n.id}
+                  data-testid={`socio-notif-${n.id}`}
+                  className={`rounded-lg px-3 py-2 border ${n.read ? "bg-slate-950/50 border-slate-800" : "bg-emerald-500/5 border-emerald-500/25"}`}
+                >
+                  <div className="flex items-center justify-between text-[10px] text-slate-500">
+                    <span>{new Date(n.created_at).toLocaleString("pt-PT")}</span>
+                    {!n.read && <span className="text-emerald-400 font-bold">nova</span>}
+                  </div>
+                  <div className="font-semibold text-slate-200 text-sm mt-0.5">{n.subject}</div>
+                  <p className="text-xs text-slate-400 whitespace-pre-wrap">{n.message}</p>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2 mt-4">
+              <button
+                onClick={() => { setShowNotifications(false); loadMessages(); }}
+                className="flex-1 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm flex items-center justify-center gap-1.5"
+              >
+                <ChatCircle size={14} weight="duotone" /> Ver mensagens
+              </button>
+              <button onClick={() => setShowNotifications(false)} className="flex-1 px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm">Fechar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showMessages && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setShowMessages(false)} data-testid="socio-messages-modal">
           <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg p-6 max-h-[90vh] flex flex-col">
@@ -1486,7 +1567,7 @@ export default function SocioPortal() {
 
       {showRequest && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => { setShowRequest(false); setEditingReq(null); setEditItemInfo({}); }} data-testid="socio-request-modal">
-          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-2xl p-6 max-h-[90vh] flex flex-col">
+          <div onClick={(e) => e.stopPropagation()} className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-2xl p-6 max-h-[95vh] flex flex-col">
             <div className="flex items-center gap-2 mb-2">
               <Plus size={22} weight="bold" className="text-emerald-400" />
               <h3 className="font-outfit text-xl font-semibold">{editingReq ? "Editar pedido" : "Pedir consumo"}</h3>
@@ -1528,8 +1609,10 @@ export default function SocioPortal() {
 
             {/* Carrinho actual (com +/- e remover) */}
             {Object.entries(reqCart).filter(([, q]) => q > 0).length > 0 && (
-              <div className="mb-3 bg-slate-950 border border-amber-500/30 rounded-lg p-2 max-h-[45vh] overflow-y-auto" data-testid="req-cart-list">
-                <div className="text-[10px] uppercase tracking-wider text-amber-400 font-bold mb-1.5 px-1">No carrinho</div>
+              <div className="mb-3 bg-slate-950 border border-amber-500/30 rounded-lg p-2 max-h-[48vh] min-h-[120px] shrink-0 overflow-y-auto" data-testid="req-cart-list">
+                <div className="text-[10px] uppercase tracking-wider text-amber-400 font-bold mb-1.5 px-1">
+                  No carrinho · {Object.entries(reqCart).filter(([, q]) => q > 0).length} artigo(s) · podes ajustar aqui
+                </div>
                 {Object.entries(reqCart).filter(([, q]) => q > 0).map(([pid, q]) => {
                   const isQuota = pid.startsWith("quota-");
                   const p = products.find((x) => x.id === pid);
@@ -1599,7 +1682,7 @@ export default function SocioPortal() {
                 ))}
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto mb-3 pr-1" data-testid="req-products">
+            <div className="flex-1 min-h-[110px] overflow-y-auto mb-3 pr-1" data-testid="req-products">
               {groups.map(([cat, arr]) => (
                 <div key={cat} className="mb-2">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400/80 bg-slate-950/60 rounded px-2 py-1 mb-1">{cat}</div>

@@ -4,6 +4,7 @@ import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { printReceipt as printReceiptA6 } from "../lib/receipt";
 import { printCreditNoteTicket } from "../lib/tickets";
 import PaymentModal from "../components/PaymentModal";
+import SecondCopyDialog from "../components/SecondCopyDialog";
 import {
   ArrowLeft,
   CurrencyEur,
@@ -55,6 +56,8 @@ export default function ClienteFicha() {
   const [showPay, setShowPay] = useState(false);
   const [payPrefill, setPayPrefill] = useState(null); // pré-seleção de itens para o modal de pagamento
   const [notifyPayment, setNotifyPayment] = useState(null);
+  // 2ª via: escolher entre enviar ao sócio do ticket ou apenas visualizar
+  const [secondCopyTx, setSecondCopyTx] = useState(null);
   const [showEdit, setShowEdit] = useState(false);
   const [editForm, setEditForm] = useState({
     name: "",
@@ -1263,7 +1266,7 @@ export default function ClienteFicha() {
                     )}
                     <button
                       data-testid={`print-event-${ev.id}`}
-                      onClick={(e) => { e.stopPropagation(); printTransaction(ev); }}
+                      onClick={(e) => { e.stopPropagation(); setSecondCopyTx(ev); }}
                       title="Imprimir 2ª via"
                       className="text-slate-500 hover:text-amber-400"
                     >
@@ -2100,6 +2103,15 @@ export default function ClienteFicha() {
             <button onClick={() => setShowPointsHistory(false)} className="mt-3 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm">Fechar</button>
           </div>
         </div>
+      )}
+
+      {secondCopyTx && (
+        <SecondCopyDialog
+          tx={secondCopyTx}
+          client={data?.client}
+          onView={() => printTransaction(secondCopyTx)}
+          onClose={() => setSecondCopyTx(null)}
+        />
       )}
     </div>
   );

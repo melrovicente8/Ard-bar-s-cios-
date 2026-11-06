@@ -599,6 +599,28 @@ const Field = ({ label, required, children }) => (
 );
 
 function ProductForm({ form, setForm, onSubmit, cta, testidPrefix }) {
+  // O Lucro % é editável (setas e teclado): escrevemos num estado próprio e só
+  // recalculamos o preço de venda. Sem isto o campo recalculava-se a cada tecla
+  // e as setas de subir/descer não conseguiam fixar o valor.
+  const [marginPct, setMarginPct] = useState("");
+  const [editingMargin, setEditingMargin] = useState(false);
+  useEffect(() => {
+    if (editingMargin) return;
+    const price = Number(form.price) || 0;
+    const cost = Number(form.cost_price) || 0;
+    setMarginPct(price > 0 && cost >= 0 ? ((price - cost) / price * 100).toFixed(1) : "");
+  }, [form.price, form.cost_price, editingMargin]);
+
+  const applyMargin = (raw) => {
+    setEditingMargin(true);
+    setMarginPct(raw);
+    const m = Number(raw);
+    const cost = Number(form.cost_price) || 0;
+    if (raw !== "" && !isNaN(m) && m >= 0 && m < 100 && cost > 0) {
+      setForm({ ...form, price: (cost / (1 - m / 100)).toFixed(2) });
+    }
+  };
+
   return (
     <form onSubmit={onSubmit} className="space-y-4">
       <Field label="Nome" required>
@@ -654,20 +676,11 @@ function ProductForm({ form, setForm, onSubmit, cta, testidPrefix }) {
             step="0.1"
             min="0"
             max="99"
-            value={(() => {
-              const price = Number(form.price) || 0;
-              const cost = Number(form.cost_price) || 0;
-              return price > 0 && cost >= 0 ? ((price - cost) / price * 100).toFixed(1) : "";
-            })()}
-            onChange={(e) => {
-              const m = Number(e.target.value);
-              const cost = Number(form.cost_price) || 0;
-              if (cost > 0 && m >= 0 && m < 100) {
-                setForm({ ...form, price: (cost / (1 - m / 100)).toFixed(2) });
-              } else {
-                setForm({ ...form, price: form.price });
-              }
-            }}
+            value={marginPct}
+            onFocus={() => setEditingMargin(true)}
+            onChange={(e) => applyMargin(e.target.value)}
+            onBlur={() => setEditingMargin(false)}
+            placeholder={form.cost_price ? undefined : "define o custo"}
             title="Define o preço de venda a partir do custo"
             className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-amber-500/50"
           />

@@ -191,6 +191,8 @@ class SocioUpdateIn(BaseModel):
     contact: Optional[str] = None
     email: Optional[str] = None
     morada: Optional[str] = None
+    # O sócio pode bloquear os pedidos de pagamento entre sócios
+    gifts_blocked: Optional[bool] = None
 
 class MBWayRequestIn(BaseModel):
     amount: float
@@ -1953,6 +1955,7 @@ async def list_audit_log(
     date_to: Optional[str] = None,
     user_email: Optional[str] = None,
     event_type: Optional[str] = None,
+    search: Optional[str] = None,
     limit: int = 500,
     user: dict = Depends(require_role("admin", "tesoureiro", "presidente")),
 ):
@@ -1963,6 +1966,25 @@ async def list_audit_log(
         q["by"] = user_email
     if event_type:
         q["type"] = event_type
+    # Pesquisa livre: nome, nº de sócio, funcionário, referência ou nº de transação
+    text = (search or "").strip()
+    if text:
+        rx = {"$regex": re.escape(text), "$options": "i"}
+        ors = [{"summary": rx}, {"by": rx}, {"entity_id": rx}]
+        digits = text.lstrip("#")
+        if digits.isdigit():
+            ors.append({"tx_number": int(digits)})
+        # Fichas cujo nome ou nº de sócio corresponde → entradas ligadas a esse cliente
+        matched_clients = await db.clients.find(
+            {"$or": [{"name": rx}, {"member_number": rx}]}, {"id": 1, "name": 1}
+        ).to_list(500)
+        if matched_clients:
+            ids = [c["id"] for c in matched_clients]
+            ors.append({"entity_id": {"$in": ids}})
+            names = [re.escape(c.get("name") or "") for c in matched_clients if c.get("name")]
+            if names:
+                ors.append({"summary": {"$regex": "|".join(names), "$options": "i"}})
+        q["$or"] = ors
     if dfrom or dto:
         rng = {}
         if dfrom:
@@ -4083,8 +4105,12 @@ async def socio_list_members(socio: dict = Depends(get_current_socio)):
     """Lista de sócios (nome + nº) para escolher o destinatário de um consumo pago/delegado."""
     members = await db.clients.find(
         {"is_member": True, "member_number": {"$exists": True, "$ne": None}, "id": {"$ne": socio["id"]}},
-        {"_id": 0, "id": 1, "name": 1, "member_number": 1},
+        {"_id": 0, "id": 1, "name": 1, "member_number": 1, "is_minor": 1,
+         "family_head_client_id": 1, "gifts_blocked": 1},
     ).to_list(2000)
+    for m in members:
+        m["is_minor"] = _is_minor_client(m)
+        m["gifts_blocked"] = bool(m.get("gifts_blocked"))
     return sorted(members, key=lambda x: (x.get("member_number") or ""))
 
 
@@ -4109,6 +4135,14 @@ async def socio_create_gift(body: SocioGiftIn, socio: dict = Depends(get_current
         raise HTTPException(status_code=404, detail="Sócio destinatário não encontrado")
     if other["id"] == socio["id"]:
         raise HTTPException(status_code=400, detail="Não podes escolher-te a ti próprio")
+    # Menores tutelados só podem PEDIR a outro sócio para pagar — nunca pagam
+    # consumos de outros sócios nem são escolhidos para pagar.
+    if _is_minor_client(socio):
+        raise HTTPException(status_code=403, detail="Conta tutelada: só podes pedir a outro sócio para pagar o teu consumo.")
+    if body.kind == "delegated" and _is_minor_client(other):
+        raise HTTPException(status_code=403, detail="Sócios tutelados não podem pagar consumos de outros sócios.")
+    if body.kind == "delegated" and other.get("gifts_blocked"):
+        raise HTTPException(status_code=403, detail=f"{other['name']} bloqueou os pedidos de pagamento entre sócios.")
     gid = str(uuid.uuid4())
     now_iso = datetime.now(timezone.utc).isoformat()
     socio_label = f"{socio['name']} (nº {socio.get('member_number') or '—'})"
@@ -4537,13 +4571,20 @@ async def socio_mark_messages_read(body: SocioMessagesReadIn, socio: dict = Depe
 
 @api_router.get("/socio/notifications")
 async def socio_notifications(socio: dict = Depends(get_current_socio)):
-    """Contadores do sino de notificações do portal do sócio."""
+    """Notificações do portal do sócio: contadores + lista das mais recentes."""
     unread_messages = await db.socio_messages.count_documents(_socio_notif_query(socio["id"], unread_only=True))
+    notif_items = await db.socio_messages.find(
+        _socio_notif_query(socio["id"]),
+        {"_id": 0, "id": 1, "subject": 1, "message": 1, "created_at": 1, "read_at": 1,
+         "request_id": 1, "gift_id": 1, "reply": 1},
+    ).sort("created_at", -1).to_list(100)
     # mensagens da comunidade ainda não vistas (mesma lógica do GET /community/messages)
     items = await db.community_messages.find({"status": "visible"}, {"_id": 0, "created_at": 1}).sort("created_at", -1).to_list(200)
     last_seen = await db.clients.find_one({"id": socio["id"]}, {"community_last_seen": 1, "_id": 0}) or {}
     community_unseen = sum(1 for m in items if (last_seen.get("community_last_seen") or "") < m["created_at"])
-    return {"unread_messages": unread_messages, "community_unseen": community_unseen}
+    for it in notif_items:
+        it["read"] = bool(it.get("read_at"))
+    return {"unread_messages": unread_messages, "community_unseen": community_unseen, "items": notif_items}
 
 
 # ---------- Staff responde/publica no chat da comunidade ----------
@@ -5539,6 +5580,17 @@ def _payment_cash_value(p: dict) -> float:
     offer = float(p.get("offer_amount", 0) or 0)
     return max(credited - pts - offer + tip, 0.0)
 
+async def _live_cash_in_drawer(doc: dict) -> float:
+    """Valor em caixa da sessão atual: valor declarado na abertura + entradas em
+    numerário desde então (as saídas já são subtraídas ao próprio cash_in_drawer)."""
+    base = round(float(doc.get("cash_in_drawer") or 0), 2)
+    since = doc.get("changed_at")
+    if not since:
+        return base
+    payments = await db.payments.find({"created_at": {"$gte": since}}, {"_id": 0}).to_list(5000)
+    return round(base + sum(_payment_cash_value(p) for p in payments), 2)
+
+
 async def _expected_cash_today() -> float:
     try:
         from zoneinfo import ZoneInfo
@@ -5885,7 +5937,11 @@ async def set_bar_status(body: BarStatusIn, user: dict = Depends(get_current_use
                      summary=f"Bar ABERTO · dinheiro em caixa ao abrir: {declared:.2f} € (inserido por {user['email']}) · fecho automático às 02:00")
         return doc
     # Fechar: registar o valor contado e comparar com o esperado
-    expected = round(float(previous.get("cash_in_drawer") or 0), 2)
+    expected = (
+        await _live_cash_in_drawer(previous)
+        if previous.get("open")
+        else await _expected_cash_today()
+    )
     if body.cash_counted is None:
         expected = await _expected_cash_today()
     counted = round(float(body.cash_counted), 2) if body.cash_counted is not None else expected
@@ -5943,8 +5999,8 @@ async def get_bar_status(user: dict = Depends(get_current_user)):
         auto_closed = True
     state = await _bar_state()
     is_open = bool(doc and doc.get("open")) and state["open"]
-    # Durante a sessão o valor da gaveta vem do estado (abertura + movimentos)
-    cash = round(float(doc.get("cash_in_drawer") or 0), 2) if is_open else await _expected_cash_today()
+    # Durante a sessão o valor da gaveta = abertura + entradas em numerário
+    cash = await _live_cash_in_drawer(doc) if is_open else await _expected_cash_today()
     # Nota do último fecho de caixa — mostra ao abrir o bar qual era o valor em caixa
     last_close = await db.cash_closes.find({}, {"_id": 0}).sort("created_at", -1).to_list(1)
     return {

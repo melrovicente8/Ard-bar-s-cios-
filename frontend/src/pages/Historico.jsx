@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
-import { ClockCounterClockwise, Printer, FunnelSimple, MagnifyingGlass } from "@phosphor-icons/react";
+import { ClockCounterClockwise, Printer, FunnelSimple, MagnifyingGlass, DownloadSimple, X as XIcon } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const STATUS_LABEL = { paid: "Pago", partial: "Parcial", open: "Em aberto" };
@@ -10,7 +10,102 @@ const STATUS_CLASS = {
   partial: "bg-amber-500/15 text-amber-300 border-amber-500/30",
   open: "bg-rose-500/15 text-rose-300 border-rose-500/30",
 };
-const TYPE_LABEL = { sale_cancel: "Venda cancelada", sale_edit: "Venda editada" };
+// Etiquetas legíveis para o audit log (o backend guarda o tipo em código)
+const AUDIT_TONE = {
+  green: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+  blue: "bg-sky-500/15 text-sky-300 border-sky-500/30",
+  amber: "bg-amber-500/15 text-amber-300 border-amber-500/30",
+  pink: "bg-pink-500/15 text-pink-300 border-pink-500/30",
+  purple: "bg-purple-500/15 text-purple-300 border-purple-500/30",
+  teal: "bg-teal-500/15 text-teal-300 border-teal-500/30",
+  red: "bg-rose-500/15 text-rose-300 border-rose-500/30",
+  gray: "bg-slate-700/40 text-slate-300 border-slate-600/50",
+};
+
+const AUDIT_META = {
+  payment_create: ["Pagamento registado", "green"],
+  payment_edit: ["Pagamento editado", "green"],
+  payment_reverse: ["Pagamento anulado", "red"],
+  payment_delete: ["Pagamento eliminado", "red"],
+  payment_tip: ["Gratificação registada", "green"],
+  mbway_confirm: ["MBWay confirmado", "blue"],
+  mbway_reject: ["MBWay rejeitado", "red"],
+  sale_create: ["Venda registada", "amber"],
+  sale_cancel: ["Venda anulada", "red"],
+  sale_edit: ["Venda editada", "amber"],
+  house_offer: ["Oferta da casa", "pink"],
+  quota_bill: ["Cotas lançadas", "purple"],
+  quota_bulk_launch: ["Cotas lançadas (direção)", "purple"],
+  quota_reverse: ["Cotas extornadas", "red"],
+  client_create: ["Sócio criado", "blue"],
+  client_edit: ["Ficha editada", "blue"],
+  client_delete: ["Sócio eliminado", "red"],
+  client_profile_extra_edit: ["Perfil do sócio atualizado", "blue"],
+  pin_recovery_request: ["Pedido de recuperação de PIN", "red"],
+  pin_change: ["PIN alterado", "red"],
+  request_notify_pickup: ["Aviso de levantamento", "amber"],
+  request_deliver: ["Pedido entregue", "amber"],
+  request_cancel: ["Pedido anulado", "red"],
+  request_picked_up_socio: ["Sócio marcou como levantado", "amber"],
+  socio_gift_delegated: ["Pagamento delegado", "pink"],
+  socio_gift_prepaid: ["Consumo pago a outro sócio", "pink"],
+  socio_gift_accepted: ["Pagamento aceite", "pink"],
+  socio_gift_rejected: ["Pagamento recusado", "red"],
+  socio_gift_confirmed: ["Pagamento confirmado", "pink"],
+  socio_gift_claimed: ["Bónus solicitado", "pink"],
+  socio_gift_served: ["Consumo servido", "pink"],
+  socio_gift_consumed: ["Consumo concluído", "pink"],
+  socio_gift_charged: ["Consumo lançado ao servir", "pink"],
+  family_limit_set: ["Limite do agregado definido", "blue"],
+  family_dependent_add: ["Tutor adicionado ao agregado", "blue"],
+  bar_open: ["Bar aberto", "teal"],
+  bar_close: ["Bar fechado", "teal"],
+  bar_auto_close: ["Bar fechado automaticamente", "red"],
+  bar_status_toggle: ["Estado do bar alterado", "teal"],
+  cash_difference: ["Diferença de caixa", "red"],
+  cash_withdrawal: ["Saída de caixa", "teal"],
+  credit_refund: ["Devolução de crédito", "red"],
+  expense_payment: ["Despesa paga", "teal"],
+  temp_client_create: ["Não cliente criado", "amber"],
+  temp_client_discard: ["Não cliente descartado", "red"],
+  temp_client_archive: ["Não cliente arquivado", "amber"],
+  temp_client_reopen: ["Não cliente reaberto", "amber"],
+  temp_client_transfer: ["Ficha transferida para sócio", "amber"],
+  user_create: ["Utilizador criado", "gray"],
+  user_delete: ["Utilizador eliminado", "red"],
+  site_content_edit: ["Texto do portal editado", "gray"],
+  site_content_reset: ["Texto do portal reposto", "gray"],
+  community_staff_post: ["Publicação no chat", "gray"],
+  community_delete: ["Mensagem removida", "red"],
+  supplier_order_auto: ["Encomenda automática", "teal"],
+};
+
+// Operações que a direção deve ver destacadas
+const AUDIT_SENSITIVE = new Set([
+  "pin_recovery_request", "pin_change", "payment_reverse", "payment_delete", "sale_cancel",
+  "quota_reverse", "credit_refund", "house_offer", "client_delete", "user_delete",
+  "cash_difference", "bar_auto_close", "temp_client_discard", "site_content_reset", "community_delete",
+]);
+
+const auditMeta = (type) => {
+  const meta = AUDIT_META[type];
+  if (meta) return { label: meta[0], tone: meta[1] };
+  const pretty = String(type || "—").replace(/_/g, " ");
+  return { label: pretty.charAt(0).toUpperCase() + pretty.slice(1), tone: "gray" };
+};
+
+// Resumo rápido do impacto da ação (uma linha, para a coluna Detalhes)
+const auditDetailText = (e) => {
+  const bits = [];
+  if (e.tx_number) bits.push(`#${e.tx_number}`);
+  if (e.summary) bits.push(e.summary);
+  const sale = e.sale || (e.before && e.before.items ? e.before : null);
+  if (sale?.client_name) bits.push(`${sale.client_name}${sale.total != null ? ` · ${euro(sale.total)}` : ""}`);
+  if (e.changes?.client) bits.push(`cliente ${e.changes.client.before} → ${e.changes.client.after}`);
+  if (e.changes?.total) bits.push(`total ${euro(e.changes.total.before)} → ${euro(e.changes.total.after)}`);
+  if (!bits.length) bits.push("—");
+  return bits.join(" · ");
+};
 
 export default function Historico() {
   const [searchParams] = useSearchParams();
@@ -29,6 +124,10 @@ export default function Historico() {
   const [actaDate, setActaDate] = useState(today);
   const [salesData, setSalesData] = useState(null);
   const [auditData, setAuditData] = useState([]);
+  // Filtros próprios do audit log
+  const [auditType, setAuditType] = useState("");
+  const [auditSearch, setAuditSearch] = useState("");
+  const [auditDetail, setAuditDetail] = useState(null);
   const [users, setUsers] = useState([]);
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -76,6 +175,8 @@ export default function Historico() {
       if (filters.from) params.date_from = filters.from;
       if (filters.to) params.date_to = filters.to;
       if (filters.user_email) params.user_email = filters.user_email;
+      if (auditType) params.event_type = auditType;
+      if (auditSearch.trim()) params.search = auditSearch.trim();
       const { data } = await api.get("/audit-log", { params });
       setAuditData(data);
     } catch (e) {
@@ -195,7 +296,7 @@ export default function Historico() {
           sale ? `${sale.client_name || ""} · ${euro(sale.total || 0)} · ${(sale.items || []).map((it) => `${it.quantity}× ${it.product_name}`).join(", ")}` : "",
           changes.total !== undefined ? `Total: ${euro(changes.total.before)} → ${euro(changes.total.after)}` : "",
         ].filter(Boolean).join(" — ");
-        return `<tr><td>${new Date(e.at).toLocaleTimeString("pt-PT")}</td><td>${TYPE_LABEL[e.type] || e.type}</td><td>${e.by}</td><td>${detail}</td></tr>`;
+        return `<tr><td>${new Date(e.at).toLocaleTimeString("pt-PT")}</td><td>${auditMeta(e.type).label}</td><td>${e.by}</td><td>${detail}</td></tr>`;
       }).join("");
       w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Acta diária · ${day}</title>
 <style>
@@ -263,7 +364,7 @@ export default function Historico() {
         changes.total !== undefined ? `Total: ${euro(changes.total.before)} → ${euro(changes.total.after)}` : "",
         changes.items ? `Itens: ${changes.items.before.join(", ")} → ${changes.items.after.join(", ")}` : "",
       ].filter(Boolean).join(" — ");
-      return `<tr><td>${new Date(e.at).toLocaleString("pt-PT")}</td><td>${TYPE_LABEL[e.type] || e.type}</td><td>${e.by}</td><td>${detail}</td></tr>`;
+      return `<tr><td>${new Date(e.at).toLocaleString("pt-PT")}</td><td>${auditMeta(e.type).label}</td><td>${e.by}</td><td>${detail}</td></tr>`;
     }).join("");
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Audit log</title>
 <style>
@@ -289,6 +390,31 @@ export default function Historico() {
   <script>setTimeout(()=>window.print(),300);</script>
 </body></html>`);
     w.document.close();
+  };
+
+  const exportAuditCsv = () => {
+    if (!auditData.length) return toast.error("Sem registos para exportar");
+    const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const rows = [["Data", "Ação", "Utilizador", "Transação", "Detalhes", "Entidade", "ID entidade"]];
+    auditData.forEach((e) => {
+      rows.push([
+        new Date(e.at).toLocaleString("pt-PT"),
+        auditMeta(e.type).label,
+        e.by || "",
+        e.tx_number ? `#${e.tx_number}` : "",
+        auditDetailText(e),
+        e.entity || "",
+        e.entity_id || "",
+      ]);
+    });
+    const csv = "\uFEFF" + rows.map((r) => r.map(esc).join(";")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `audit-log-${filters.from || "inicio"}_${filters.to || "hoje"}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success("CSV exportado");
   };
 
   return (
@@ -379,6 +505,26 @@ export default function Historico() {
               ))}
             </select>
           )}
+          {tab === "audit" && (
+            <select
+              data-testid="filter-audit-type"
+              value={auditType}
+              onChange={(e) => setAuditType(e.target.value)}
+              className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm"
+            >
+              <option value="">Todas as ações</option>
+              {Object.keys(AUDIT_META)
+                .sort((a, b) => AUDIT_META[a][0].localeCompare(AUDIT_META[b][0], "pt"))
+                .map((t) => (
+                  <option key={t} value={t}>{AUDIT_META[t][0]}</option>
+                ))}
+              {[...new Set(auditData.map((e) => e.type))]
+                .filter((t) => !AUDIT_META[t])
+                .map((t) => (
+                  <option key={t} value={t}>{auditMeta(t).label}</option>
+                ))}
+            </select>
+          )}
           {tab === "sales" && (
             <select
               data-testid="filter-status"
@@ -397,6 +543,24 @@ export default function Historico() {
             className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg px-3 py-2 text-sm"
           >Aplicar</button>
         </div>
+        {tab === "audit" && (
+          <div className="mt-3" data-testid="audit-search-bar">
+            <div className="relative">
+              <MagnifyingGlass size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+              <input
+                data-testid="audit-search-input"
+                value={auditSearch}
+                onChange={(e) => setAuditSearch(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") loadAudit(); }}
+                placeholder="Procurar por nome, nº de sócio, funcionário, referência ou nº de transação…"
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-3 py-2 text-white text-sm placeholder-slate-500"
+              />
+            </div>
+            <p className="text-[10px] text-slate-500 mt-1">
+              A lupa procura em todos os detalhes: nome do sócio/cliente, nº de sócio, funcionário, referência MBWay e nº de transação (no período escolhido — usa “Sempre” para todo o histórico).
+            </p>
+          </div>
+        )}
         <div className="flex flex-wrap gap-2 mt-3">
           {[
             { v: "today", l: "Hoje" },
@@ -488,14 +652,24 @@ export default function Historico() {
                 {filters.from || "início"} → {filters.to || "hoje"}{filters.user_email ? ` · ${filters.user_email}` : ""}
               </div>
             </div>
-            <button
-              data-testid="print-audit-report"
-              onClick={printAuditReport}
-              disabled={!auditData.length}
-              className="bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 rounded-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border border-slate-700"
-            >
-              <Printer size={14} weight="duotone" /> Imprimir
-            </button>
+            <div className="flex gap-2">
+              <button
+                data-testid="export-audit-csv"
+                onClick={exportAuditCsv}
+                disabled={!auditData.length}
+                className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border border-emerald-500/40"
+              >
+                <DownloadSimple size={14} weight="bold" /> Exportar CSV
+              </button>
+              <button
+                data-testid="print-audit-report"
+                onClick={printAuditReport}
+                disabled={!auditData.length}
+                className="bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-100 rounded-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border border-slate-700"
+              >
+                <Printer size={14} weight="duotone" /> Imprimir
+              </button>
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
@@ -509,53 +683,55 @@ export default function Historico() {
               </thead>
               <tbody>
                 {auditData.map((e) => {
+                  const meta = auditMeta(e.type);
+                  const sensitive = AUDIT_SENSITIVE.has(e.type);
                   const sale = e.sale || e.before;
-                  const changes = e.changes || {};
                   return (
-                    <tr key={e.id} data-testid={`audit-row-${e.id}`} className="border-t border-slate-800/60 hover:bg-slate-900/60">
-                      <td className="px-5 py-2.5 text-slate-400 text-xs align-top">{new Date(e.at).toLocaleString("pt-PT")}</td>
+                    <tr
+                      key={e.id}
+                      data-testid={`audit-row-${e.id}`}
+                      onClick={() => setAuditDetail(e)}
+                      className={`border-t border-slate-800/60 hover:bg-slate-900/60 cursor-pointer ${sensitive ? "bg-rose-500/[0.04]" : ""}`}
+                    >
+                      <td className="px-5 py-2.5 text-slate-400 text-xs align-top whitespace-nowrap">{new Date(e.at).toLocaleString("pt-PT")}</td>
                       <td className="px-5 py-2.5 align-top">
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold border bg-amber-500/15 text-amber-300 border-amber-500/30">
-                          {TYPE_LABEL[e.type] || e.type}
+                        <span className="flex items-center gap-1.5">
+                          {sensitive && (
+                            <span data-testid={`audit-warn-${e.id}`} title="Operação sensível — verificar" className="text-amber-400">⚠️</span>
+                          )}
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border whitespace-nowrap ${AUDIT_TONE[meta.tone]}`}>
+                            {meta.label}
+                          </span>
                         </span>
                       </td>
-                      <td className="px-5 py-2.5 text-slate-300 text-xs font-mono align-top">{e.by}</td>
-                      <td className="px-5 py-2.5 text-slate-400 text-xs align-top">
-                        {e.tx_number ? (
-                          <div className="mb-1">
-                            <Link to={`/transacoes/${e.tx_number}`} data-testid={`audit-tx-${e.id}`} className="font-mono font-bold text-amber-400 hover:underline">
-                              #{e.tx_number}
+                      <td className="px-5 py-2.5 text-slate-300 text-xs font-mono align-top break-all">{e.by || "—"}</td>
+                      <td className="px-5 py-2.5 text-slate-300 text-xs align-top">
+                        <div className="flex items-start gap-2">
+                          <span className="flex-1 min-w-0">{auditDetailText(e)}</span>
+                          <span className="text-slate-600 shrink-0" aria-hidden="true">›</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2 mt-1">
+                          {e.tx_number ? (
+                            <Link
+                              to={`/transacoes/${e.tx_number}`}
+                              onClick={(ev) => ev.stopPropagation()}
+                              data-testid={`audit-tx-${e.id}`}
+                              className="text-[10px] font-mono text-amber-400 hover:underline"
+                            >
+                              abrir transação #{e.tx_number}
                             </Link>
-                            <span className="text-slate-400"> · {e.summary || "—"}</span>
-                          </div>
-                        ) : (
-                          <div className="mb-1 text-slate-400">{e.summary || "—"}</div>
-                        )}
-                        {sale && (
-                          <div className="mb-1">
-                            <Link to={`/clientes/${sale.client_id}`} className="text-slate-200 hover:text-amber-400 font-medium">
+                          ) : null}
+                          {sale?.client_id ? (
+                            <Link
+                              to={`/clientes/${sale.client_id}`}
+                              onClick={(ev) => ev.stopPropagation()}
+                              className="text-[10px] text-slate-400 hover:text-amber-400"
+                            >
                               {sale.client_name}
                             </Link>
-                            <span className="text-slate-500"> · {euro(sale.total)} · {sale.items?.map((it) => `${it.quantity}× ${it.product_name}`).join(", ")}</span>
-                          </div>
-                        )}
-                        {Object.keys(changes).length > 0 && (
-                          <div className="space-y-0.5 mt-1 pl-2 border-l-2 border-amber-500/30">
-                            {changes.client && (
-                              <div><span className="text-slate-500">Cliente:</span> <span className="text-rose-300 line-through">{changes.client.before}</span> → <span className="text-emerald-300">{changes.client.after}</span></div>
-                            )}
-                            {changes.total !== undefined && (
-                              <div><span className="text-slate-500">Total:</span> <span className="text-rose-300 line-through">{euro(changes.total.before)}</span> → <span className="text-emerald-300">{euro(changes.total.after)}</span></div>
-                            )}
-                            {changes.items && (
-                              <div>
-                                <span className="text-slate-500">Itens antes:</span> <span className="text-rose-300">{changes.items.before.join(", ")}</span>
-                                <br/>
-                                <span className="text-slate-500">Itens depois:</span> <span className="text-emerald-300">{changes.items.after.join(", ")}</span>
-                              </div>
-                            )}
-                          </div>
-                        )}
+                          ) : null}
+                          <span className="text-[10px] text-slate-600 font-mono">{e.entity ? `${e.entity}` : ""}</span>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -565,6 +741,47 @@ export default function Historico() {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {auditDetail && (
+        <div
+          className="fixed inset-0 z-[70] flex justify-end bg-slate-950/70 backdrop-blur-sm"
+          onClick={() => setAuditDetail(null)}
+          data-testid="audit-detail-drawer"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-lg h-full bg-slate-900 border-l border-slate-800 overflow-y-auto p-6"
+          >
+            <div className="flex items-start gap-2 mb-4">
+              <div className="flex-1 min-w-0">
+                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Detalhe do registo</div>
+                <h3 className="font-outfit text-xl font-semibold mt-1 flex items-center gap-2 flex-wrap">
+                  {auditMeta(auditDetail.type).label}
+                  {AUDIT_SENSITIVE.has(auditDetail.type) && <span className="text-amber-400" title="Operação sensível">⚠️</span>}
+                </h3>
+                <div className="text-xs text-slate-400 mt-1">
+                  {new Date(auditDetail.at).toLocaleString("pt-PT")} · {auditDetail.by || "—"}
+                </div>
+              </div>
+              <button onClick={() => setAuditDetail(null)} className="p-1.5 rounded-md bg-slate-800 hover:bg-slate-700" aria-label="Fechar">
+                <XIcon size={16} weight="bold" />
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2 mb-4 text-xs">
+              <div className="bg-slate-950 border border-slate-800 rounded-lg p-2">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500">Transação</div>
+                <div className="text-amber-300 font-mono">{auditDetail.tx_number ? `#${auditDetail.tx_number}` : "—"}</div>
+              </div>
+              <div className="bg-slate-950 border border-slate-800 rounded-lg p-2">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500">Entidade</div>
+                <div className="text-slate-200 font-mono break-all">{auditDetail.entity || "—"}</div>
+              </div>
+            </div>
+            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 mb-1">Registo completo</div>
+            <pre className="bg-slate-950 border border-slate-800 rounded-lg p-3 text-[11px] text-slate-300 overflow-x-auto whitespace-pre-wrap break-words">{JSON.stringify(auditDetail, null, 2)}</pre>
           </div>
         </div>
       )}

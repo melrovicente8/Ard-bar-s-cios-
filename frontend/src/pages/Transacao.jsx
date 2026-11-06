@@ -5,6 +5,7 @@ import { printTransactionTicket } from "../lib/tickets";
 import { ArrowLeft, Printer, Receipt, ShoppingBag, User, ClockCounterClockwise, ShieldCheck } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
+import SecondCopyDialog from "../components/SecondCopyDialog";
 
 const Detail = ({ label, value, className = "text-slate-200" }) => (
   <div className="flex items-center justify-between gap-3">
@@ -21,6 +22,8 @@ export default function Transacao() {
   const [client, setClient] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
+  // 2ª via: pergunta se envia ao sócio do ticket ou só visualiza
+  const [secondCopy, setSecondCopy] = useState(false);
 
   const reload = async () => {
     const { data } = await api.get(`/transactions/${tx_number}`);
@@ -112,7 +115,11 @@ export default function Transacao() {
           <div className="text-sm text-slate-400 mt-1">{kindTitle} · {new Date(tx.created_at).toLocaleString("pt-PT")} · por <span className="text-amber-300">{tx.user_email || "—"}</span></div>
         </div>
         <div className="flex gap-2">
-          <button onClick={print2} data-testid="tx-print" className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold flex items-center gap-2 text-sm">
+          <button
+            onClick={() => { if (tx._kind === "sale" || tx._kind === "payment") setSecondCopy(true); else print2(); }}
+            data-testid="tx-print"
+            className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold flex items-center gap-2 text-sm"
+          >
             <Printer size={14} weight="bold" /> {isSale || tx._kind === "payment" ? "Imprimir 2ª via" : "Imprimir ticket"}
           </button>
           {tx.client_id && (
@@ -332,6 +339,15 @@ export default function Transacao() {
           </div>
         )}
       </div>
+
+      {secondCopy && (
+        <SecondCopyDialog
+          tx={tx}
+          client={client || (tx.client_id ? { id: tx.client_id, name: tx.client_name, member_number: tx.member_number } : null)}
+          onView={print2}
+          onClose={() => setSecondCopy(false)}
+        />
+      )}
     </div>
   );
 }

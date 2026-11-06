@@ -62,7 +62,7 @@ export default function SocioDigitalCard({ client, onClose }) {
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-sm p-6 text-center"
+        className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-sm p-6 text-center max-h-[92vh] overflow-y-auto"
       >
         <div className="flex items-center justify-center gap-2 mb-4">
           <SealCheck size={22} weight="duotone" className="text-amber-400" />
@@ -127,7 +127,7 @@ export default function SocioDigitalCard({ client, onClose }) {
         </div>
 
         {/* ==== QR de validação (branco, como um selo colado ao cartão) ==== */}
-        <div className="relative -mt-6 flex justify-center" data-testid="socio-card-qr">
+        <div className="relative mt-4 flex justify-center" data-testid="socio-card-qr">
           {card ? (
             <div className="bg-white p-2.5 rounded-lg shadow-lg border-2 border-[#4a5d3a]">
               <QRCodeSVG value={card.code} size={120} level="M" />
