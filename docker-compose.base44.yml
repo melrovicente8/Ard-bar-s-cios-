@@ -38,6 +38,12 @@ services:
       && uvicorn server:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/backend"
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/club/info',timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 90s
     restart: unless-stopped
 
   # ---------- Frontend (Vite dev server, live reload, proxy /api -> backend) ----------
@@ -54,6 +60,12 @@ services:
     command: sh -c "npm install --no-audit --no-fund && npx vite --host 0.0.0.0 --port 5173"
     ports:
       - "3000:5173"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5173/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 120s
     restart: unless-stopped
 
 volumes:

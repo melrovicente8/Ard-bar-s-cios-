@@ -7,6 +7,7 @@ docker compose -f docker-compose.base44.yml up -d
 - **frontend**: Vite dev server (React 18) na porta 5173, mapeada para o host :3000. Live reload ativo. `frontend/` está bind-mounted.
 - **backend**: FastAPI/uvicorn com `--reload` na porta 8000. Dependências vindas de `backend/requirements.base44.txt` (subconjunto leve de `requirements.txt` — NÃO usar o requirements.txt completo, tem pacotes pesados desnecessários ao runtime).
 - **mongo**: mongo:7 com credenciais locais (ard/ardpass) definidas inline no compose.
+- **Healthchecks**: `backend` faz probe a `GET /api/club/info` (200 sem auth) e `frontend` a `GET /` no Vite. Se `docker compose ps` mostrar `unhealthy`, o dev server está preso — `docker compose -f docker-compose.base44.yml restart frontend` (ou `backend`) resolve; não é preciso editar código.
 
 ## Arquitetura / wirings não óbvios
 - **Origem única**: o Vite dev server faz proxy de `/api` → `http://backend:8000` (ver `frontend/vite.config.js`). Auth por cookies funciona same-origin — não ativar CORS nem expor URLs absolutas.
