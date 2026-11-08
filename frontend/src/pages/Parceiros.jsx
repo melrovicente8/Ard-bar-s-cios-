@@ -20,6 +20,7 @@ export default function Parceiros() {
   const isAdmin = user?.role === "admin";
   const [partners, setPartners] = useState([]);
   const [tickets, setTickets] = useState([]);
+  const [summary, setSummary] = useState(null);
   // O aviso do cabeçalho abre esta página em ?filter=pending
   const [searchParams, setSearchParams] = useSearchParams();
   const filter = searchParams.get("filter") || "pending";
@@ -28,12 +29,14 @@ export default function Parceiros() {
   const [busy, setBusy] = useState(false);
 
   const load = async () => {
-    const [p, t] = await Promise.all([
+    const [p, t, s] = await Promise.all([
       api.get("/partners").catch(() => ({ data: [] })),
       api.get("/partner-tickets", { params: { status_filter: filter === "all" ? "all" : filter } }).catch(() => ({ data: [] })),
+      api.get("/partner-tickets/summary").catch(() => ({ data: null })),
     ]);
     setPartners(p.data || []);
     setTickets(t.data || []);
+    setSummary(s.data);
   };
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [filter]);
@@ -120,14 +123,28 @@ export default function Parceiros() {
 
   return (
     <div className="p-6 md:p-8 animate-in" data-testid="parceiros-page">
-      <div className="mb-6">
-        <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">Receita indireta</div>
-        <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1 flex items-center gap-2">
-          <Storefront size={28} weight="duotone" className="text-sky-400" /> Parceiros Locais
-        </h1>
-        <p className="text-sm text-slate-400 mt-1">
-          Os sócios enviam a fotografia do talão pela app. A validação é sempre manual — a leitura automática só confirma (ou não) o parceiro, a data e o valor do talão.
-        </p>
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">Receita indireta</div>
+          <h1 className="font-outfit text-3xl sm:text-4xl font-bold tracking-tight mt-1 flex items-center gap-2">
+            <Storefront size={28} weight="duotone" className="text-sky-400" /> Parceiros Locais
+          </h1>
+          <p className="text-sm text-slate-400 mt-1">
+            Os sócios enviam a fotografia do talão pela app. A validação é sempre manual — a leitura automática só confirma (ou não) o parceiro, a data e o valor do talão.
+          </p>
+        </div>
+        <div data-testid="partners-indirect-total" className="rounded-xl border border-sky-500/30 bg-sky-500/10 px-4 py-3">
+          <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-sky-300/80">Talões registados</div>
+          <div className="font-outfit text-2xl font-bold text-sky-200 leading-tight" data-testid="partners-indirect-value">
+            {summary ? euro(summary.total || 0) : "—"}
+          </div>
+          <div className="text-[10px] text-slate-400">
+            {summary
+              ? `${summary.tickets} ${summary.tickets === 1 ? "talão" : "talões"} · ${euro(summary.validated_total || 0)} validados`
+              : "a calcular…"}
+            {summary?.pending ? ` · ${summary.pending} por validar` : ""}
+          </div>
+        </div>
       </div>
 
       <div className="grid lg:grid-cols-2 gap-6">
@@ -153,6 +170,12 @@ export default function Parceiros() {
                   )}
                 </div>
                 <div className="flex flex-wrap items-center gap-3 mt-2">
+                  <span className="text-[11px] text-sky-300/90" data-testid={`partner-total-${p.id}`}>
+                    🧾 {euro(summary?.by_partner?.[p.id]?.total || 0)}
+                    {summary?.by_partner?.[p.id]?.tickets
+                      ? ` · ${summary.by_partner[p.id].tickets} ${summary.by_partner[p.id].tickets === 1 ? "talão" : "talões"}`
+                      : " · sem talões"}
+                  </span>
                   <label className="flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer">
                     <input
                       data-testid={`partner-active-${p.id}`}

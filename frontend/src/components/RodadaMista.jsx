@@ -860,7 +860,7 @@ export default function RodadaMista({ onClose, onChanged }) {
               <div className="text-[11px] text-slate-500">Como cada sócio liquida a sua parte</div>
               {splitMode === "equal" && alreadyPaidRound.length > 0 && (
                 <div className="text-[11px] text-emerald-300/90" data-testid="rodada-split-excluded">
-                  Já assumiram uma rodada e ficam fora desta divisão:{" "}
+                  Já pagaram a sua parte e ficam fora desta divisão:{" "}
                   {alreadyPaidRound.map((m) => m.name.split(" ")[0]).join(" · ")}
                 </div>
               )}

@@ -8222,9 +8222,11 @@ def _split_members(table: dict) -> list:
 
 def _equal_split_members(table: dict) -> list:
     """Quem divide o que falta em partes iguais: quem já assumiu (pagou) uma
-    rodada desta mesa fica de fora, porque a sua vez já está paga."""
+    rodada desta mesa ou já liquidou a sua parte numa divisão por consumo fica
+    de fora, porque a sua parte já está paga."""
     members = list(table.get("members") or [])
     payers = {r.get("payer_client_id") for r in (table.get("rounds") or []) if r.get("payer_client_id")}
+    payers |= {p.get("client_id") for p in (table.get("split_parts") or []) if p.get("client_id")}
     waiting = [m for m in members if m.get("client_id") not in payers]
     return waiting or members
 
@@ -8659,9 +8661,6 @@ async def split_group_table(table_id: str, body: GroupSplitIn, user: dict = Depe
     split_parts = []
     fully_split = True
     mode = (body.mode or "equal").lower()
-    if mode != "items" and table.get("split_parts"):
-        # Uma divisão por consumo já liquidou parte da conta: acaba-se por consumo
-        raise HTTPException(status_code=400, detail="Esta mesa já tem consumos divididos — continua a divisão por consumo")
 
     if mode == "items":
         # Divisão por consumo às prestações: só se dividem agora os consumos
@@ -8733,9 +8732,19 @@ async def split_group_table(table_id: str, body: GroupSplitIn, user: dict = Depe
             if pay:
                 payments.append(pay)
         fully_split = not any(q > 0 for q in remaining.values())
+        total = round(sum(p[1] for p in plans), 2)
     else:
-        # Quem já assumiu (pagou) uma rodada desta mesa não entra na divisão do
-        # que falta — a sua vez já está paga; o restante divide-se entre os outros.
+        # Divide-se só o que falta: uma divisão por consumo pode já ter liquidado
+        # parte da conta. Quem já assumiu (pagou) uma rodada desta mesa — ou já
+        # pagou a sua parte por consumo — fica de fora do resto.
+        units_left, total = _split_remaining(table)
+        if not units_left:
+            raise HTTPException(status_code=400, detail="Não há consumos por dividir")
+        detail_all = [{
+            "round": u["round"], "product_id": u["product_id"], "product_name": u["product_name"],
+            "unit_price": u["unit_price"], "quantity": u["quantity"],
+            "subtotal": round(u["unit_price"] * u["quantity"], 2),
+        } for u in units_left]
         participants = _equal_split_members(table)
         n = len(participants)
         share = round(total / n, 2)
@@ -8747,8 +8756,10 @@ async def split_group_table(table_id: str, body: GroupSplitIn, user: dict = Depe
             if not client_doc:
                 continue
             label = f"Rodada Mista (Partilha {i + 1}/{n})"
-            sale = await _group_sale(table, client_doc, label, subtotal, detail_all, user,
-                                     rounds_detail=_group_rounds_detail(table, open_rounds))
+            sale = await _group_sale(
+                table, client_doc, label, subtotal, detail_all, user,
+                rounds_detail=None if table.get("split_parts") else _group_rounds_detail(table, open_rounds),
+            )
             pay = await _settle_group_sale(sale, (methods.get(m["client_id"]) or "account").lower(), user)
             sales.append(sale)
             if pay:
@@ -9794,6 +9805,31 @@ async def list_partner_tickets(status_filter: Optional[str] = None, user: dict =
 async def partner_tickets_pending_count(user: dict = Depends(get_current_user)):
     """Contador leve para o aviso do cabeçalho do staff (talões à espera de validação)."""
     return {"pending": await db.partner_tickets.count_documents({"status": "pending"})}
+
+
+@api_router.get("/partner-tickets/summary")
+async def partner_tickets_summary(user: dict = Depends(get_current_user)):
+    """Receita indireta: valor que os sócios já gastaram nos parceiros locais,
+    somado dos talões registados (pendentes + validados; rejeitados e anulados
+    não contam)."""
+    docs = await db.partner_tickets.find(
+        {"status": {"$in": ["pending", "validated"]}},
+        {"_id": 0, "amount": 1, "status": 1, "partner_id": 1},
+    ).to_list(20000)
+    by_partner = {}
+    for d in docs:
+        row = by_partner.setdefault(d.get("partner_id") or "", {"total": 0.0, "tickets": 0})
+        row["total"] = round(row["total"] + float(d.get("amount") or 0), 2)
+        row["tickets"] += 1
+    validated = [d for d in docs if d.get("status") == "validated"]
+    return {
+        "total": round(sum(float(d.get("amount") or 0) for d in docs), 2),
+        "validated_total": round(sum(float(d.get("amount") or 0) for d in validated), 2),
+        "tickets": len(docs),
+        "validated": len(validated),
+        "pending": len(docs) - len(validated),
+        "by_partner": by_partner,
+    }
 
 
 @api_router.post("/partner-tickets/{ticket_id}/validate")
