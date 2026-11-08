@@ -3727,13 +3727,20 @@ async def socio_mbway_request(body: MBWayRequestIn, socio: dict = Depends(get_cu
     return rec
 
 def _allocate_payment_coverages(sales: list, payments: list) -> dict:
-    """Imputa cada pagamento às vendas em dívida (FIFO) e devolve o detalhe por pagamento.
-    Usado nos recibos antigos, que não guardavam os itens pagos (item_targets)."""
+    """Imputa cada pagamento às vendas em dívida e devolve o detalhe por pagamento.
+    Usado nos recibos, que não guardavam os itens pagos (item_targets).
+    Sem seleção explícita o valor abate primeiro ao consumo mais recente que já
+    existia quando o pagamento foi feito (é o que o cliente paga ao balcão).
+    Devoluções de crédito em numerário não abatem consumos — o dinheiro sai."""
     remaining = {s["id"]: round(float(s.get("total", 0) or 0), 2) for s in sales}
-    ordered_sales = sorted(sales, key=lambda x: x.get("created_at") or "")
+    ordered_sales = sorted(sales, key=lambda x: x.get("created_at") or "", reverse=True)
     out: dict = {}
     for p in sorted(payments, key=lambda x: x.get("created_at") or ""):
         covered = []
+        if p.get("source") == "refund":
+            # Devolução de crédito em numerário: não paga vendas (ver create refund)
+            out[p["id"]] = []
+            continue
         if p.get("item_targets"):
             # Pagamento de linhas escolhidas: o recibo mostra a venda e o seu detalhe
             # (na Rodada Mista o detalhe real está em group_rounds, não na linha-resumo).
@@ -3761,11 +3768,21 @@ def _allocate_payment_coverages(sales: list, payments: list) -> dict:
                 })
             out[p["id"]] = covered
             continue
-        pool = round(float(p.get("total_credited") or p.get("amount") or 0), 2)
+        credited = p.get("total_credited")
+        # total_credited = 0 (ex.: devolução) não pode cair para o numerário entregue
+        pool = round(float(credited if credited is not None else (p.get("amount") or 0)), 2)
+        if pool <= 0:
+            out[p["id"]] = []
+            continue
+        paid_at = p.get("created_at") or ""
+        # Só se abatem vendas que já existiam quando o pagamento foi feito
+        eligible = ordered_sales if not paid_at else [
+            s for s in ordered_sales if (s.get("created_at") or "") <= paid_at
+        ]
         target_ids = set(p.get("sale_ids") or [])
-        candidates = [s for s in ordered_sales if not target_ids or s["id"] in target_ids]
+        candidates = [s for s in eligible if not target_ids or s["id"] in target_ids]
         if target_ids:
-            candidates += [s for s in ordered_sales if s["id"] not in target_ids]
+            candidates += [s for s in eligible if s["id"] not in target_ids]
         for s in candidates:
             if pool <= 0:
                 break
