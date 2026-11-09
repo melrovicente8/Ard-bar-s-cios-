@@ -44,6 +44,8 @@ export default function SocioRodadaMista() {
   }, [members, search, picked]);
 
   const openTables = data?.open || [];
+  // A direção pode desligar a Rodada Mista na app (balcão continua a funcionar)
+  const rodadaEnabled = data?.rodada_mista_enabled !== false;
 
   const createTable = async () => {
     if (!picked.length) return toast.error("Escolhe pelo menos um sócio para a mesa");
@@ -148,7 +150,7 @@ export default function SocioRodadaMista() {
                           ))}
                         </ul>
                       )}
-                      {t.status === "open" && (
+                      {t.status === "open" && rodadaEnabled && (
                         <button
                           data-testid={`socio-rodada-order-${t.id}`}
                           onClick={() => setOrderTable(t)}
@@ -172,7 +174,7 @@ export default function SocioRodadaMista() {
                     Já tens uma Rodada Mista aberta — pede o consumo dentro dessa mesa.
                     Só depois de ela ser fechada no balcão é que podes abrir outra.
                   </div>
-                ) : (
+                ) : rodadaEnabled ? (
                   <button
                     data-testid="socio-rodada-new"
                     onClick={() => setCreating(true)}
@@ -180,6 +182,13 @@ export default function SocioRodadaMista() {
                   >
                     <Plus size={15} weight="bold" /> Iniciar nova rodada mista
                   </button>
+                ) : (
+                  <div
+                    data-testid="socio-rodada-disabled"
+                    className="mt-4 rounded-lg border border-slate-700 bg-slate-800/40 px-3 py-2.5 text-[11px] text-slate-400 text-center"
+                  >
+                    A Rodada Mista está desativada na app pela direção. Pede no balcão.
+                  </div>
                 )}
               </>
             ) : (

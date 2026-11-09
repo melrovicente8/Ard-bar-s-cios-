@@ -2150,6 +2150,53 @@ async def clear_consumption_simulation(user: dict = Depends(require_role("admin"
     return {"removed": result.deleted_count, "total": total}
 
 
+@api_router.post("/simulations/consumption/commit")
+async def commit_consumption_simulation(user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
+    """Torna as simulações efetivas: abate o stock, atribui pontos e marca presença.
+    Os saldos já tinham sido somados na simulação; as vendas deixam de estar marcadas."""
+    sales = await db.sales.find({"simulation": True}, {"_id": 0}).to_list(5000)
+    if not sales:
+        raise HTTPException(status_code=400, detail="Não há simulações ativas para tornar efetivas")
+    sold: dict = {}
+    for s in sales:
+        for li in s.get("items") or []:
+            pid = li.get("product_id")
+            if pid:
+                sold[pid] = sold.get(pid, 0) + int(li.get("quantity") or 0)
+    for pid, qty in sold.items():
+        await db.products.update_one({"id": pid}, {"$inc": {"quantity": -qty}})
+    total = 0.0
+    points = 0
+    for s in sales:
+        value = round(float(s.get("total") or 0), 2)
+        total = round(total + value, 2)
+        client = await db.clients.find_one({"id": s.get("client_id")}, {"_id": 0})
+        if not client:
+            continue
+        earned, new_pending = await _compute_points_with_rollover(client, value)
+        if client.get("is_walkin") or client.get("is_temp"):
+            earned, new_pending = 0, float(client.get("points_pending_value", 0) or 0)
+        op = {"$inc": {"total_spent": value, "points": earned}}
+        if client.get("is_member"):
+            op["$set"] = {"points_pending_value": new_pending}
+        await db.clients.update_one({"id": client["id"]}, op)
+        if earned:
+            await _log_points(client["id"], earned, "sale", s["id"],
+                              f"Simulação efetiva · {value:.2f} €", user["email"])
+            points += earned
+        await _mark_presence(client["id"], source="sale")
+    await db.sales.update_many(
+        {"simulation": True},
+        {"$set": {"simulation_committed": True, "source": "simulation_committed"},
+         "$unset": {"simulation": ""}},
+    )
+    await _audit(
+        "simulation_commit", user["email"], entity="simulation",
+        summary=f"Simulação tornada efetiva: {len(sales)} venda(s) · {total:.2f} €",
+    )
+    return {"committed": len(sales), "total": total, "points": points}
+
+
 # ---------- Sales Report (filtros) ----------
 @api_router.get("/reports/sales")
 async def report_sales(
@@ -8612,6 +8659,7 @@ async def socio_group_tables(socio: dict = Depends(get_current_socio)):
     return {
         "open": [_group_table_for_socio(t, socio["id"]) for t in open_tables],
         "closed": [_group_table_for_socio(t, socio["id"]) for t in closed_tables],
+        "rodada_mista_enabled": await _rodada_mista_app_enabled(),
     }
 
 
@@ -8619,6 +8667,11 @@ async def socio_group_tables(socio: dict = Depends(get_current_socio)):
 async def socio_create_group_table(body: SocioGroupTableIn, socio: dict = Depends(get_current_socio)):
     """O sócio inicia uma Rodada Mista a partir da app (ele é sempre um dos elementos da mesa).
     Cada sócio só pode ter UMA rodada mista aberta na app."""
+    if not await _rodada_mista_app_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="A Rodada Mista está desativada na app. Fala com o bar para abrir a mesa.",
+        )
     current = await db.group_tables.find_one(
         {"members.client_id": socio["id"], "status": "open"}, {"_id": 0, "label": 1})
     if current:
@@ -8635,6 +8688,8 @@ async def socio_create_group_table(body: SocioGroupTableIn, socio: dict = Depend
 @api_router.post("/socio/group-tables/{table_id}/rounds")
 async def socio_add_group_round(table_id: str, body: GroupRoundIn, socio: dict = Depends(get_current_socio)):
     """O sócio pede consumo dentro de uma Rodada Mista em que está sentado."""
+    if not await _rodada_mista_app_enabled():
+        raise HTTPException(status_code=403, detail="A Rodada Mista está desativada na app. Pede no balcão.")
     table = await db.group_tables.find_one({"id": table_id}, {"_id": 0, "members": 1, "status": 1})
     if not table:
         raise HTTPException(status_code=404, detail="Rodada não encontrada")
@@ -9156,6 +9211,13 @@ async def _honorary_self_activation_enabled() -> bool:
     return False if not doc else bool(doc.get("value", False))
 
 
+async def _rodada_mista_app_enabled() -> bool:
+    """Rodada Mista na app do sócio: ATIVA por omissão.
+    Só a direção a pode desligar (`PUT /api/club/rodada-mista-settings`)."""
+    doc = await db.club_settings.find_one({"id": "rodada_mista_app_enabled"}, {"_id": 0})
+    return True if not doc else bool(doc.get("value", True))
+
+
 def _rank_display(c: dict) -> str:
     if c.get("show_in_rankings") is False:
         return f"Anónimo (Sócio #{c.get('member_number') or '—'})"
@@ -9323,6 +9385,28 @@ async def set_honorary_settings(body: HonorarySettingsIn, user: dict = Depends(r
     )
     await _audit("honorary_settings", user["email"], entity="club_settings", entity_id="honorary_self_activation",
                  summary=f"Ativação de Sócio Honorário na app {'permitida' if body.enabled else 'desativada'}")
+    return {"enabled": bool(body.enabled)}
+
+
+class RodadaMistaSettingsIn(BaseModel):
+    enabled: bool
+
+
+@api_router.get("/club/rodada-mista-settings")
+async def get_rodada_mista_settings(user: dict = Depends(get_current_user)):
+    return {"enabled": await _rodada_mista_app_enabled()}
+
+
+@api_router.put("/club/rodada-mista-settings")
+async def set_rodada_mista_settings(body: RodadaMistaSettingsIn, user: dict = Depends(require_role("admin"))):
+    await db.club_settings.update_one(
+        {"id": "rodada_mista_app_enabled"},
+        {"$set": {"id": "rodada_mista_app_enabled", "value": bool(body.enabled),
+                  "updated_at": datetime.now(timezone.utc).isoformat(), "updated_by": user["email"]}},
+        upsert=True,
+    )
+    await _audit("rodada_mista_settings", user["email"], entity="club_settings", entity_id="rodada_mista_app_enabled",
+                 summary=f"Rodada Mista na app do sócio {'ativada' if body.enabled else 'desativada'}")
     return {"enabled": bool(body.enabled)}
 
 

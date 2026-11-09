@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { toast } from "sonner";
-import { Flask, ArrowRight, Trash, X } from "@phosphor-icons/react";
+import { Flask, ArrowRight, Trash, X, CheckCircle } from "@phosphor-icons/react";
 
 // Ferramenta de teste: cria consumos aleatórios reais (marcados como simulação)
 // e mostra o impacto no total de vendas do dia. Pode ser removida a qualquer momento.
@@ -55,7 +56,26 @@ export default function SimulationModal({ onClose, onChanged }) {
     }
   };
 
-  return (
+  // Torna as vendas de simulação efetivas: abate o stock, atribui pontos e marca presença
+  const commit = async () => {
+    const n = status?.count || 0;
+    if (!window.confirm(`Tornar ${n} consumo(s) de simulação efetivos? O stock e os pontos passam a contar.`)) return;
+    setBusy(true);
+    try {
+      const { data } = await api.post("/simulations/consumption/commit");
+      toast.success(`${data.committed} consumo(s) efetivados · ${euro(data.total)} · +${data.points} ponto(s)`);
+      setResult(null);
+      await loadStatus();
+      onChanged?.();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Renderizado no body para não ficar preso ao wrapper animado da página
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={busy ? undefined : onClose}>
       <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg p-6" onClick={(e) => e.stopPropagation()} data-testid="simulation-modal">
         <div className="flex items-start justify-between mb-4">
@@ -64,7 +84,7 @@ export default function SimulationModal({ onClose, onChanged }) {
             <h3 className="font-outfit text-2xl font-semibold mt-1">Simular consumos aleatórios</h3>
             <p className="text-xs text-slate-400 mt-1">
               Cria consumos aleatórios nos clientes escolhidos e mostra o impacto no total de vendas de hoje.
-              Não mexe no stock, pontos ou presenças. As vendas ficam marcadas como <strong className="text-fuchsia-300">Simulação</strong> e podem ser removidas.
+              Não mexe no stock, pontos ou presenças. As vendas ficam marcadas como <strong className="text-fuchsia-300">Simulação</strong> e podem ser removidas ou tornadas efetivas.
             </p>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-md text-slate-500 hover:text-white hover:bg-slate-800" data-testid="simulation-close">
@@ -125,7 +145,7 @@ export default function SimulationModal({ onClose, onChanged }) {
           </div>
         )}
 
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
             type="button"
             onClick={clear}
@@ -134,6 +154,16 @@ export default function SimulationModal({ onClose, onChanged }) {
             data-testid="simulation-clear"
           >
             <Trash size={16} /> Remover
+          </button>
+          <button
+            type="button"
+            onClick={commit}
+            disabled={busy || !(status && status.count > 0)}
+            title="Torna estes consumos reais: abate o stock, atribui pontos e marca presença"
+            className="px-4 py-2.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 disabled:opacity-40 disabled:cursor-not-allowed text-emerald-300 font-medium flex items-center justify-center gap-2"
+            data-testid="simulation-commit"
+          >
+            <CheckCircle size={16} weight="fill" /> Tornar efetiva
           </button>
           <button
             data-testid="simulation-run"
@@ -145,6 +175,7 @@ export default function SimulationModal({ onClose, onChanged }) {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

@@ -75,6 +75,7 @@ export default function Transacoes() {
     if (r.source === "quota") return "Cotas";
     if (r.source === "temp_client") return "Venda Não Cliente";
     if (r.source === "simulation") return "Simulação (teste)";
+    if (r.source === "simulation_committed") return "Simulação efetivada";
     return r.client_name || r.supplier_name || "";
   };
 

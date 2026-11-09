@@ -30,6 +30,7 @@ export default function Clientes() {
   const [sortKey, setSortKey] = useState("name"); // name | number | activity | total_points
   const [viewMode, setViewMode] = useState("grid"); // grid | list
   const [honoraryEnabled, setHonoraryEnabled] = useState(false);
+  const [rodadaEnabled, setRodadaEnabled] = useState(true);
   // A aba "Adesão de sócios" vive dentro de Clientes e sócios
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get("tab");
@@ -42,6 +43,12 @@ export default function Clientes() {
   useEffect(() => {
     if (user?.role !== "admin") return;
     api.get("/club/honorary-settings").then(({ data }) => setHonoraryEnabled(!!data.enabled)).catch(() => {});
+  }, [user?.role]);
+
+  // Rodada Mista na app do sócio — ativa por defeito (só admin desliga)
+  useEffect(() => {
+    if (user?.role !== "admin") return;
+    api.get("/club/rodada-mista-settings").then(({ data }) => setRodadaEnabled(!!data.enabled)).catch(() => {});
   }, [user?.role]);
 
   // Simulação de consumos (teste) — só direção/tesouraria
@@ -60,6 +67,17 @@ export default function Clientes() {
       const { data } = await api.put("/club/honorary-settings", { enabled: next });
       setHonoraryEnabled(!!data.enabled);
       toast.success(next ? "Ativação de Sócio Honorário permitida na app" : "Ativação de Sócio Honorário desativada na app");
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    }
+  };
+
+  const toggleRodada = async () => {
+    try {
+      const next = !rodadaEnabled;
+      const { data } = await api.put("/club/rodada-mista-settings", { enabled: next });
+      setRodadaEnabled(!!data.enabled);
+      toast.success(next ? "Rodada Mista ativada na app do sócio" : "Rodada Mista desativada na app do sócio");
     } catch (e) {
       toast.error(formatApiErrorDetail(e.response?.data?.detail));
     }
@@ -212,6 +230,20 @@ export default function Clientes() {
               }`}
             >
               👔 Honorário na app: {honoraryEnabled ? "ativo" : "inativo"}
+            </button>
+          )}
+          {user?.role === "admin" && (
+            <button
+              data-testid="rodada-app-toggle"
+              onClick={toggleRodada}
+              title="Permitir que os sócios abram e peçam consumos em Rodadas Mistas na app (ativo por defeito)"
+              className={`px-4 py-2.5 rounded-lg font-bold flex items-center gap-2 border transition-colors ${
+                rodadaEnabled
+                  ? "bg-sky-500/15 text-sky-300 border-sky-500/40 hover:bg-sky-500/25"
+                  : "bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700"
+              }`}
+            >
+              🍻 Rodada Mista na app: {rodadaEnabled ? "ativa" : "inativa"}
             </button>
           )}
           {canManageQuotas && (

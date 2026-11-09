@@ -80,6 +80,7 @@ const AUDIT_META = {
   supplier_order_auto: ["Encomenda automática", "teal"],
   simulation_create: ["Simulação de consumos", "pink"],
   simulation_clear: ["Simulação removida", "pink"],
+  simulation_commit: ["Simulação efetivada", "green"],
 };
 
 // Operações que a direção deve ver destacadas
