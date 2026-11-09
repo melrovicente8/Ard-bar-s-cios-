@@ -34,6 +34,7 @@ const normalizeChildren = (children) => {
         id: child.props.id,
         label: child.props.label,
         span: child.props.span,
+        interactiveWhileEditing: child.props.interactiveWhileEditing,
         node: child.props.children,
       });
     }
@@ -57,7 +58,7 @@ export default function BlockBoard({ page, blocks, children, layout = "grid", cl
     const known = new Set(own.map((b) => b.id));
     const foreign = Object.values(PORTABLE_BLOCKS)
       .filter((b) => !known.has(b.id) && placements[b.id]?.page === page)
-      .map((b) => ({ id: b.id, label: b.label, span: b.span, Component: b.Component }));
+      .map((b) => ({ id: b.id, label: b.label, span: b.span, Component: b.Component, interactiveWhileEditing: b.interactiveWhileEditing }));
     return [...own, ...foreign];
   }, [blocksList, placements, page]);
 
@@ -138,7 +139,9 @@ export default function BlockBoard({ page, blocks, children, layout = "grid", cl
             editMode ? "cursor-grab rounded-lg ring-1 ring-amber-500/40 active:cursor-grabbing" : ""
           } ${draggingId === def.id ? "opacity-40" : ""}`}
         >
-          <div className={`h-full ${editMode ? "pointer-events-none select-none" : ""}`}>
+          {/* Um bloco pode manter os seus botões clicáveis durante a organização
+              (ex.: o banner do Dashboard com "Concluir"). */}
+          <div className={`h-full ${editMode && !def.interactiveWhileEditing ? "pointer-events-none select-none" : ""}`}>
             {def.Component ? <def.Component /> : def.node ?? null}
           </div>
           {editMode && (

@@ -5,5 +5,8 @@ import { DASHBOARD_BLOCKS } from "./DashboardBlocks";
  * desenhados em qualquer aba do menu para onde a direção os envie.
  */
 export const PORTABLE_BLOCKS = Object.fromEntries(
-  DASHBOARD_BLOCKS.map(({ id, label, span, Component }) => [id, { id, label, span, Component }])
+  DASHBOARD_BLOCKS.map(({ id, label, span, Component, interactiveWhileEditing }) => [
+    id,
+    { id, label, span, Component, interactiveWhileEditing },
+  ])
 );

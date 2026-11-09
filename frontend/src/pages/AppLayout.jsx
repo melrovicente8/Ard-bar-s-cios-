@@ -332,36 +332,38 @@ export default function AppLayout() {
               <DeviceMobile size={14} weight="duotone" />
             </Link>
             {user?.role === "admin" && (
-              <button
-                type="button"
-                data-testid="content-lock-btn"
-                onClick={toggleEdit}
-                title={editMode ? "Bloquear edição de textos" : "Desbloquear edição de títulos e frases"}
-                aria-label={editMode ? "Bloquear edição de textos" : "Desbloquear edição de textos"}
-                className={`p-1.5 rounded-md flex items-center transition-colors ${
-                  editMode
-                    ? "bg-amber-400 text-slate-950"
-                    : "bg-slate-800/80 text-slate-400 hover:text-amber-300 hover:bg-slate-800"
-                }`}
-              >
-                {editMode ? <LockSimpleOpen size={14} weight="fill" /> : <LockSimple size={14} weight="bold" />}
-              </button>
-            )}
-            {canEditLayout && (
-              <button
-                type="button"
-                data-testid="layout-edit-btn"
-                onClick={() => setLayoutEditing(!layoutEditing)}
-                title={layoutEditing ? "Concluir organização dos blocos" : "Organizar blocos das abas (arrastar / mover para outra aba)"}
-                aria-label={layoutEditing ? "Concluir organização dos blocos" : "Organizar blocos das abas"}
-                className={`p-1.5 rounded-md flex items-center transition-colors ${
-                  layoutEditing
-                    ? "bg-amber-400 text-slate-950"
-                    : "bg-slate-800/80 text-slate-400 hover:text-amber-300 hover:bg-slate-800"
-                }`}
-              >
-                <SquaresFour size={14} weight={layoutEditing ? "fill" : "bold"} />
-              </button>
+              <div className="ml-1 flex flex-col gap-1" data-testid="header-admin-tools">
+                <button
+                  type="button"
+                  data-testid="content-lock-btn"
+                  onClick={toggleEdit}
+                  title={editMode ? "Bloquear edição de textos" : "Desbloquear edição de títulos e frases"}
+                  aria-label={editMode ? "Bloquear edição de textos" : "Desbloquear edição de textos"}
+                  className={`p-1.5 rounded-md flex items-center justify-center transition-colors ${
+                    editMode
+                      ? "bg-amber-400 text-slate-950"
+                      : "bg-slate-800/80 text-slate-400 hover:text-amber-300 hover:bg-slate-800"
+                  }`}
+                >
+                  {editMode ? <LockSimpleOpen size={14} weight="fill" /> : <LockSimple size={14} weight="bold" />}
+                </button>
+                {canEditLayout && (
+                  <button
+                    type="button"
+                    data-testid="layout-edit-btn"
+                    onClick={() => setLayoutEditing(!layoutEditing)}
+                    title={layoutEditing ? "Concluir organização dos blocos" : "Organizar blocos das abas (arrastar / mover para outra aba)"}
+                    aria-label={layoutEditing ? "Concluir organização dos blocos" : "Organizar blocos das abas"}
+                    className={`p-1.5 rounded-md flex items-center justify-center transition-colors ${
+                      layoutEditing
+                        ? "bg-amber-400 text-slate-950"
+                        : "bg-slate-800/80 text-slate-400 hover:text-amber-300 hover:bg-slate-800"
+                    }`}
+                  >
+                    <SquaresFour size={14} weight={layoutEditing ? "fill" : "bold"} />
+                  </button>
+                )}
+              </div>
             )}
           </div>
           <button

@@ -339,8 +339,7 @@ function KpiCash() {
       unmaskedDefault={!isDirection && !cashHiddenForStaff}
       forceHidden={cashHiddenForStaff}
       details={[
-        { label: "Recebido em numerário", value: euro(cashBank.cash_numerario || 0), testid: "kpi-cash-numerario" },
-        { label: "MBWay (direto para o banco)", value: euro(cashBank.cash_mbway || 0), testid: "kpi-cash-mbway" },
+        { label: "Recebido em numerário (desde o último acerto)", value: euro(cashBank.cash_numerario || 0), testid: "kpi-cash-numerario" },
       ]}
     />
   );
@@ -358,6 +357,10 @@ function KpiBank() {
       accent="bg-emerald-500/10 text-emerald-400"
       to="/banco"
       masked
+      details={[
+        { label: "MBWay (entra direto)", value: euro(data.cash_bank.mbway_balance || 0), testid: "kpi-bank-mbway" },
+        { label: "Depósitos e movimentos", value: euro(data.cash_bank.bank_deposits_balance || 0), testid: "kpi-bank-deposits" },
+      ]}
     />
   );
 }
@@ -561,7 +564,7 @@ function RecentSalesPanel() {
 }
 
 export const DASHBOARD_BLOCKS = [
-  { id: "dash-banner", label: "Boas-vindas", span: "full", Component: DashboardBanner },
+  { id: "dash-banner", label: "Boas-vindas", span: "full", Component: DashboardBanner, interactiveWhileEditing: true },
   { id: "today-sales", label: "Vendas hoje", span: "quarter", Component: KpiTodaySales },
   { id: "week-sales", label: "Vendas semana", span: "quarter", Component: KpiWeekSales },
   { id: "month-sales", label: "Vendas mês", span: "quarter", Component: KpiMonthSales },
