@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import EditableText from "../components/EditableText";
+import BlockBoard, { Block } from "../components/BlockBoard";
 import api, { euro } from "../lib/api";
 import { Wallet, ArrowRight, Medal, MagnifyingGlass } from "@phosphor-icons/react";
 
@@ -46,12 +47,16 @@ export default function DividasHoje() {
         </p>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+      <BlockBoard page="/dividas" layout="stack">
+      <Block id="dividas.kpis" label="Resumo das dívidas">
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
         <Stat label="Total em dívida" value={euro(totalDebt)} accent="text-rose-300" />
         <Stat label="Pessoas em dívida" value={debtors.length} />
         <Stat label="Dos quais sócios" value={totalSocios} accent="text-green-300" />
       </div>
+      </Block>
 
+      <Block id="dividas.list" label="Lista de dívidas">
       <div className="relative mb-5 max-w-md">
         <MagnifyingGlass size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
         <input
@@ -124,6 +129,8 @@ export default function DividasHoje() {
           </div>
         )}
       </div>
+      </Block>
+      </BlockBoard>
     </div>
   );
 }

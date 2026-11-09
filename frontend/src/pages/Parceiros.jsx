@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import BlockBoard, { Block } from "../components/BlockBoard";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import { Storefront, Plus, Trash, Check, X, ArrowClockwise } from "@phosphor-icons/react";
@@ -123,6 +124,8 @@ export default function Parceiros() {
 
   return (
     <div className="p-6 md:p-8 animate-in" data-testid="parceiros-page">
+      <BlockBoard page="/parceiros" layout="grid">
+      <Block id="parceiros.resumo" label="Resumo da receita indireta">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <div className="text-xs font-bold uppercase tracking-[0.25em] text-slate-500">Receita indireta</div>
@@ -147,8 +150,8 @@ export default function Parceiros() {
         </div>
       </div>
 
-      <div className="grid lg:grid-cols-2 gap-6">
-        {/* Parceiros */}
+      </Block>
+      <Block id="parceiros.lista" label="Parceiros" span="half">
         <section className="bg-slate-900/40 border border-slate-800 rounded-xl p-5">
           <h2 className="font-outfit text-lg font-semibold mb-3">Parcerias</h2>
           <div className="space-y-2" data-testid="partners-list">
@@ -238,7 +241,9 @@ export default function Parceiros() {
             </form>
           )}
         </section>
+      </Block>
 
+      <Block id="parceiros.taloes" label="Fila de validação de talões" span="half">
         {/* Fila de validação */}
         <section className="bg-slate-900/40 border border-slate-800 rounded-xl p-5">
           <div className="flex items-center gap-2 mb-3">
@@ -349,7 +354,8 @@ export default function Parceiros() {
             </ul>
           )}
         </section>
-      </div>
+      </Block>
+      </BlockBoard>
     </div>
   );
 }

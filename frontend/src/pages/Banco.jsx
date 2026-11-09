@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import EditableText from "../components/EditableText";
+import BlockBoard, { Block } from "../components/BlockBoard";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import { Vault, Bank, ClipboardText, CalendarBlank, Money, ArrowsLeftRight, HandCoins } from "@phosphor-icons/react";
@@ -123,7 +124,9 @@ export default function Banco() {
         </p>
       </div>
 
+      <BlockBoard page="/banco" layout="stack">
       {/* Valores atuais — clicar abre o movimento detalhado */}
+      <Block id="banco.accounts" label="Valores atuais">
       {cashBank && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
           <button onClick={() => setTreasury("cash")} className="text-left bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-5 hover:border-amber-500/40 transition-colors" data-testid="banco-caixa-box">
@@ -153,10 +156,15 @@ export default function Banco() {
         </div>
       )}
 
+      </Block>
+
       {user?.role === "admin" && cashBank && (
-        <AcertoPanel balances={cashBank} user={user} onDone={load} />
+        <Block id="banco.acertos" label="Acertos de caixa e banco">
+          <AcertoPanel balances={cashBank} user={user} onDone={load} />
+        </Block>
       )}
 
+      <Block id="banco.operacoes" label="Depósitos e transferências">
       {canManage ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           {/* Depósito de valores externos */}
@@ -215,7 +223,10 @@ export default function Banco() {
         </div>
       )}
 
+      </Block>
+
       {/* Histórico de movimentos */}
+      <Block id="banco.movimentos" label="Depósitos e transferências registados">
       <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
@@ -265,6 +276,9 @@ export default function Banco() {
           </div>
         )}
       </div>
+
+      </Block>
+      </BlockBoard>
 
       {treasury && <TreasuryModal account={treasury} onClose={() => setTreasury(null)} />}
     </div>

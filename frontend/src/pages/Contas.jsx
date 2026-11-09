@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import EditableText from "../components/EditableText";
+import BlockBoard, { Block } from "../components/BlockBoard";
 import { openFinanceDoc } from "../lib/financeDoc";
 import { Bank, Printer, ArrowDown, ArrowUp, Equals } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -102,8 +103,10 @@ export default function Contas() {
         Deve / haver para apresentação aos sócios. Receitas (vendas no bar + cotas) menos despesas (encomendas + despesas mensais).
       </p>
 
+      <BlockBoard page="/contas" layout="stack">
       {/* Filtros */}
-      <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-4 mb-6 flex flex-wrap items-end gap-3">
+      <Block id="contas.filters" label="Período e relatórios">
+      <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl p-4 flex flex-wrap items-end gap-3">
         {!isFuncionario && (
           <>
             <div>
@@ -170,13 +173,17 @@ export default function Contas() {
           )}
         </div>
       </div>
+      </Block>
 
       {loading || !data ? (
-        <div className="text-slate-500 p-10 text-center">A carregar...</div>
+        <Block id="contas.kpis" label="Receitas, despesas e saldo">
+          <div className="text-slate-500 p-10 text-center">A carregar...</div>
+        </Block>
       ) : (
         <>
           {/* KPIs */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <Block id="contas.kpis" label="Receitas, despesas e saldo">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-5">
               <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-400/80">
                 <ArrowUp size={12} weight="bold" /> Receitas (Haver)
@@ -217,6 +224,9 @@ export default function Contas() {
             </div>
           </div>
 
+          </Block>
+
+          <Block id="contas.details" label="Detalhes de receitas e despesas">
           {/* Tabs detalhe */}
           <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900/60 p-1 mb-4" data-testid="contas-tabs">
             <button onClick={() => setTab("income")} data-testid="contas-tab-income" className={`px-4 py-1.5 rounded-md text-xs font-bold uppercase tracking-wider ${tab === "income" ? "bg-emerald-500/20 text-emerald-300" : "text-slate-400 hover:text-white"}`}>Detalhes receitas</button>
@@ -268,8 +278,10 @@ export default function Contas() {
               </table>
             </div>
           )}
+          </Block>
         </>
       )}
+      </BlockBoard>
     </div>
   );
 }

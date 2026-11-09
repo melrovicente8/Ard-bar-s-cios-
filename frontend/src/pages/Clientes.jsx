@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import EditableText from "../components/EditableText";
+import BlockBoard, { Block } from "../components/BlockBoard";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import { Plus, User, ArrowRight, MagnifyingGlass, Trash, Medal, Funnel, Star, SealCheck, Flask } from "@phosphor-icons/react";
 import { toast } from "sonner";
@@ -284,15 +285,19 @@ export default function Clientes() {
         <Rankings embedded />
       ) : (
       <>
+      <BlockBoard page="/clientes" layout="stack">
       {/* Estatísticas de sócios e cotas (da antiga aba Sócios) */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <Block id="clientes.stats" label="Resumo de sócios e cotas">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatBox label={`Sócios c/ cotas ${year} em dia`} value={stats.uptodate} accent="bg-green-500/10 text-green-300" />
         <StatBox label="Cotas em atraso" value={stats.behind} accent="bg-amber-500/10 text-amber-300" />
         <StatBox label="A receber" value={euro(stats.debt)} accent="bg-rose-500/10 text-rose-300" />
         <StatBox label="Pontos atribuídos" value={stats.points} accent="bg-amber-500/10 text-amber-300" />
       </div>
+      </Block>
 
-      <div className="flex flex-col md:flex-row md:items-center gap-3 mb-5">
+      <Block id="clientes.filtros" label="Pesquisa e filtros">
+      <div className="flex flex-col md:flex-row md:items-center gap-3">
         <div className="relative flex-1 max-w-md">
           <MagnifyingGlass size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
           <input
@@ -361,7 +366,9 @@ export default function Clientes() {
           {filtered.length} {filtered.length === 1 ? "registo" : "registos"}
         </div>
       </div>
+      </Block>
 
+      <Block id="clientes.lista" label="Clientes e sócios">
       {loading ? (
         <div className="text-slate-500 p-10 text-center">A carregar...</div>
       ) : filtered.length === 0 ? (
@@ -684,6 +691,9 @@ export default function Clientes() {
           </div>
         </div>
       )}
+
+      </Block>
+      </BlockBoard>
 
       {msgTarget && <MessageModal client={msgTarget} onClose={() => setMsgTarget(null)} />}
       {showQuotaLaunch && (

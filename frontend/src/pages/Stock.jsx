@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
 import Fornecedores from "./Fornecedores";
 import EditableText from "../components/EditableText";
+import BlockBoard, { Block } from "../components/BlockBoard";
 import { Plus, Package, ArrowsClockwise, PencilSimple, Trash, WarningCircle, ClockCounterClockwise } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
@@ -307,6 +308,8 @@ export default function Stock() {
         <Fornecedores embedded />
       ) : (
         <>
+      <BlockBoard page="/stock" layout="stack">
+      <Block id="stock.produtos" label="Produtos em stock">
       <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl overflow-hidden">
         {loading ? (
           <div className="p-10 text-center text-slate-500">A carregar...</div>
@@ -479,6 +482,9 @@ export default function Stock() {
           </div>
         )}
       </div>
+
+      </Block>
+      </BlockBoard>
 
       <Modal open={showWoHistory} onClose={() => setShowWoHistory(false)} title="Baixas de stock registadas">
         <div className="max-h-[55vh] overflow-y-auto space-y-2" data-testid="writeoffs-history">

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import api, { formatApiErrorDetail } from "../lib/api";
 import EditableText from "../components/EditableText";
+import BlockBoard, { Block } from "../components/BlockBoard";
 import DirectionMembers from "../components/DirectionMembers";
 import { toast } from "sonner";
 import { UsersThree, PencilSimple, Check, X as XIcon, Plus, Trash } from "@phosphor-icons/react";
@@ -97,6 +98,8 @@ export default function Equipa() {
       <p className="text-sm text-slate-400 mb-6">
         Renomeia os utilizadores funcionários e tesoureiros. O nome aparece no canto inferior esquerdo e em todas as transações que registam.
       </p>
+      <BlockBoard page="/equipa" layout="stack">
+      <Block id="equipa.utilizadores" label="Utilizadores da equipa">
       <div className="bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-xl overflow-hidden">
         {loading ? (
           <div className="p-10 text-center text-slate-500">A carregar...</div>
@@ -176,8 +179,12 @@ export default function Equipa() {
           </table>
         )}
       </div>
+      </Block>
 
-      <DirectionMembers />
+      <Block id="equipa.direcao" label="Direção em funções">
+        <DirectionMembers />
+      </Block>
+      </BlockBoard>
 
       {showAdd && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4" onClick={() => setShowAdd(false)} data-testid="create-user-modal">

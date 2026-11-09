@@ -14,7 +14,7 @@ import jwt
 import bcrypt
 import asyncio
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional, Union
+from typing import Dict, List, Optional, Union
 from fastapi import FastAPI, APIRouter, BackgroundTasks, HTTPException, Depends, Request, Response, status
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -145,6 +145,11 @@ class TransferOccasionalIn(BaseModel):
 class SiteContentIn(BaseModel):
     key: str            # identificador estável do texto (ex.: "page.vender.title")
     value: Optional[str] = None  # vazio = repõe o texto original
+
+
+class UiLayoutIn(BaseModel):
+    # {block_id: {"page": "/dividas", "order": 0}}
+    placements: Dict[str, dict] = {}
 
 
 class SaleItemIn(BaseModel):
@@ -1136,6 +1141,44 @@ async def transfer_occasional_client(
     )
     target.pop("_id", None)
     return {"ok": True, "moved": len(sales), "total": round(total_moved, 2), "target": target}
+
+
+# ---------- Organização dos blocos do portal (definida pela direção) ----------
+@api_router.get("/ui-layout")
+async def get_ui_layout(user: dict = Depends(get_current_user)):
+    """Onde está cada bloco (aba + ordem). Definido pela direção, igual para todos."""
+    doc = await db.ui_layout.find_one({"_id": "ardn"}) or {}
+    return {
+        "placements": doc.get("placements") or {},
+        "updated_at": doc.get("updated_at"),
+        "updated_by": doc.get("updated_by"),
+    }
+
+
+@api_router.put("/ui-layout")
+async def put_ui_layout(body: UiLayoutIn, user: dict = Depends(require_role("admin"))):
+    """Guarda a organização dos blocos (só administradores)."""
+    clean: Dict[str, dict] = {}
+    for block_id, placement in (body.placements or {}).items():
+        if not isinstance(block_id, str) or not isinstance(placement, dict):
+            continue
+        page = placement.get("page")
+        if not isinstance(page, str) or not page.startswith("/") or len(page) > 80:
+            continue
+        try:
+            order = int(placement.get("order", 0))
+        except (TypeError, ValueError):
+            order = 0
+        clean[block_id[:80]] = {"page": page, "order": order}
+    now = datetime.now(timezone.utc).isoformat()
+    await db.ui_layout.update_one(
+        {"_id": "ardn"},
+        {"$set": {"placements": clean, "updated_at": now, "updated_by": user["email"]}},
+        upsert=True,
+    )
+    await _audit("ui_layout_update", user["email"], entity="ui_layout", entity_id="ardn",
+                 summary=f"Organização dos blocos atualizada ({len(clean)} blocos)")
+    return {"ok": True, "placements": clean}
 
 
 # ---------- Textos do portal editáveis pela direção ----------

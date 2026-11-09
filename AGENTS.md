@@ -146,10 +146,21 @@ docker compose -f docker-compose.base44.yml up -d
 - **Receita indireta**: `GET /api/partner-tickets/summary` soma o valor dos talões registados (`pending` + `validated`; rejeitados/anulados fora) e devolve `total`, `validated_total`, `tickets`, `validated`, `pending` e `by_partner` (por `partner_id`). A página `/parceiros` mostra o cartão `partners-indirect-total` no cabeçalho e o total de cada parceiro em `partner-total-<id>`.
 - Notificações: o staff vê o aviso `N talões` em `HeaderAlerts` (pill violeta, `header-alert-tickets`) alimentado por `GET /api/partner-tickets/pending-count` e abre `/parceiros?filter=pending` (a página deriva o filtro do `?filter=`). O sócio recebe no sino do portal uma mensagem `socio_messages` (`from_staff: true`, `partner_ticket_id`) criada em `_notify_partner_ticket()` — no aceite (dentro de `_award_partner_ticket`, cobre validação manual e automática) e na rejeição. A anulação não notifica.
 
-## Cartões do Dashboard: ordem editável
-- O botão `dashboard-edit-cards` (topo do Dashboard) liga o modo de edição: cada cartão ganha um cursor de arrasto e as setas `kpi-move-prev-<id>` / `kpi-move-next-<id>`; `dashboard-reset-cards` repõe a ordem de origem.
-- A ordem vive em `localStorage["ardn.dashboard.kpiOrder"]` (preferência do dispositivo, não do servidor) e é aplicada por CSS `order` em cada `KpiSlot` (`data-kpi-id`), com a lista de origem em `KPI_DEFAULT_ORDER` (`Dashboard.jsx`). O arrasto usa o drag nativo do browser (`draggable` + `dataTransfer`); durante a edição o conteúdo do cartão fica `pointer-events-none` para não abrir links.
-- Cartões condicionais (stock/caixa/banco) mantêm o id mesmo quando não aparecem; ids em falta caem no fim da ordem.
+## Organização dos blocos (todas as abas): definida pela direção
+- **Quem edita**: só `admin` (a direção). O botão `layout-edit-btn` no cabeçalho da sidebar liga/desliga o modo organização; o dashboard também tem `dashboard-edit-cards` (o mesmo estado).
+- **Onde vive a ordem**: no servidor, `db.ui_layout {_id: "ardn", placements: {blockId: {page, order}}}` — `GET /api/ui-layout` (qualquer utilizador autenticado) e `PUT /api/ui-layout` (só `admin`, via `UiLayoutIn`). Não há `localStorage`: todos os utilizadores veem a organização definida pela direção. Bloco sem entrada usa a ordem/aba de origem.
+- **Componentes**: `src/context/LayoutContext.jsx` (`useLayout`: `placements`, `editing`, `canEdit`, `setPageOrder`, `placeBlock`, `resetPage`) e `src/components/BlockBoard.jsx`.
+- **Uso numa página** (blocos declarados no próprio sítio, sem reestruturar a página):
+  ```jsx
+  <BlockBoard page="/contas" layout="stack">        {/* layout="grid" usa spans de 12 colunas */}
+    <Block id="contas.filtros" label="Período">{...}</Block>
+    <Block id="contas.kpis" label="Receitas e despesas" span="half">{...}</Block>
+  </BlockBoard>
+  ```
+  `Block` só descreve o bloco (devolve `null`); quem desenha é o `BlockBoard`, que aplica a ordem guardada. Um `<Block>` cujo conteúdo seja `null`/`false` (ex.: avisos sem cliente) desenha vazio — nunca tente desenhar `def.Component` nesse caso.
+- **Mover entre abas**: o `select` de cada bloco (`<prefixo>-move-to-<id>`) lista as abas do menu a que o utilizador tem acesso (`layoutPagesFor` em `src/lib/navigation.js`, que também guarda `navGroups`/`STAFF_ROLES`). Só os **blocos autónomos** (`src/components/blocks/portableBlocks.js`, alimentado por `DASHBOARD_BLOCKS`) conseguem renderizar fora da página de origem, porque sabem buscar os próprios dados (`useDashboardData`, uma chamada partilhada a `/dashboard` + `/products/top`). Blocos que dependem do estado da página (listas, formulários, carrinho do POS) podem ser reordenados na sua aba, mas não devem ser enviados para outra.
+- **Abas já convertidas**: Dashboard (todos os 16 blocos, todos autónomos), Dívidas, Clientes e sócios, Contas, Caixa e Banco, Stock, Equipa, Parceiros. `Vender`, `MBWay e Pedidos`, `Transações`, `Documentação` e `Arquivo` ainda não têm `BlockBoard`.
+- **Testids**: `board-<page>`, `block-slot-<id>` (no Dashboard `kpi-slot-<id>`), `block-move-prev|next-<id>`, `board-edit-hint`, `board-reset-page`.
 
 ## Simulação de consumos (ferramenta de teste)
 - Botão `simulation-btn` em `/clientes`, ao lado de "Lançar cotas" (admin/tesoureiro/presidente), abre `SimulationModal` (`src/components/SimulationModal.jsx`): nº de clientes + valor total → `POST /api/simulations/consumption` distribui o valor por vendas aleatórias (`_sim_split_amount` + `_sim_build_items`) e devolve `today_before`/`today_after`/`delta`.
