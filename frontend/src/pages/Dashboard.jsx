@@ -19,6 +19,10 @@ import {
   Coffee,
   Cake,
   Trophy,
+  SquaresFour,
+  CaretLeft,
+  CaretRight,
+  DotsSixVertical,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -80,10 +84,77 @@ const StatCard = ({ icon: Icon, label, value, accent, testid, to, masked = false
       </div>
     </div>
   );
-  const cls = "block bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-lg px-4 py-3 hover:border-amber-500/40 transition-colors";
+  const cls = "block h-full bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-lg px-4 py-3 hover:border-amber-500/40 transition-colors";
   if (to) return <Link to={to} data-testid={testid} className={cls}>{inner}</Link>;
   return <div data-testid={testid} className={cls}>{inner}</div>;
 };
+
+// ---- Cartões do dashboard: ordem editável (arrastar ou setas) ----
+const KPI_ORDER_KEY = "ardn.dashboard.kpiOrder";
+const KPI_DEFAULT_ORDER = [
+  "today-sales", "week-sales", "month-sales", "outstanding", "suppliers-debt",
+  "stock-value", "cash", "bank", "clients", "debtors",
+];
+const readKpiOrder = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(KPI_ORDER_KEY) || "null");
+    if (Array.isArray(saved)) return saved.filter((v) => typeof v === "string");
+  } catch {
+    /* ordem inválida — usa a de origem */
+  }
+  return KPI_DEFAULT_ORDER;
+};
+
+const KpiSlot = ({ id, style, editing, dragging, onDragStart, onDragOver, onDrop, onDragEnd, onMove, children }) => (
+  <div
+    style={style}
+    draggable={editing}
+    onDragStart={(e) => {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", id);
+      onDragStart(id);
+    }}
+    onDragOver={(e) => {
+      if (!editing) return;
+      e.preventDefault();
+      onDragOver(id);
+    }}
+    onDrop={(e) => {
+      if (!editing) return;
+      e.preventDefault();
+      onDrop(e.dataTransfer.getData("text/plain") || dragging, id);
+    }}
+    onDragEnd={onDragEnd}
+    data-testid={`kpi-slot-${id}`}
+    data-kpi-id={id}
+    className={`relative h-full rounded-lg ${editing ? "ring-1 ring-amber-500/40 cursor-grab active:cursor-grabbing" : ""} ${dragging === id ? "opacity-40" : ""}`}
+  >
+    <div className={`h-full ${editing ? "pointer-events-none select-none" : ""}`}>{children}</div>
+    {editing && (
+      <div className="absolute -top-2.5 right-2 z-10 flex items-center gap-0.5 bg-slate-900 border border-amber-500/50 rounded-md px-1 py-0.5 shadow-lg">
+        <button
+          type="button"
+          onClick={() => onMove(id, -1)}
+          title="Mover para a esquerda"
+          data-testid={`kpi-move-prev-${id}`}
+          className="p-0.5 text-slate-300 hover:text-amber-400"
+        >
+          <CaretLeft size={12} weight="bold" />
+        </button>
+        <DotsSixVertical size={12} className="text-slate-500" />
+        <button
+          type="button"
+          onClick={() => onMove(id, 1)}
+          title="Mover para a direita"
+          data-testid={`kpi-move-next-${id}`}
+          className="p-0.5 text-slate-300 hover:text-amber-400"
+        >
+          <CaretRight size={12} weight="bold" />
+        </button>
+      </div>
+    )}
+  </div>
+);
 
 function useGreeting(userName) {
   const now = new Date();
@@ -121,6 +192,59 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   // Valor de stock (venda/custo) fica oculto até ser revelado
   const [stockRevealed, setStockRevealed] = useState(false);
+  // Ordem dos cartões (guardada neste dispositivo) + modo de edição
+  const [kpiOrder, setKpiOrder] = useState(readKpiOrder);
+  const [editCards, setEditCards] = useState(false);
+  const [draggingId, setDraggingId] = useState(null);
+  const fullKpiOrder = () => {
+    const saved = kpiOrder.filter((id) => KPI_DEFAULT_ORDER.includes(id));
+    return [...saved, ...KPI_DEFAULT_ORDER.filter((id) => !saved.includes(id))];
+  };
+  const persistKpiOrder = (ids) => {
+    setKpiOrder(ids);
+    try {
+      localStorage.setItem(KPI_ORDER_KEY, JSON.stringify(ids));
+    } catch {
+      /* sem armazenamento local — a ordem fica só nesta sessão */
+    }
+  };
+  const moveKpi = (id, delta) => {
+    const ids = fullKpiOrder();
+    const i = ids.indexOf(id);
+    const j = i + delta;
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    persistKpiOrder(ids);
+  };
+  const dropKpi = (sourceId, targetId) => {
+    setDraggingId(null);
+    if (!sourceId || sourceId === targetId) return;
+    const ids = fullKpiOrder().filter((x) => x !== sourceId);
+    const at = ids.indexOf(targetId);
+    ids.splice(at < 0 ? ids.length : at, 0, sourceId);
+    persistKpiOrder(ids);
+  };
+  const kpiStyle = (id) => {
+    const i = kpiOrder.indexOf(id);
+    const fallback = KPI_DEFAULT_ORDER.indexOf(id);
+    return { order: i >= 0 ? i : kpiOrder.length + (fallback < 0 ? 0 : fallback) };
+  };
+  const kpiSlot = (id, node) => (
+    <KpiSlot
+      key={id}
+      id={id}
+      style={kpiStyle(id)}
+      editing={editCards}
+      dragging={draggingId}
+      onDragStart={setDraggingId}
+      onDragOver={() => {}}
+      onDrop={dropKpi}
+      onDragEnd={() => setDraggingId(null)}
+      onMove={moveKpi}
+    >
+      {node}
+    </KpiSlot>
+  );
   const cashBank = data ? (data.cash_bank || null) : null;
   const greeting = useGreeting(user?.name || user?.email || "");
 
@@ -163,7 +287,31 @@ export default function Dashboard() {
               {getPresidentMessage()}
             </p>
           </div>
-          <div className="flex items-center gap-2 flex-wrap" />
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => { setEditCards((v) => !v); setDraggingId(null); }}
+              data-testid="dashboard-edit-cards"
+              title="Editar cartões: arrasta ou usa as setas para mudar a ordem"
+              className={`px-3 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 border transition-colors ${
+                editCards
+                  ? "bg-amber-500 text-slate-950 border-amber-500 hover:bg-amber-400"
+                  : "bg-slate-900/60 text-slate-300 border-slate-700 hover:bg-slate-800 hover:text-white"
+              }`}
+            >
+              <SquaresFour size={15} weight="duotone" /> {editCards ? "Concluir" : "Editar cartões"}
+            </button>
+            {editCards && (
+              <button
+                type="button"
+                onClick={() => persistKpiOrder(KPI_DEFAULT_ORDER)}
+                data-testid="dashboard-reset-cards"
+                className="px-3 py-2 rounded-lg text-xs font-bold bg-slate-900/60 text-slate-400 border border-slate-700 hover:text-white"
+              >
+                Repor ordem
+              </button>
+            )}
+          </div>
         </div>
         {greeting.closingWarning && (
           <div className="mt-4 px-4 py-3 rounded-lg bg-rose-500/15 border border-rose-500/40 text-rose-200 text-sm font-bold flex items-center gap-2" data-testid="closing-warning">
@@ -172,7 +320,14 @@ export default function Dashboard() {
         )}
       </div>
 
+      {editCards && (
+        <p className="text-xs text-amber-300/80 -mb-2" data-testid="dashboard-edit-hint">
+          Modo edição: arrasta os cartões ou usa as setas para mudar a ordem. A ordem fica guardada neste dispositivo.
+        </p>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+        {kpiSlot("today-sales", (
         <StatCard
           testid="kpi-today-sales"
           icon={CurrencyEur}
@@ -182,6 +337,8 @@ export default function Dashboard() {
           to={`/transacoes?kind=sale&from=${isoDate(new Date())}&to=${isoDate(new Date())}`}
           unmaskedDefault
         />
+        ))}
+        {kpiSlot("week-sales", (
         <StatCard
           testid="kpi-week-sales"
           icon={Calendar}
@@ -191,6 +348,8 @@ export default function Dashboard() {
           to={`/transacoes?kind=sale&from=${isoDate(new Date(Date.now() - 7 * 86400000))}&to=${isoDate(new Date())}`}
           masked
         />
+        ))}
+        {kpiSlot("month-sales", (
         <StatCard
           testid="kpi-month-sales"
           icon={CalendarBlank}
@@ -200,6 +359,8 @@ export default function Dashboard() {
           to={`/transacoes?kind=sale&from=${isoDate(new Date(Date.now() - 30 * 86400000))}&to=${isoDate(new Date())}`}
           masked
         />
+        ))}
+        {kpiSlot("outstanding", (
         <StatCard
           testid="kpi-outstanding"
           icon={ReceiptX}
@@ -209,6 +370,8 @@ export default function Dashboard() {
           to="/dividas"
           unmaskedDefault
         />
+        ))}
+        {kpiSlot("suppliers-debt", (
         <StatCard
           testid="kpi-suppliers-debt"
           icon={Truck}
@@ -218,11 +381,12 @@ export default function Dashboard() {
           to="/fornecedores"
           masked
         />
-        {canSeeStockValue && (
+        ))}
+        {canSeeStockValue && kpiSlot("stock-value", (
           <Link
             to="/stock"
             data-testid="kpi-stock-value"
-            className="block bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-lg px-4 py-3 hover:border-amber-500/40 transition-colors"
+            className="block h-full bg-slate-900/40 backdrop-blur-xl border border-slate-800 rounded-lg px-4 py-3 hover:border-amber-500/40 transition-colors"
           >
             <div className="flex items-start justify-between">
               <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500 flex items-center gap-1.5">
@@ -252,8 +416,8 @@ export default function Dashboard() {
               </div>
             </div>
           </Link>
-        )}
-        {cashBank && (
+        ))}
+        {cashBank && kpiSlot("cash", (
           <StatCard
             testid="kpi-cash"
             icon={Vault}
@@ -269,8 +433,8 @@ export default function Dashboard() {
               { label: "MBWay (direto para o banco)", value: euro(cashBank.cash_mbway || 0), testid: "kpi-cash-mbway" },
             ]}
           />
-        )}
-        {cashBank && cashBank.bank_balance != null && (
+        ))}
+        {cashBank && cashBank.bank_balance != null && kpiSlot("bank", (
           <StatCard
             testid="kpi-bank"
             icon={Bank}
@@ -280,7 +444,8 @@ export default function Dashboard() {
             to="/banco"
             masked
           />
-        )}
+        ))}
+        {kpiSlot("clients", (
         <StatCard
           testid="kpi-clients"
           icon={Users}
@@ -290,6 +455,8 @@ export default function Dashboard() {
           to="/clientes"
           masked
         />
+        ))}
+        {kpiSlot("debtors", (
         <StatCard
           testid="kpi-debtors"
           icon={Warning}
@@ -299,6 +466,7 @@ export default function Dashboard() {
           to="/dividas"
           unmaskedDefault
         />
+        ))}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

@@ -9,6 +9,7 @@ import calendar
 import logging
 import re
 import uuid
+import random
 import jwt
 import bcrypt
 import asyncio
@@ -1941,6 +1942,170 @@ async def refund_client_credit(client_id: str, user: dict = Depends(require_role
     )
     pay.pop("_id", None)
     return pay
+
+# ---------- Simulação de consumos (ferramenta de teste) ----------
+# Cria vendas aleatórias marcadas com simulation=True (não mexe no stock, pontos nem presenças)
+# e devolve o impacto no total de vendas do dia. As mesmas vendas podem ser removidas.
+class ConsumptionSimulationIn(BaseModel):
+    clients: int = Field(ge=1, le=50)
+    amount: float = Field(gt=0)
+
+
+def _sim_split_amount(total: float, parts: int) -> List[float]:
+    """Divide um valor por N partes aleatórias."""
+    total = round(float(total), 2)
+    parts = max(1, min(int(parts), 50))
+    weights = [random.random() + 0.25 for _ in range(parts)]
+    weight_sum = sum(weights)
+    shares = [round(total * w / weight_sum, 2) for w in weights[:-1]]
+    shares.append(round(total - sum(shares), 2))
+    return shares
+
+
+def _sim_build_items(share: float, products: List[dict]) -> List[dict]:
+    """Escolhe produtos aleatórios até aproximar o valor da parte."""
+    items: List[dict] = []
+    remaining = round(float(share), 2)
+    for _ in range(4):
+        if remaining < 0.05:
+            break
+        affordable = [p for p in products if float(p.get("price") or 0) <= remaining + 0.001]
+        if affordable:
+            prod = random.choice(affordable)
+            price = float(prod["price"])
+            max_qty = max(1, int(remaining // price))
+            qty = random.randint(1, max_qty) if max_qty > 1 else 1
+        else:
+            prod = min(products, key=lambda p: float(p.get("price") or 0))
+            price = float(prod.get("price") or 0)
+            qty = 1
+        subtotal = round(price * qty, 2)
+        items.append({
+            "product_id": prod.get("id"),
+            "product_name": prod.get("name"),
+            "unit_price": price,
+            "quantity": qty,
+            "subtotal": subtotal,
+            "is_house_account": False,
+            "house_value": 0.0,
+        })
+        remaining = round(remaining - subtotal, 2)
+    return items
+
+
+async def _sim_today_sales_total() -> float:
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    sales = await db.sales.find({"created_at": {"$gte": today_start.isoformat()}}, {"_id": 0, "total": 1}).to_list(5000)
+    return round(sum(float(s.get("total", 0) or 0) for s in sales), 2)
+
+
+async def _sim_active_sales() -> List[dict]:
+    return await db.sales.find({"simulation": True}, {"_id": 0, "total": 1, "client_id": 1}).to_list(5000)
+
+
+@api_router.get("/simulations/consumption")
+async def consumption_simulation_status(user: dict = Depends(get_current_user)):
+    sales = await _sim_active_sales()
+    return {
+        "count": len(sales),
+        "total": round(sum(float(s.get("total", 0) or 0) for s in sales), 2),
+        "clients": len({s.get("client_id") for s in sales if s.get("client_id")}),
+    }
+
+
+@api_router.post("/simulations/consumption")
+async def simulate_consumption(
+    body: ConsumptionSimulationIn,
+    user: dict = Depends(require_role("admin", "tesoureiro", "presidente")),
+):
+    products = [
+        p for p in await db.products.find({"is_quota": {"$ne": True}}, {"_id": 0}).to_list(2000)
+        if float(p.get("price") or 0) > 0
+    ]
+    if not products:
+        raise HTTPException(status_code=400, detail="Sem produtos com preço para simular")
+    candidates = await db.clients.find(
+        {"archived": {"$ne": True}, "is_temp": {"$ne": True}}, {"_id": 0}
+    ).to_list(2000)
+    if not candidates:
+        raise HTTPException(status_code=400, detail="Sem clientes para simular")
+
+    before = await _sim_today_sales_total()
+    n = min(int(body.clients), len(candidates))
+    chosen = random.sample(candidates, n)
+    shares = _sim_split_amount(body.amount, n)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    created = 0
+    created_total = 0.0
+    per_client: dict = {}
+    for share, client_doc in zip(shares, chosen):
+        items = _sim_build_items(share, products)
+        total = round(sum(li["subtotal"] for li in items), 2)
+        if total <= 0:
+            continue
+        tx_no = await _next_tx_number()
+        await db.sales.insert_one({
+            "id": str(uuid.uuid4()),
+            "tx_number": tx_no,
+            "client_id": client_doc["id"],
+            "client_name": client_doc.get("name") or "",
+            "items": items,
+            "total": total,
+            "house_total": 0.0,
+            "house_offer": False,
+            "points_earned": 0,
+            "points_pending_before": float(client_doc.get("points_pending_value", 0) or 0),
+            "points_pending_after": float(client_doc.get("points_pending_value", 0) or 0),
+            "is_member_at_sale": bool(client_doc.get("is_member")),
+            "tutelado": False,
+            "minor_alcohol_alert": False,
+            "created_at": now_iso,
+            "user_email": user["email"],
+            "source": "simulation",
+            "simulation": True,
+        })
+        per_client[client_doc["id"]] = round(per_client.get(client_doc["id"], 0.0) + total, 2)
+        created += 1
+        created_total = round(created_total + total, 2)
+
+    for cid, value in per_client.items():
+        await db.clients.update_one({"id": cid}, {"$inc": {"balance": value}})
+
+    after = await _sim_today_sales_total()
+    await _audit(
+        "simulation_create", user["email"], entity="simulation",
+        summary=f"Simulação: {created} consumo(s) · {created_total:.2f} €",
+    )
+    return {
+        "created": created,
+        "requested": round(float(body.amount), 2),
+        "total": created_total,
+        "clients": len(per_client),
+        "today_before": before,
+        "today_after": after,
+        "delta": round(after - before, 2),
+    }
+
+
+@api_router.delete("/simulations/consumption")
+async def clear_consumption_simulation(user: dict = Depends(require_role("admin", "tesoureiro", "presidente"))):
+    sales = await _sim_active_sales()
+    per_client: dict = {}
+    for s in sales:
+        cid = s.get("client_id")
+        if cid:
+            per_client[cid] = round(per_client.get(cid, 0.0) + float(s.get("total", 0) or 0), 2)
+    for cid, value in per_client.items():
+        await db.clients.update_one({"id": cid}, {"$inc": {"balance": -value}})
+    result = await db.sales.delete_many({"simulation": True})
+    total = round(sum(float(s.get("total", 0) or 0) for s in sales), 2)
+    if result.deleted_count:
+        await _audit(
+            "simulation_clear", user["email"], entity="simulation",
+            summary=f"Simulação removida: {result.deleted_count} venda(s) · {total:.2f} €",
+        )
+    return {"removed": result.deleted_count, "total": total}
+
 
 # ---------- Sales Report (filtros) ----------
 @api_router.get("/reports/sales")

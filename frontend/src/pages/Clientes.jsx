@@ -2,11 +2,12 @@ import React, { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import EditableText from "../components/EditableText";
 import api, { euro, formatApiErrorDetail } from "../lib/api";
-import { Plus, User, ArrowRight, MagnifyingGlass, Trash, Medal, Funnel, Star, SealCheck } from "@phosphor-icons/react";
+import { Plus, User, ArrowRight, MagnifyingGlass, Trash, Medal, Funnel, Star, SealCheck, Flask } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { useAuth } from "../context/AuthContext";
 import MessageModal from "../components/MessageModal";
 import QuotaBulkLaunchModal from "../components/QuotaBulkLaunchModal";
+import SimulationModal from "../components/SimulationModal";
 import QuotaBall from "../components/QuotaBall";
 import AdesaoApprovals from "../components/AdesaoApprovals";
 import AdesaoForm from "../components/AdesaoForm";
@@ -21,6 +22,8 @@ export default function Clientes() {
   const [showAdd, setShowAdd] = useState(false);
   const [msgTarget, setMsgTarget] = useState(null);
   const [showQuotaLaunch, setShowQuotaLaunch] = useState(false);
+  const [showSimulation, setShowSimulation] = useState(false);
+  const [simStatus, setSimStatus] = useState(null);
   const [search, setSearch] = useState("");
   const [filterType, setFilterType] = useState("all"); // all | socios | clientes | uptodate | notuptodate | debt
   const [sortKey, setSortKey] = useState("name"); // name | number | activity | total_points
@@ -39,6 +42,16 @@ export default function Clientes() {
     if (user?.role !== "admin") return;
     api.get("/club/honorary-settings").then(({ data }) => setHonoraryEnabled(!!data.enabled)).catch(() => {});
   }, [user?.role]);
+
+  // Simulação de consumos (teste) — só direção/tesouraria
+  const loadSimStatus = () => {
+    if (!canManageQuotas) return;
+    api.get("/simulations/consumption").then(({ data }) => setSimStatus(data)).catch(() => {});
+  };
+  useEffect(() => {
+    loadSimStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canManageQuotas]);
 
   const toggleHonorary = async () => {
     try {
@@ -209,6 +222,20 @@ export default function Clientes() {
               className="bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-500/15 font-bold px-4 py-2.5 rounded-lg flex items-center gap-2 transition-colors"
             >
               <SealCheck size={18} weight="fill" /> Lançar cotas {year}
+            </button>
+          )}
+          {canManageQuotas && (
+            <button
+              data-testid="simulation-btn"
+              onClick={() => setShowSimulation(true)}
+              title="Ferramenta de teste: simula consumos aleatórios e mostra o impacto no total de vendas"
+              className={`px-4 py-2.5 rounded-lg font-bold flex items-center gap-2 border transition-colors ${
+                simStatus?.count
+                  ? "bg-fuchsia-500/20 text-fuchsia-200 border-fuchsia-500/40 hover:bg-fuchsia-500/30"
+                  : "bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700"
+              }`}
+            >
+              <Flask size={18} weight="duotone" /> Simulação{simStatus?.count ? ` · ${simStatus.count}` : ""}
             </button>
           )}
           <button
@@ -663,6 +690,13 @@ export default function Clientes() {
         <QuotaBulkLaunchModal onClose={() => setShowQuotaLaunch(false)} onDone={load} />
       )}
       </>
+      )}
+
+      {showSimulation && (
+        <SimulationModal
+          onClose={() => setShowSimulation(false)}
+          onChanged={() => { loadSimStatus(); load(); }}
+        />
       )}
     </div>
   );

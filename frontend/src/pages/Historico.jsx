@@ -78,6 +78,8 @@ const AUDIT_META = {
   community_staff_post: ["Publicação no chat", "gray"],
   community_delete: ["Mensagem removida", "red"],
   supplier_order_auto: ["Encomenda automática", "teal"],
+  simulation_create: ["Simulação de consumos", "pink"],
+  simulation_clear: ["Simulação removida", "pink"],
 };
 
 // Operações que a direção deve ver destacadas
